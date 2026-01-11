@@ -96,6 +96,68 @@ utils_bundle_get_timestamp() {
 }
 
 # ============================================================================
+# Bundle Name Parsing Pipeline
+# ============================================================================
+
+# Parse and filter a bundle name, extracting metadata
+# Usage: utils_parse_bundle_metadata <name> <filter_host> <filter_user>
+# Returns: "name|host|user|timestamp" or empty if filtered out
+# Exit code: 0 if bundle passes filters, 1 if filtered out or invalid
+#
+# This function consolidates the common pattern of:
+#   1. Checking if name matches CodingAgentConfig_* pattern
+#   2. Parsing the filename to extract metadata
+#   3. Applying host/user filters
+utils_parse_bundle_metadata() {
+    local name="$1"
+    local filter_host="${2:-}"
+    local filter_user="${3:-}"
+
+    # Only process CodingAgentConfig bundles
+    [[ "$name" != CodingAgentConfig_* ]] && return 1
+
+    local parsed host user timestamp
+    if ! parsed=$(bundle_parse_filename "$name"); then
+        return 1
+    fi
+
+    host=$(utils_bundle_get_host "$parsed")
+    user=$(utils_bundle_get_user "$parsed")
+    timestamp=$(utils_bundle_get_timestamp "$parsed")
+
+    # Apply filters
+    if [[ -n "$filter_host" && "$host" != "$filter_host" ]]; then
+        return 1
+    fi
+    if [[ -n "$filter_user" && "$user" != "$filter_user" ]]; then
+        return 1
+    fi
+
+    echo "${name}|${host}|${user}|${timestamp}"
+    return 0
+}
+
+# Extract bundle names from Gokapi API response
+# Usage: utils_gokapi_extract_names <response>
+# Returns: Newline-separated list of bundle names with optional IDs
+#
+# Uses jq if available, falls back to grep parsing
+# Output format with jq: "name|id" per line
+# Output format with grep: "name|" per line
+utils_gokapi_extract_names() {
+    local response="$1"
+
+    if command -v jq &>/dev/null; then
+        echo "$response" | jq -r '.[] | "\(.Name)|\(.Id)"' 2>/dev/null
+    else
+        # Fallback: grep-based parsing
+        echo "$response" | grep -o '"Name":"[^"]*"' | cut -d'"' -f4 | while read -r name; do
+            echo "${name}|"
+        done
+    fi
+}
+
+# ============================================================================
 # Logging Utilities
 # ============================================================================
 

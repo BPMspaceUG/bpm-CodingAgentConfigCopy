@@ -219,70 +219,19 @@ backend_gokapi_list() {
         return 0
     fi
 
-    # Parse and filter results
+    # Parse and filter results using shared utilities
     local found=0
     local entries=()
 
-    if command -v jq &>/dev/null; then
-        # Use jq for reliable JSON parsing
-        # shellcheck disable=SC2034  # downloads_remaining and expiry_time are intentionally unused placeholders
-        while IFS='|' read -r name id downloads_remaining expiry_time; do
-            [[ -z "$name" ]] && continue
-            # Only process CodingAgentConfig bundles
-            [[ "$name" != CodingAgentConfig_* ]] && continue
+    while IFS='|' read -r name id; do
+        [[ -z "$name" ]] && continue
 
-            local parsed host user timestamp
-            if ! parsed=$(bundle_parse_filename "$name"); then
-                continue
-            fi
-
-            host=$(utils_bundle_get_host "$parsed")
-            user=$(utils_bundle_get_user "$parsed")
-            timestamp=$(utils_bundle_get_timestamp "$parsed")
-
-            # Apply filters
-            if [[ -n "$filter_host" && "$host" != "$filter_host" ]]; then
-                continue
-            fi
-            if [[ -n "$filter_user" && "$user" != "$filter_user" ]]; then
-                continue
-            fi
-
-            entries+=("$name|$host|$user|$timestamp|$id")
+        local metadata
+        if metadata=$(utils_parse_bundle_metadata "$name" "$filter_host" "$filter_user"); then
+            entries+=("${metadata}|${id}")
             ((found++))
-
-        done < <(echo "$response" | jq -r '.[] | "\(.Name)|\(.Id)|\(.DownloadsRemaining)|\(.ExpireAtString)"')
-    else
-        # Fallback: grep-based parsing
-        local names
-        names=$(echo "$response" | grep -o '"Name":"[^"]*"' | cut -d'"' -f4)
-
-        while IFS= read -r name; do
-            [[ -z "$name" ]] && continue
-            [[ "$name" != CodingAgentConfig_* ]] && continue
-
-            local parsed host user timestamp
-            if ! parsed=$(bundle_parse_filename "$name"); then
-                continue
-            fi
-
-            host=$(utils_bundle_get_host "$parsed")
-            user=$(utils_bundle_get_user "$parsed")
-            timestamp=$(utils_bundle_get_timestamp "$parsed")
-
-            # Apply filters
-            if [[ -n "$filter_host" && "$host" != "$filter_host" ]]; then
-                continue
-            fi
-            if [[ -n "$filter_user" && "$user" != "$filter_user" ]]; then
-                continue
-            fi
-
-            entries+=("$name|$host|$user|$timestamp|")
-            ((found++))
-
-        done <<< "$names"
-    fi
+        fi
+    done < <(utils_gokapi_extract_names "$response")
 
     if [[ "$found" -eq 0 ]]; then
         echo "No bundles found"
@@ -294,6 +243,7 @@ backend_gokapi_list() {
     printf "%s\n" "--------------------------------------------------------------------------------"
 
     # Sort entries by timestamp (field 4)
+    # shellcheck disable=SC2034  # id is intentionally unused
     printf '%s\n' "${entries[@]}" | sort -t'|' -k4 -r | while IFS='|' read -r name host user timestamp id; do
         printf "%-40s %-15s %-15s %s\n" "$name" "$host" "$user" "$timestamp"
     done
@@ -326,69 +276,24 @@ backend_gokapi_get_newest() {
     local newest_name=""
     local newest_timestamp=""
 
-    if command -v jq &>/dev/null; then
-        # shellcheck disable=SC2034  # timestamp_str is intentionally unused placeholder
-        while IFS='|' read -r name timestamp_str; do
-            [[ -z "$name" ]] && continue
-            [[ "$name" != CodingAgentConfig_* ]] && continue
+    # Parse and filter results using shared utilities
+    # shellcheck disable=SC2034  # id is intentionally unused
+    while IFS='|' read -r name id; do
+        [[ -z "$name" ]] && continue
 
-            local parsed host user timestamp
-            if ! parsed=$(bundle_parse_filename "$name"); then
-                continue
-            fi
-
-            host=$(utils_bundle_get_host "$parsed")
-            user=$(utils_bundle_get_user "$parsed")
-            timestamp=$(utils_bundle_get_timestamp "$parsed")
-
-            # Apply filters
-            if [[ -n "$filter_host" && "$host" != "$filter_host" ]]; then
-                continue
-            fi
-            if [[ -n "$filter_user" && "$user" != "$filter_user" ]]; then
-                continue
-            fi
+        local metadata
+        if metadata=$(utils_parse_bundle_metadata "$name" "$filter_host" "$filter_user"); then
+            # metadata format: "name|host|user|timestamp"
+            local timestamp
+            timestamp=$(echo "$metadata" | cut -d'|' -f4)
 
             # Compare timestamps (YYMMDD-HHMMSS format sorts correctly)
             if [[ -z "$newest_timestamp" || "$timestamp" > "$newest_timestamp" ]]; then
                 newest_timestamp="$timestamp"
                 newest_name="$name"
             fi
-
-        done < <(echo "$response" | jq -r '.[] | "\(.Name)|\(.ExpireAtString)"')
-    else
-        # Fallback
-        local names
-        names=$(echo "$response" | grep -o '"Name":"[^"]*"' | cut -d'"' -f4)
-
-        while IFS= read -r name; do
-            [[ -z "$name" ]] && continue
-            [[ "$name" != CodingAgentConfig_* ]] && continue
-
-            local parsed host user timestamp
-            if ! parsed=$(bundle_parse_filename "$name"); then
-                continue
-            fi
-
-            host=$(utils_bundle_get_host "$parsed")
-            user=$(utils_bundle_get_user "$parsed")
-            timestamp=$(utils_bundle_get_timestamp "$parsed")
-
-            # Apply filters
-            if [[ -n "$filter_host" && "$host" != "$filter_host" ]]; then
-                continue
-            fi
-            if [[ -n "$filter_user" && "$user" != "$filter_user" ]]; then
-                continue
-            fi
-
-            if [[ -z "$newest_timestamp" || "$timestamp" > "$newest_timestamp" ]]; then
-                newest_timestamp="$timestamp"
-                newest_name="$name"
-            fi
-
-        done <<< "$names"
-    fi
+        fi
+    done < <(utils_gokapi_extract_names "$response")
 
     if [[ -z "$newest_name" ]]; then
         return 1

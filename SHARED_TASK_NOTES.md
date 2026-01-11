@@ -2,32 +2,24 @@
 
 ## Current Status
 
-**Code Quality Refactoring Iteration** - Completed 2026-01-11
+**Code Quality Refactoring - Iteration 2** - Completed 2026-01-11
 
 All tests still passing after refactoring:
 - 51/51 tests pass (14 bundle + 22 security + 15 integration)
 - ShellCheck passes with zero errors
 
-## Recent Refactoring Changes
+## Latest Refactoring (This Iteration)
 
-Created `lib/utils.sh` with shared utility functions to reduce code duplication:
+1. **Consolidated jq/grep parsing duplication** in `backend_gokapi.sh`:
+   - Added `utils_parse_bundle_metadata()` - unified bundle name validation, parsing, and filtering
+   - Added `utils_gokapi_extract_names()` - unified jq/grep name extraction from API responses
+   - Reduced `backend_gokapi_list()` from 101 lines to 51 lines
+   - Reduced `backend_gokapi_get_newest()` from 91 lines to 46 lines
+   - Applied same pattern to `backend_local.sh` for consistency
 
-1. **Argument parsing**: `utils_parse_filter_args()` - Extracted duplicate `--host`/`--user` parsing from 4 backend functions
-
-2. **JSON utilities**:
-   - `utils_json_extract_field()` - Consolidated grep+cut JSON field extraction
-   - `utils_json_is_error()` - Check for Gokapi error responses
-   - `utils_json_get_error()` - Extract error messages
-
-3. **Bundle metadata helpers**: `utils_bundle_get_host/user/timestamp()` - Cleaner field extraction
-
-4. **Error handling**:
-   - `utils_error()` - Standardized error output
-   - `utils_safe_copy()` / `utils_safe_chmod()` - File operations with error checking
-
-5. **Gokapi validation**: `_gokapi_validate_config()` - Consolidated URL/API key checks (was duplicated 5+ times)
-
-6. **Added error messages** to previously silent failure points in `backend_local_get_newest()`
+2. **Standardized error handling** in `backend_local.sh`:
+   - Replaced all `echo "ERROR:"` with `utils_error()` for consistency
+   - Now matches the pattern used in `backend_gokapi.sh`
 
 ## Quick Verification
 
@@ -39,6 +31,7 @@ shellcheck bin/cac lib/*.sh install.sh uninstall.sh tests/*.sh   # No errors
 
 ## Potential Future Improvements
 
-- Further break down functions > 80 lines (backend_gokapi_download, backend_gokapi_list)
+- **backend_gokapi_download()** (~98 lines): Still has jq/grep duplication for file matching logic
 - Add verbose/debug logging mode
 - Consider adding retry logic for network operations
+- Add include guards to prevent double-sourcing of libraries

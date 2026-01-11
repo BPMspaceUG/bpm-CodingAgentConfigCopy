@@ -15,12 +15,12 @@ backend_local_upload() {
     local storage_dir="${CAC_LOCAL_STORAGE}"
 
     if [[ -z "$storage_dir" ]]; then
-        echo "ERROR: CAC_LOCAL_STORAGE not configured" >&2
+        utils_error "CAC_LOCAL_STORAGE not configured"
         return 1
     fi
 
     if [[ ! -d "$storage_dir" ]]; then
-        echo "ERROR: Storage directory does not exist: $storage_dir" >&2
+        utils_error "Storage directory does not exist: $storage_dir"
         return 1
     fi
 
@@ -49,7 +49,7 @@ backend_local_download() {
     local storage_dir="${CAC_LOCAL_STORAGE}"
 
     if [[ -z "$storage_dir" ]]; then
-        echo "ERROR: CAC_LOCAL_STORAGE not configured" >&2
+        utils_error "CAC_LOCAL_STORAGE not configured"
         return 1
     fi
 
@@ -68,10 +68,10 @@ backend_local_download() {
         count=$(echo "$matches" | grep -c .)
 
         if [[ "$count" -eq 0 ]]; then
-            echo "ERROR: No bundle found matching: $bundle_id" >&2
+            utils_error "No bundle found matching: $bundle_id"
             return 1
         elif [[ "$count" -gt 1 ]]; then
-            echo "ERROR: Multiple bundles match '$bundle_id'. Be more specific:" >&2
+            utils_error "Multiple bundles match '$bundle_id'. Be more specific:"
             echo "$matches" | while read -r f; do basename "$f"; done >&2
             return 1
         fi
@@ -95,12 +95,12 @@ backend_local_list() {
     local filter_user="$FILTER_USER"
 
     if [[ -z "$storage_dir" ]]; then
-        echo "ERROR: CAC_LOCAL_STORAGE not configured" >&2
+        utils_error "CAC_LOCAL_STORAGE not configured"
         return 1
     fi
 
     if [[ ! -d "$storage_dir" ]]; then
-        echo "No bundles found (storage directory does not exist)" >&2
+        echo "No bundles found (storage directory does not exist)"
         return 0
     fi
 
@@ -114,22 +114,14 @@ backend_local_list() {
         local filename
         filename=$(basename "$zip_file")
 
-        local parsed host user timestamp
-        if ! parsed=$(bundle_parse_filename "$filename"); then
-            continue  # Skip files that don't match naming convention
+        local metadata
+        if ! metadata=$(utils_parse_bundle_metadata "$filename" "$filter_host" "$filter_user"); then
+            continue  # Skip files that don't match or are filtered out
         fi
 
-        host=$(utils_bundle_get_host "$parsed")
-        user=$(utils_bundle_get_user "$parsed")
-        timestamp=$(utils_bundle_get_timestamp "$parsed")
-
-        # Apply filters
-        if [[ -n "$filter_host" && "$host" != "$filter_host" ]]; then
-            continue
-        fi
-        if [[ -n "$filter_user" && "$user" != "$filter_user" ]]; then
-            continue
-        fi
+        # metadata format: "name|host|user|timestamp"
+        local host user timestamp
+        IFS='|' read -r _ host user timestamp <<< "$metadata"
 
         if [[ "$found" -eq 0 ]]; then
             printf "%-40s %-15s %-15s %s\n" "BUNDLE" "HOST" "USER" "TIMESTAMP"
@@ -179,25 +171,12 @@ backend_local_get_newest() {
         local filename
         filename=$(basename "$zip_file")
 
-        local parsed host user
-        if ! parsed=$(bundle_parse_filename "$filename"); then
-            continue
+        # Use shared utility for parsing and filtering
+        if utils_parse_bundle_metadata "$filename" "$filter_host" "$filter_user" >/dev/null; then
+            # Return the first match (newest due to sort)
+            echo "$filename"
+            return 0
         fi
-
-        host=$(utils_bundle_get_host "$parsed")
-        user=$(utils_bundle_get_user "$parsed")
-
-        # Apply filters
-        if [[ -n "$filter_host" && "$host" != "$filter_host" ]]; then
-            continue
-        fi
-        if [[ -n "$filter_user" && "$user" != "$filter_user" ]]; then
-            continue
-        fi
-
-        # Return the first match (newest due to sort)
-        echo "$filename"
-        return 0
 
     done < <(find "$storage_dir" -maxdepth 1 -name "CodingAgentConfig_*.zip" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
 
@@ -212,7 +191,7 @@ backend_local_delete() {
     local storage_dir="${CAC_LOCAL_STORAGE}"
 
     if [[ -z "$storage_dir" ]]; then
-        echo "ERROR: CAC_LOCAL_STORAGE not configured" >&2
+        utils_error "CAC_LOCAL_STORAGE not configured"
         return 1
     fi
 
@@ -223,7 +202,7 @@ backend_local_delete() {
     elif [[ -f "${storage_dir}/${bundle_id}.zip" ]]; then
         target="${storage_dir}/${bundle_id}.zip"
     else
-        echo "ERROR: Bundle not found: $bundle_id" >&2
+        utils_error "Bundle not found: $bundle_id"
         return 1
     fi
 
