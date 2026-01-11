@@ -1,0 +1,468 @@
+#!/usr/bin/env bash
+# cac - Coding Agent Config CLI
+# Manages versioned ZIP-based configuration bundles for AI coding assistants
+
+set -euo pipefail
+
+VERSION="0.1.0"
+
+# Determine script location and library path
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../lib"
+
+# Source library modules
+# shellcheck source=lib/config.sh
+source "${LIB_DIR}/config.sh"
+# shellcheck source=lib/security.sh
+source "${LIB_DIR}/security.sh"
+# shellcheck source=lib/tools.sh
+source "${LIB_DIR}/tools.sh"
+# shellcheck source=lib/bundle.sh
+source "${LIB_DIR}/bundle.sh"
+# shellcheck source=lib/backend_local.sh
+source "${LIB_DIR}/backend_local.sh"
+# shellcheck source=lib/backend_gokapi.sh
+source "${LIB_DIR}/backend_gokapi.sh"
+
+# ============================================================================
+# Help / Usage
+# ============================================================================
+
+show_help() {
+    cat <<EOF
+cac - Coding Agent Config CLI v${VERSION}
+
+Manages versioned ZIP-based configuration bundles for AI coding assistants
+(Claude Code, Codex CLI, Gemini CLI).
+
+USAGE:
+    cac <command> [options]
+
+COMMANDS:
+    push [--user USER]              Create and upload config bundle
+    pull [--user USER]              Download and apply newest matching bundle
+    get [BUNDLE_ID]                 Download a specific bundle (by ID or interactive)
+    list [--host HOST] [--user USER]  List available bundles
+    test [--user USER]              Test API connectivity for AI tools
+
+OPTIONS:
+    --user USER     Operate on specified user (requires root for other users)
+    --host HOST     Filter bundles by hostname
+    --help, -h      Show this help message
+    --version, -v   Show version information
+
+EXAMPLES:
+    cac push                    Bundle and upload current user's config
+    cac push --user ubuntu      Bundle ubuntu user's config (requires root)
+    cac pull                    Apply newest bundle for current user/host
+    cac pull --user bob         Apply newest bundle to user bob (requires root)
+    cac list                    List all available bundles
+    cac list --host prod-01     List bundles from specific host
+    cac get                     Interactive bundle selection
+    cac get CodingAgentConfig_myhost_user_250111-120000.zip
+    cac test                    Test AI tool API connectivity
+
+CONFIGURATION:
+    Config file locations (in order of precedence):
+      \$CAC_CONFIG_DIR/.env
+      \$XDG_CONFIG_HOME/cac/.env
+      ~/.config/cac/.env
+      /etc/cac/.env
+
+    Required .env variables:
+      CAC_BACKEND=local|gokapi
+      CAC_LOCAL_STORAGE=/path/to/storage   (for local backend)
+      CAC_GOKAPI_URL=https://...           (for gokapi backend)
+      CAC_GOKAPI_API_KEY=...               (for gokapi backend)
+
+EOF
+}
+
+show_version() {
+    echo "cac version ${VERSION}"
+}
+
+# ============================================================================
+# Commands
+# ============================================================================
+
+cmd_push() {
+    local target_user="${USER}"
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --user)
+                target_user="$2"
+                shift 2
+                ;;
+            *)
+                echo "ERROR: Unknown option: $1" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    # Check access permissions
+    if ! security_check_user_access "$target_user"; then
+        return 1
+    fi
+
+    # Get user's home directory
+    local home_dir
+    if ! home_dir=$(security_resolve_user_home "$target_user"); then
+        return 1
+    fi
+
+    # Check if any config files exist
+    local file_count
+    file_count=$(tools_count_existing "$home_dir" "all")
+    if [[ "$file_count" -eq 0 ]]; then
+        echo "ERROR: No AI tool configuration files found for user '$target_user'" >&2
+        return 1
+    fi
+
+    echo "Creating bundle for user: $target_user"
+    echo "Home directory: $home_dir"
+    echo "Files found: $file_count"
+    echo ""
+
+    # Create temp directory for bundle
+    local temp_dir
+    temp_dir=$(security_mktemp_dir "cac-push")
+    trap 'rm -rf "$temp_dir"' RETURN
+
+    # Generate bundle filename and create bundle
+    local bundle_name
+    bundle_name=$(bundle_generate_filename "$target_user")
+    local bundle_path="${temp_dir}/${bundle_name}"
+
+    if ! bundle_create "$home_dir" "$bundle_path" "all"; then
+        return 1
+    fi
+
+    # Upload to backend
+    case "${CAC_BACKEND}" in
+        local)
+            backend_local_upload "$bundle_path"
+            ;;
+        gokapi)
+            backend_gokapi_upload "$bundle_path"
+            ;;
+        *)
+            echo "ERROR: Unknown backend: ${CAC_BACKEND}" >&2
+            return 1
+            ;;
+    esac
+}
+
+cmd_pull() {
+    local target_user="${USER}"
+    local target_host
+    target_host=$(hostname -s)
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --user)
+                target_user="$2"
+                shift 2
+                ;;
+            *)
+                echo "ERROR: Unknown option: $1" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    # Check access permissions
+    if ! security_check_user_access "$target_user"; then
+        return 1
+    fi
+
+    # Get user's home directory
+    local home_dir
+    if ! home_dir=$(security_resolve_user_home "$target_user"); then
+        return 1
+    fi
+
+    echo "Pulling newest bundle for user: $target_user, host: $target_host"
+    echo ""
+
+    # Find newest matching bundle
+    local newest_bundle
+    case "${CAC_BACKEND}" in
+        local)
+            if ! newest_bundle=$(backend_local_get_newest --host "$target_host" --user "$target_user"); then
+                echo "ERROR: No bundle found matching host='$target_host', user='$target_user'" >&2
+                return 1
+            fi
+            ;;
+        gokapi)
+            if ! newest_bundle=$(backend_gokapi_get_newest --host "$target_host" --user "$target_user"); then
+                echo "ERROR: No bundle found matching host='$target_host', user='$target_user'" >&2
+                return 1
+            fi
+            ;;
+    esac
+
+    echo "Found bundle: $newest_bundle"
+    echo ""
+
+    # Download and extract
+    local temp_dir
+    temp_dir=$(security_mktemp_dir "cac-pull")
+    trap 'rm -rf "$temp_dir"' RETURN
+
+    local download_path="${temp_dir}/${newest_bundle}"
+
+    case "${CAC_BACKEND}" in
+        local)
+            if ! backend_local_download "$newest_bundle" "$download_path"; then
+                return 1
+            fi
+            ;;
+        gokapi)
+            if ! backend_gokapi_download "$newest_bundle" "$download_path"; then
+                return 1
+            fi
+            ;;
+    esac
+
+    echo ""
+    echo "Extracting to: $home_dir"
+    if ! bundle_extract "$download_path" "$home_dir" "$target_user"; then
+        return 1
+    fi
+
+    echo ""
+    echo "Pull complete!"
+}
+
+cmd_get() {
+    local bundle_id="${1:-}"
+    local target_user="${USER}"
+
+    # Check for --user in remaining args
+    shift || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --user)
+                target_user="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+
+    # If no bundle_id provided, show list and prompt
+    if [[ -z "$bundle_id" ]]; then
+        echo "Available bundles:"
+        echo ""
+        cmd_list
+        echo ""
+        echo "Enter bundle name (or partial match):"
+        read -r bundle_id
+
+        if [[ -z "$bundle_id" ]]; then
+            echo "No bundle selected" >&2
+            return 1
+        fi
+    fi
+
+    # Check access permissions
+    if ! security_check_user_access "$target_user"; then
+        return 1
+    fi
+
+    # Get user's home directory
+    local home_dir
+    if ! home_dir=$(security_resolve_user_home "$target_user"); then
+        return 1
+    fi
+
+    echo "Getting bundle: $bundle_id"
+    echo "Target user: $target_user"
+    echo ""
+
+    # Download and extract
+    local temp_dir
+    temp_dir=$(security_mktemp_dir "cac-get")
+    trap 'rm -rf "$temp_dir"' RETURN
+
+    local download_path="${temp_dir}/bundle.zip"
+
+    case "${CAC_BACKEND}" in
+        local)
+            if ! backend_local_download "$bundle_id" "$download_path"; then
+                return 1
+            fi
+            ;;
+        gokapi)
+            if ! backend_gokapi_download "$bundle_id" "$download_path"; then
+                return 1
+            fi
+            ;;
+    esac
+
+    echo ""
+    echo "Extracting to: $home_dir"
+    if ! bundle_extract "$download_path" "$home_dir" "$target_user"; then
+        return 1
+    fi
+
+    echo ""
+    echo "Get complete!"
+}
+
+cmd_list() {
+    local args=()
+
+    # Pass through arguments
+    while [[ $# -gt 0 ]]; do
+        args+=("$1")
+        shift
+    done
+
+    case "${CAC_BACKEND}" in
+        local)
+            backend_local_list "${args[@]}"
+            ;;
+        gokapi)
+            backend_gokapi_list "${args[@]}"
+            ;;
+    esac
+}
+
+cmd_test() {
+    local target_user="${USER}"
+    local use_sudo=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --user)
+                target_user="$2"
+                shift 2
+                ;;
+            *)
+                echo "ERROR: Unknown option: $1" >&2
+                return 1
+                ;;
+        esac
+    done
+
+    # Check if testing another user
+    if [[ "$target_user" != "$(whoami)" ]]; then
+        if [[ "$EUID" -ne 0 ]]; then
+            echo "ERROR: Root required to test as another user" >&2
+            return 1
+        fi
+        use_sudo=true
+    fi
+
+    echo "=== Testing AI Tools for user: $target_user ==="
+    echo ""
+
+    run_cmd() {
+        if $use_sudo; then
+            sudo -u "$target_user" "$@"
+        else
+            "$@"
+        fi
+    }
+
+    # Claude test
+    echo "--- Claude Code ---"
+    if run_cmd claude -p "Respond only with: CLAUDE_OK" --dangerously-skip-permissions 2>/dev/null | grep -q "CLAUDE_OK"; then
+        echo "✓ Claude: OK"
+    else
+        echo "✗ Claude: FAILED"
+    fi
+    echo ""
+
+    # Codex test
+    echo "--- Codex ---"
+    if run_cmd codex exec "Respond only with the text: CODEX_OK" --skip-git-repo-check 2>/dev/null | grep -q "CODEX_OK"; then
+        echo "✓ Codex: OK"
+    else
+        echo "✗ Codex: FAILED"
+    fi
+    echo ""
+
+    # Gemini test
+    echo "--- Gemini ---"
+    if run_cmd gemini -p "Respond only with: GEMINI_OK" 2>/dev/null | grep -q "GEMINI_OK"; then
+        echo "✓ Gemini: OK"
+    else
+        echo "✗ Gemini: FAILED"
+    fi
+    echo ""
+
+    echo "=== Test Complete ==="
+}
+
+# ============================================================================
+# Main Entry Point
+# ============================================================================
+
+main() {
+    # Handle help and version first (no config required)
+    case "${1:-}" in
+        --help|-h|help)
+            show_help
+            exit 0
+            ;;
+        --version|-v)
+            show_version
+            exit 0
+            ;;
+        "")
+            show_help
+            exit 0
+            ;;
+    esac
+
+    local command="$1"
+    shift
+
+    # Test command doesn't require backend config
+    if [[ "$command" == "test" ]]; then
+        cmd_test "$@"
+        exit $?
+    fi
+
+    # Load configuration for all other commands
+    if ! config_load; then
+        exit 1
+    fi
+
+    if ! config_validate; then
+        exit 1
+    fi
+
+    # Dispatch command
+    case "$command" in
+        push)
+            cmd_push "$@"
+            ;;
+        pull)
+            cmd_pull "$@"
+            ;;
+        get)
+            cmd_get "$@"
+            ;;
+        list)
+            cmd_list "$@"
+            ;;
+        *)
+            echo "ERROR: Unknown command: $command" >&2
+            echo "Run 'cac --help' for usage information." >&2
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
