@@ -158,6 +158,132 @@ utils_gokapi_extract_names() {
 }
 
 # ============================================================================
+# Gokapi File Matching Utilities
+# ============================================================================
+
+# Find a file in Gokapi response by ID, exact name, or partial match
+# Usage: utils_gokapi_find_file <response> <bundle_id>
+# Returns: "url|name" on success, empty on failure
+# Exit code: 0 if found (unique match), 1 if not found, 2 if multiple matches
+#
+# The function tries matching in this order:
+#   1. Exact ID match
+#   2. Exact filename match
+#   3. Partial filename match (fails if multiple matches)
+#
+# When multiple matches are found (exit code 2), error message with matches is written to stderr
+utils_gokapi_find_file() {
+    local response="$1"
+    local bundle_id="$2"
+
+    if command -v jq &>/dev/null; then
+        _gokapi_find_file_jq "$response" "$bundle_id"
+    else
+        _gokapi_find_file_grep "$response" "$bundle_id"
+    fi
+}
+
+# Internal: jq-based file finder
+_gokapi_find_file_jq() {
+    local response="$1"
+    local bundle_id="$2"
+    local url name
+
+    # Try exact ID match first
+    url=$(echo "$response" | jq -r --arg id "$bundle_id" '.[] | select(.Id == $id) | .UrlDownload // empty')
+    name=$(echo "$response" | jq -r --arg id "$bundle_id" '.[] | select(.Id == $id) | .Name // empty')
+    if [[ -n "$url" ]]; then
+        echo "${url}|${name}"
+        return 0
+    fi
+
+    # Try exact filename match
+    url=$(echo "$response" | jq -r --arg name "$bundle_id" '.[] | select(.Name == $name) | .UrlDownload // empty')
+    name=$(echo "$response" | jq -r --arg name "$bundle_id" '.[] | select(.Name == $name) | .Name // empty')
+    if [[ -n "$url" ]]; then
+        echo "${url}|${name}"
+        return 0
+    fi
+
+    # Try partial filename match
+    local matches
+    matches=$(echo "$response" | jq -r --arg pat "$bundle_id" '[.[] | select(.Name | contains($pat))] | length')
+
+    if [[ "$matches" -eq 0 ]]; then
+        return 1
+    elif [[ "$matches" -eq 1 ]]; then
+        url=$(echo "$response" | jq -r --arg pat "$bundle_id" '.[] | select(.Name | contains($pat)) | .UrlDownload')
+        name=$(echo "$response" | jq -r --arg pat "$bundle_id" '.[] | select(.Name | contains($pat)) | .Name')
+        echo "${url}|${name}"
+        return 0
+    else
+        # Multiple matches - report error
+        utils_error "Multiple bundles match '$bundle_id'. Be more specific:"
+        echo "$response" | jq -r --arg pat "$bundle_id" '.[] | select(.Name | contains($pat)) | .Name' >&2
+        return 2
+    fi
+}
+
+# Internal: grep-based file finder (fallback when jq unavailable)
+_gokapi_find_file_grep() {
+    local response="$1"
+    local bundle_id="$2"
+
+    # Look for exact Name match
+    if echo "$response" | grep -q "\"Name\":\"${bundle_id}\""; then
+        local url
+        url=$(utils_json_extract_field "$response" "UrlDownload")
+        echo "${url}|${bundle_id}"
+        return 0
+    fi
+
+    # Look for exact ID match
+    if echo "$response" | grep -q "\"Id\":\"${bundle_id}\""; then
+        local url
+        url=$(utils_json_extract_field "$response" "UrlDownload")
+        echo "${url}|${bundle_id}"
+        return 0
+    fi
+
+    # Try partial match
+    local match_count
+    match_count=$(echo "$response" | grep -o "\"Name\":\"[^\"]*${bundle_id}[^\"]*\"" | wc -l)
+
+    if [[ "$match_count" -eq 0 ]]; then
+        return 1
+    elif [[ "$match_count" -eq 1 ]]; then
+        local name url
+        name=$(echo "$response" | grep -o "\"Name\":\"[^\"]*${bundle_id}[^\"]*\"" | head -1 | cut -d'"' -f4)
+        url=$(echo "$response" | grep -B5 "\"Name\":\"${name}\"" | grep -o "\"UrlDownload\":\"[^\"]*\"" | cut -d'"' -f4)
+        echo "${url}|${name}"
+        return 0
+    else
+        # Multiple matches
+        utils_error "Multiple bundles match '$bundle_id'. Be more specific:"
+        echo "$response" | grep -o "\"Name\":\"[^\"]*${bundle_id}[^\"]*\"" | cut -d'"' -f4 >&2
+        return 2
+    fi
+}
+
+# Find a file ID by name in Gokapi response
+# Usage: utils_gokapi_find_id <response> <filename>
+# Returns: File ID on success, empty on failure
+# Exit code: 0 if found, 1 if not found
+utils_gokapi_find_id() {
+    local response="$1"
+    local filename="$2"
+
+    if command -v jq &>/dev/null; then
+        echo "$response" | jq -r --arg name "$filename" '.[] | select(.Name == $name) | .Id // empty'
+    else
+        # Try to extract ID near the matching filename
+        if echo "$response" | grep -q "\"Name\":\"${filename}\""; then
+            echo "$response" | grep -B10 "\"Name\":\"${filename}\"" | grep -o "\"Id\":\"[^\"]*\"" | tail -1 | cut -d'"' -f4
+        fi
+    fi
+}
+
+# ============================================================================
 # Logging Utilities
 # ============================================================================
 

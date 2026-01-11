@@ -116,68 +116,22 @@ backend_gokapi_download() {
         return 1
     fi
 
-    # Find matching file
-    # Response is JSON array, we need to find the file by name or ID
-    local download_url=""
-    local found_name=""
+    # Find matching file using shared utility
+    local result download_url found_name
+    local find_status
+    result=$(utils_gokapi_find_file "$response" "$bundle_id")
+    find_status=$?
 
-    # Use jq if available, otherwise fall back to grep parsing
-    if command -v jq &>/dev/null; then
-        # Try exact ID match first
-        download_url=$(echo "$response" | jq -r --arg id "$bundle_id" '.[] | select(.Id == $id) | .UrlDownload // empty')
-        found_name=$(echo "$response" | jq -r --arg id "$bundle_id" '.[] | select(.Id == $id) | .Name // empty')
-
-        # Try exact filename match
-        if [[ -z "$download_url" ]]; then
-            download_url=$(echo "$response" | jq -r --arg name "$bundle_id" '.[] | select(.Name == $name) | .UrlDownload // empty')
-            found_name=$(echo "$response" | jq -r --arg name "$bundle_id" '.[] | select(.Name == $name) | .Name // empty')
-        fi
-
-        # Try partial filename match
-        if [[ -z "$download_url" ]]; then
-            local matches
-            matches=$(echo "$response" | jq -r --arg pat "$bundle_id" '[.[] | select(.Name | contains($pat))] | length')
-
-            if [[ "$matches" -eq 1 ]]; then
-                download_url=$(echo "$response" | jq -r --arg pat "$bundle_id" '.[] | select(.Name | contains($pat)) | .UrlDownload')
-                found_name=$(echo "$response" | jq -r --arg pat "$bundle_id" '.[] | select(.Name | contains($pat)) | .Name')
-            elif [[ "$matches" -gt 1 ]]; then
-                utils_error "Multiple bundles match '$bundle_id'. Be more specific:"
-                echo "$response" | jq -r --arg pat "$bundle_id" '.[] | select(.Name | contains($pat)) | .Name' >&2
-                return 1
-            fi
-        fi
-    else
-        # Fallback: basic grep parsing (less reliable)
-        # Look for matching Name field in JSON
-        if echo "$response" | grep -q "\"Name\":\"${bundle_id}\""; then
-            # Extract UrlDownload following this Name
-            download_url=$(utils_json_extract_field "$response" "UrlDownload")
-            found_name="$bundle_id"
-        elif echo "$response" | grep -q "\"Id\":\"${bundle_id}\""; then
-            download_url=$(utils_json_extract_field "$response" "UrlDownload")
-            found_name="$bundle_id"
-        else
-            # Try partial match
-            local match_count
-            match_count=$(echo "$response" | grep -o "\"Name\":\"[^\"]*${bundle_id}[^\"]*\"" | wc -l)
-            if [[ "$match_count" -eq 0 ]]; then
-                utils_error "No bundle found matching: $bundle_id"
-                return 1
-            elif [[ "$match_count" -gt 1 ]]; then
-                utils_error "Multiple bundles match '$bundle_id'. Be more specific:"
-                echo "$response" | grep -o "\"Name\":\"[^\"]*${bundle_id}[^\"]*\"" | cut -d'"' -f4 >&2
-                return 1
-            fi
-            found_name=$(echo "$response" | grep -o "\"Name\":\"[^\"]*${bundle_id}[^\"]*\"" | head -1 | cut -d'"' -f4)
-            download_url=$(echo "$response" | grep -B5 "\"Name\":\"${found_name}\"" | grep -o "\"UrlDownload\":\"[^\"]*\"" | cut -d'"' -f4)
-        fi
-    fi
-
-    if [[ -z "$download_url" ]]; then
+    if [[ $find_status -eq 1 ]]; then
         utils_error "No bundle found matching: $bundle_id"
         return 1
+    elif [[ $find_status -eq 2 ]]; then
+        # Error message already printed by utility
+        return 1
     fi
+
+    # Parse result "url|name"
+    IFS='|' read -r download_url found_name <<< "$result"
 
     # Construct full download URL if it's relative
     if [[ ! "$download_url" =~ ^https?:// ]]; then
@@ -312,25 +266,16 @@ backend_gokapi_delete() {
         return 1
     fi
 
-    # If bundle_id is a filename, we need to find the actual ID
+    # If bundle_id is a filename, look up the actual ID
     local file_id="$bundle_id"
     local found_name=""
 
     if [[ "$bundle_id" == CodingAgentConfig_* ]]; then
-        # It's a filename, look up the ID
         local response
         response=$(_gokapi_request GET "/api/files/list")
 
-        if command -v jq &>/dev/null; then
-            file_id=$(echo "$response" | jq -r --arg name "$bundle_id" '.[] | select(.Name == $name) | .Id // empty')
-            found_name="$bundle_id"
-        else
-            # Try to extract ID near the matching filename
-            if echo "$response" | grep -q "\"Name\":\"${bundle_id}\""; then
-                file_id=$(echo "$response" | grep -B10 "\"Name\":\"${bundle_id}\"" | grep -o "\"Id\":\"[^\"]*\"" | tail -1 | cut -d'"' -f4)
-                found_name="$bundle_id"
-            fi
-        fi
+        file_id=$(utils_gokapi_find_id "$response" "$bundle_id")
+        found_name="$bundle_id"
 
         if [[ -z "$file_id" ]]; then
             utils_error "Bundle not found: $bundle_id"
@@ -346,7 +291,6 @@ backend_gokapi_delete() {
         -H "apikey: ${CAC_GOKAPI_API_KEY}")
 
     # Check for success (Gokapi returns empty response on success)
-    # or check for error
     if utils_json_is_error "$response"; then
         utils_error "Gokapi delete failed: $(utils_json_get_error "$response")"
         return 1
