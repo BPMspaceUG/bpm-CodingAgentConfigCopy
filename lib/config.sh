@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # lib/config.sh - Configuration loading from .env files
 
+# Source dependencies
+# Note: security.sh sources logging.sh, which provides utils_error/utils_warn
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/security.sh
+source "${SCRIPT_DIR}/security.sh"
+
+# ============================================================================
+# Configuration Variables
+# ============================================================================
+
 # Configuration variables (set after loading)
 CAC_BACKEND="${CAC_BACKEND:-local}"
 CAC_LOCAL_STORAGE="${CAC_LOCAL_STORAGE:-}"
@@ -31,32 +41,20 @@ config_find_env_path() {
     return 1
 }
 
-# Get the expected config directory for the current installation mode
-config_get_dir() {
-    if [[ -n "${CAC_CONFIG_DIR:-}" ]]; then
-        echo "${CAC_CONFIG_DIR}"
-        return 0
-    fi
-
-    local xdg_config="${XDG_CONFIG_HOME:-$HOME/.config}"
-    echo "${xdg_config}/cac"
-}
-
-# Validate .env file permissions (must be 600)
+# Validate .env file permissions (must be exactly 600)
+# Uses security_check_file_permissions for the core check, but also
+# requires the file to exist (security_check_file_permissions skips missing files)
 config_check_permissions() {
     local env_path="$1"
 
     if [[ ! -f "$env_path" ]]; then
-        echo "ERROR: .env file not found at: $env_path" >&2
+        utils_error ".env file not found at: $env_path"
         return 1
     fi
 
-    local perms
-    perms=$(stat -c "%a" "$env_path" 2>/dev/null || stat -f "%Lp" "$env_path" 2>/dev/null)
-
-    if [[ "$perms" != "600" ]]; then
-        echo "ERROR: .env file has insecure permissions ($perms). Must be 600." >&2
-        echo "Fix with: chmod 600 '$env_path'" >&2
+    # Use security module for permission check (max PERM_SECURE_FILE for sensitive files)
+    if ! security_check_file_permissions "$env_path" "$PERM_SECURE_FILE"; then
+        echo "Fix with: chmod $PERM_SECURE_FILE '$env_path'" >&2
         return 1
     fi
 
@@ -69,12 +67,14 @@ config_load() {
     local env_path
 
     if ! env_path=$(config_find_env_path); then
-        echo "ERROR: No .env file found." >&2
+        utils_error "No .env file found."
         echo "Expected locations:" >&2
         echo "  - \${XDG_CONFIG_HOME:-~/.config}/cac/.env" >&2
         echo "  - /etc/cac/.env" >&2
         return 1
     fi
+
+    utils_verbose "Loading config from: $env_path"
 
     if ! config_check_permissions "$env_path"; then
         return 1
@@ -92,6 +92,8 @@ config_load() {
     export CAC_GOKAPI_EXPIRY_DAYS="${CAC_GOKAPI_EXPIRY_DAYS:-0}"
     export CAC_GOKAPI_ALLOWED_DOWNLOADS="${CAC_GOKAPI_ALLOWED_DOWNLOADS:-0}"
 
+    utils_verbose "Backend: $CAC_BACKEND"
+
     return 0
 }
 
@@ -99,27 +101,18 @@ config_load() {
 config_validate() {
     case "$CAC_BACKEND" in
         local)
-            if [[ -z "$CAC_LOCAL_STORAGE" ]]; then
-                echo "ERROR: CAC_LOCAL_STORAGE not set for local backend" >&2
-                return 1
-            fi
+            utils_require_var CAC_LOCAL_STORAGE "CAC_LOCAL_STORAGE not set for local backend" || return 1
             if [[ ! -d "$CAC_LOCAL_STORAGE" ]]; then
-                echo "ERROR: Local storage directory does not exist: $CAC_LOCAL_STORAGE" >&2
+                utils_error "Local storage directory does not exist: $CAC_LOCAL_STORAGE"
                 return 1
             fi
             ;;
         gokapi)
-            if [[ -z "$CAC_GOKAPI_URL" ]]; then
-                echo "ERROR: CAC_GOKAPI_URL not set for gokapi backend" >&2
-                return 1
-            fi
-            if [[ -z "$CAC_GOKAPI_API_KEY" ]]; then
-                echo "ERROR: CAC_GOKAPI_API_KEY not set for gokapi backend" >&2
-                return 1
-            fi
+            utils_require_var CAC_GOKAPI_URL "CAC_GOKAPI_URL not set for gokapi backend" || return 1
+            utils_require_var CAC_GOKAPI_API_KEY "CAC_GOKAPI_API_KEY not set for gokapi backend" || return 1
             ;;
         *)
-            echo "ERROR: Unknown backend: $CAC_BACKEND" >&2
+            utils_error "Unknown backend: $CAC_BACKEND"
             echo "Valid backends: local, gokapi" >&2
             return 1
             ;;

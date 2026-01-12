@@ -73,9 +73,25 @@ main() {
         echo ""
     fi
 
+    # Run utils tests
+    if $run_all || [[ "$filter" == "utils" ]]; then
+        if ! run_test_suite "Utils Tests" "test_utils.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run integration tests
     if $run_all || [[ "$filter" == "integration" ]]; then
         if ! run_test_suite "Integration Tests" "test_integration.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run install tests
+    if $run_all || [[ "$filter" == "install" ]]; then
+        if ! run_test_suite "Install Tests" "test_install.sh"; then
             exit_code=1
         fi
         echo ""

@@ -9,94 +9,22 @@
 set -euo pipefail
 
 # ============================================================================
-# Test Framework Setup
+# Setup
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Source shared test framework
+source "${SCRIPT_DIR}/test_framework.sh"
+
 # Check for required dependencies
-check_dependencies() {
-    local missing=()
-
-    if ! command -v zip &>/dev/null; then
-        missing+=("zip")
-    fi
-    if ! command -v unzip &>/dev/null; then
-        missing+=("unzip")
-    fi
-
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        echo "ERROR: Missing required dependencies: ${missing[*]}" >&2
-        echo "Install with: sudo apt-get install ${missing[*]}" >&2
-        exit 1
-    fi
-}
-
-check_dependencies
+framework_require_commands zip unzip
 
 # Source library modules
 source "${PROJECT_ROOT}/lib/tools.sh"
 source "${PROJECT_ROOT}/lib/security.sh"
 source "${PROJECT_ROOT}/lib/bundle.sh"
-
-# Test counters
-TESTS_RUN=0
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-# Test output colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-# shellcheck disable=SC2034  # reserved for skip() output
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-# Temporary test directory
-TEST_TMPDIR=""
-
-setup_test_env() {
-    TEST_TMPDIR=$(mktemp -d -t cac-test.XXXXXXXXXX)
-    chmod 700 "$TEST_TMPDIR"
-}
-
-cleanup_test_env() {
-    if [[ -n "$TEST_TMPDIR" && -d "$TEST_TMPDIR" ]]; then
-        rm -rf "$TEST_TMPDIR"
-    fi
-}
-
-trap cleanup_test_env EXIT
-
-# Test result helpers
-pass() {
-    local test_name="$1"
-    TESTS_PASSED=$((TESTS_PASSED + 1))
-    echo -e "${GREEN}✓ PASS${NC}: $test_name"
-}
-
-fail() {
-    local test_name="$1"
-    local message="${2:-}"
-    TESTS_FAILED=$((TESTS_FAILED + 1))
-    echo -e "${RED}✗ FAIL${NC}: $test_name"
-    if [[ -n "$message" ]]; then
-        echo "         $message"
-    fi
-}
-
-run_test() {
-    local test_name="$1"
-    local test_func="$2"
-    TESTS_RUN=$((TESTS_RUN + 1))
-
-    # Run test in subshell to catch failures without exiting main script
-    if (set +e; $test_func); then
-        pass "$test_name"
-    else
-        fail "$test_name"
-    fi
-}
 
 # ============================================================================
 # Bundle Filename Tests
@@ -107,12 +35,8 @@ test_bundle_generate_filename_format() {
     filename=$(bundle_generate_filename "testuser")
 
     # Should match pattern: CodingAgentConfig_<host>_testuser_<YYMMDD-HHMMSS>.zip
-    if [[ "$filename" =~ ^CodingAgentConfig_[^_]+_testuser_[0-9]{6}-[0-9]{6}\.zip$ ]]; then
-        return 0
-    else
-        echo "Expected format CodingAgentConfig_*_testuser_YYMMDD-HHMMSS.zip, got: $filename" >&2
-        return 1
-    fi
+    assert_match '^CodingAgentConfig_[^_]+_testuser_[0-9]{6}-[0-9]{6}\.zip$' \
+        "$filename" "filename format"
 }
 
 test_bundle_generate_filename_default_user() {
@@ -120,69 +44,57 @@ test_bundle_generate_filename_default_user() {
     filename=$(bundle_generate_filename)
 
     # Should contain current user
-    if [[ "$filename" == *"_${USER}_"* ]]; then
-        return 0
-    else
-        echo "Expected filename to contain _${USER}_, got: $filename" >&2
-        return 1
-    fi
+    assert_contains "_${USER}_" "$filename" "filename"
 }
 
 test_bundle_parse_filename_valid() {
     local result
     result=$(bundle_parse_filename "CodingAgentConfig_myhost_ubuntu_250111-143022.zip")
 
-    if [[ "$result" == "myhost ubuntu 250111-143022" ]]; then
-        return 0
-    else
-        echo "Expected 'myhost ubuntu 250111-143022', got: '$result'" >&2
-        return 1
-    fi
+    assert_equals "myhost ubuntu 250111-143022" "$result" "parsed result"
 }
 
 test_bundle_parse_filename_invalid() {
     # Should fail for invalid format
-    if bundle_parse_filename "invalid_filename.zip" 2>/dev/null; then
-        echo "Expected parse to fail for invalid filename" >&2
-        return 1
-    fi
-    return 0
+    assert_fails "parse invalid filename" bundle_parse_filename "invalid_filename.zip"
 }
 
 test_bundle_get_host() {
     local host
     host=$(bundle_get_host "CodingAgentConfig_prod-server_bob_250111-120000.zip")
 
-    if [[ "$host" == "prod-server" ]]; then
-        return 0
-    else
-        echo "Expected 'prod-server', got: '$host'" >&2
-        return 1
-    fi
+    assert_equals "prod-server" "$host" "host"
 }
 
 test_bundle_get_user() {
     local user
     user=$(bundle_get_user "CodingAgentConfig_prod-server_bob_250111-120000.zip")
 
-    if [[ "$user" == "bob" ]]; then
-        return 0
-    else
-        echo "Expected 'bob', got: '$user'" >&2
-        return 1
-    fi
+    assert_equals "bob" "$user" "user"
 }
 
 test_bundle_get_timestamp() {
     local ts
     ts=$(bundle_get_timestamp "CodingAgentConfig_prod-server_bob_250111-120000.zip")
 
-    if [[ "$ts" == "250111-120000" ]]; then
-        return 0
-    else
-        echo "Expected '250111-120000', got: '$ts'" >&2
-        return 1
-    fi
+    assert_equals "250111-120000" "$ts" "timestamp"
+}
+
+test_bundle_generate_filename_rejects_username_with_underscore() {
+    # Should fail when username contains underscore (conflicts with delimiter)
+    assert_fails "username with underscore" bundle_generate_filename "test_user"
+}
+
+test_bundle_generate_filename_rejects_hostname_with_underscore() {
+    # Create a mock hostname function that returns hostname with underscore
+    hostname() { echo "my_server"; }
+    export -f hostname
+
+    # Should fail when hostname contains underscore
+    assert_fails "hostname with underscore" bundle_generate_filename "validuser"
+
+    # Restore hostname
+    unset -f hostname
 }
 
 # ============================================================================
@@ -201,37 +113,18 @@ test_bundle_create_with_files() {
     echo '{"auth": "token"}' > "${fake_home}/.codex/auth.json"
 
     # Create bundle
-    if ! bundle_create "$fake_home" "$output_zip" "all" >/dev/null 2>&1; then
-        echo "bundle_create failed" >&2
-        return 1
-    fi
+    assert_success "bundle_create" bundle_create "$fake_home" "$output_zip" "all"
 
     # Verify ZIP was created
-    if [[ ! -f "$output_zip" ]]; then
-        echo "Output ZIP not created" >&2
-        return 1
-    fi
+    assert_file_exists "$output_zip" "output ZIP"
 
     # Verify ZIP contains expected files
     local contents
     contents=$(unzip -Z1 "$output_zip")
 
-    if [[ "$contents" != *".claude.json"* ]]; then
-        echo "ZIP missing .claude.json" >&2
-        return 1
-    fi
-
-    if [[ "$contents" != *".claude/.credentials.json"* ]]; then
-        echo "ZIP missing .claude/.credentials.json" >&2
-        return 1
-    fi
-
-    if [[ "$contents" != *".codex/auth.json"* ]]; then
-        echo "ZIP missing .codex/auth.json" >&2
-        return 1
-    fi
-
-    return 0
+    assert_contains ".claude.json" "$contents" "ZIP contents"
+    assert_contains ".claude/.credentials.json" "$contents" "ZIP contents"
+    assert_contains ".codex/auth.json" "$contents" "ZIP contents"
 }
 
 test_bundle_create_empty_fails() {
@@ -241,12 +134,7 @@ test_bundle_create_empty_fails() {
     mkdir -p "$fake_home"
 
     # Should fail when no config files exist
-    if bundle_create "$fake_home" "$output_zip" "all" 2>/dev/null; then
-        echo "Expected bundle_create to fail for empty home" >&2
-        return 1
-    fi
-
-    return 0
+    assert_fails "bundle_create with empty home" bundle_create "$fake_home" "$output_zip" "all"
 }
 
 test_bundle_create_claude_only() {
@@ -260,27 +148,19 @@ test_bundle_create_claude_only() {
     echo '{"auth": "token"}' > "${fake_home}/.codex/auth.json"
 
     # Create bundle for claude only
-    if ! bundle_create "$fake_home" "$output_zip" "claude" >/dev/null 2>&1; then
-        echo "bundle_create failed" >&2
-        return 1
-    fi
+    assert_success "bundle_create claude only" bundle_create "$fake_home" "$output_zip" "claude"
 
     # Verify ZIP contains only claude files
     local contents
     contents=$(unzip -Z1 "$output_zip")
 
-    if [[ "$contents" != *".claude.json"* ]]; then
-        echo "ZIP missing .claude.json" >&2
-        return 1
-    fi
+    assert_contains ".claude.json" "$contents" "ZIP contents"
 
     # Should NOT contain codex files
     if [[ "$contents" == *".codex"* ]]; then
-        echo "ZIP should not contain .codex files" >&2
+        echo "ZIP should not contain .codex files, got: $contents" >&2
         return 1
     fi
-
-    return 0
 }
 
 # ============================================================================
@@ -304,31 +184,16 @@ test_bundle_extract_basic() {
     bundle_create "$fake_home" "$bundle_zip" "claude" >/dev/null 2>&1
 
     # Extract to target
-    if ! bundle_extract "$bundle_zip" "$target_home" "$(whoami)" >/dev/null 2>&1; then
-        echo "bundle_extract failed" >&2
-        return 1
-    fi
+    assert_success "bundle_extract" bundle_extract "$bundle_zip" "$target_home" "$(whoami)"
 
     # Verify files were extracted
-    if [[ ! -f "${target_home}/.claude.json" ]]; then
-        echo "Extracted file .claude.json not found" >&2
-        return 1
-    fi
-
-    if [[ ! -f "${target_home}/.claude/.credentials.json" ]]; then
-        echo "Extracted file .claude/.credentials.json not found" >&2
-        return 1
-    fi
+    assert_file_exists "${target_home}/.claude.json" "extracted .claude.json"
+    assert_file_exists "${target_home}/.claude/.credentials.json" "extracted .credentials.json"
 
     # Verify content
     local content
     content=$(cat "${target_home}/.claude.json")
-    if [[ "$content" != '{"original": true}' ]]; then
-        echo "Extracted content mismatch" >&2
-        return 1
-    fi
-
-    return 0
+    assert_equals '{"original": true}' "$content" "extracted content"
 }
 
 test_bundle_extract_creates_backup() {
@@ -394,22 +259,12 @@ test_bundle_list_contents() {
     local output
     output=$(bundle_list_contents "$bundle_zip")
 
-    if [[ "$output" != *".claude.json"* ]]; then
-        echo "list_contents missing expected file" >&2
-        return 1
-    fi
-
-    return 0
+    assert_contains ".claude.json" "$output" "list_contents output"
 }
 
 test_bundle_list_contents_nonexistent() {
     # Should fail for non-existent file
-    if bundle_list_contents "/nonexistent/file.zip" 2>/dev/null; then
-        echo "Expected failure for non-existent file" >&2
-        return 1
-    fi
-
-    return 0
+    assert_fails "list_contents nonexistent" bundle_list_contents "/nonexistent/file.zip"
 }
 
 # ============================================================================
@@ -422,11 +277,13 @@ main() {
     echo "========================================"
     echo ""
 
-    setup_test_env
+    framework_init
 
     echo "--- Filename Generation/Parsing ---"
     run_test "bundle_generate_filename format" test_bundle_generate_filename_format
     run_test "bundle_generate_filename default user" test_bundle_generate_filename_default_user
+    run_test "bundle_generate_filename rejects username with underscore" test_bundle_generate_filename_rejects_username_with_underscore
+    run_test "bundle_generate_filename rejects hostname with underscore" test_bundle_generate_filename_rejects_hostname_with_underscore
     run_test "bundle_parse_filename valid" test_bundle_parse_filename_valid
     run_test "bundle_parse_filename invalid" test_bundle_parse_filename_invalid
     run_test "bundle_get_host" test_bundle_get_host
@@ -447,15 +304,8 @@ main() {
     run_test "bundle_list_contents nonexistent" test_bundle_list_contents_nonexistent
     echo ""
 
-    echo "========================================"
-    echo "Results: $TESTS_PASSED/$TESTS_RUN passed"
-    if [[ $TESTS_FAILED -gt 0 ]]; then
-        echo -e "${RED}$TESTS_FAILED test(s) failed${NC}"
-        exit 1
-    else
-        echo -e "${GREEN}All tests passed!${NC}"
-        exit 0
-    fi
+    framework_report
+    exit $?
 }
 
 main "$@"

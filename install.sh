@@ -27,6 +27,12 @@ USER_BIN_DIR="${HOME}/.local/bin"
 USER_LIB_DIR="${HOME}/.local/lib/cac"
 USER_CONFIG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/cac"
 
+# Shell completion paths
+SYS_BASH_COMPLETION_DIR="/etc/bash_completion.d"
+SYS_ZSH_COMPLETION_DIR="/usr/local/share/zsh/site-functions"
+USER_BASH_COMPLETION_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/bash-completion/completions"
+USER_ZSH_COMPLETION_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/zsh/site-functions"
+
 # Determine installation mode based on privileges
 is_root() {
     [[ "${EUID:-$(id -u)}" -eq 0 ]]
@@ -51,11 +57,15 @@ set_install_paths() {
         BIN_DIR="$SYS_BIN_DIR"
         LIB_DIR="$SYS_LIB_DIR"
         CONFIG_DIR="$SYS_CONFIG_DIR"
+        BASH_COMPLETION_DIR="$SYS_BASH_COMPLETION_DIR"
+        ZSH_COMPLETION_DIR="$SYS_ZSH_COMPLETION_DIR"
         INSTALL_MODE="system-wide"
     else
         BIN_DIR="$USER_BIN_DIR"
         LIB_DIR="$USER_LIB_DIR"
         CONFIG_DIR="$USER_CONFIG_DIR"
+        BASH_COMPLETION_DIR="$USER_BASH_COMPLETION_DIR"
+        ZSH_COMPLETION_DIR="$USER_ZSH_COMPLETION_DIR"
         INSTALL_MODE="user-local"
     fi
 }
@@ -108,20 +118,38 @@ download_project() {
     info "Downloading cac v${version}..."
 
     # Create directory structure
-    mkdir -p "${temp_dir}/bin" "${temp_dir}/lib"
+    if ! mkdir -p "${temp_dir}/bin" "${temp_dir}/lib" "${temp_dir}/completions"; then
+        die "Failed to create temporary directories"
+    fi
 
     # Download main CLI
     download_file "${base_url}/bin/cac" "${temp_dir}/bin/cac"
     chmod +x "${temp_dir}/bin/cac"
 
     # Download library modules
-    local libs=(config.sh security.sh tools.sh bundle.sh backend_local.sh backend_gokapi.sh)
+    local libs=(config.sh security.sh tools.sh bundle.sh backend_local.sh backend_gokapi.sh utils.sh logging.sh)
     for lib in "${libs[@]}"; do
         download_file "${base_url}/lib/${lib}" "${temp_dir}/lib/${lib}"
     done
 
+    # Verify all library files were downloaded
+    local missing_libs=()
+    for lib in "${libs[@]}"; do
+        if [[ ! -f "${temp_dir}/lib/${lib}" ]]; then
+            missing_libs+=("$lib")
+        fi
+    done
+    if [[ ${#missing_libs[@]} -gt 0 ]]; then
+        die "Failed to download required libraries: ${missing_libs[*]}"
+    fi
+
     # Download example config
     download_file "${base_url}/.env.example" "${temp_dir}/.env.example"
+
+    # Download shell completion files (optional, don't fail if missing)
+    if curl -fsSL -o "${temp_dir}/completions/cac.bash" "${base_url}/completions/cac.bash" 2>/dev/null; then
+        curl -fsSL -o "${temp_dir}/completions/_cac" "${base_url}/completions/_cac" 2>/dev/null || true
+    fi
 
     success "Downloaded all files"
 }
@@ -149,14 +177,49 @@ verify_checksums() {
     fi
 }
 
+# Install shell completion files
+install_completions() {
+    local temp_dir="$1"
+    local bash_comp="${temp_dir}/completions/cac.bash"
+    local zsh_comp="${temp_dir}/completions/_cac"
+
+    # Skip if completion files weren't downloaded
+    if [[ ! -f "$bash_comp" ]]; then
+        info "Shell completions not available (optional)"
+        return 0
+    fi
+
+    # Install bash completion
+    if [[ -d "$BASH_COMPLETION_DIR" ]] || mkdir -p "$BASH_COMPLETION_DIR" 2>/dev/null; then
+        cp "$bash_comp" "${BASH_COMPLETION_DIR}/cac"
+        chmod 644 "${BASH_COMPLETION_DIR}/cac"
+        success "Installed bash completion to ${BASH_COMPLETION_DIR}/cac"
+    else
+        info "Skipping bash completion (directory not writable)"
+    fi
+
+    # Install zsh completion
+    if [[ -f "$zsh_comp" ]]; then
+        if [[ -d "$ZSH_COMPLETION_DIR" ]] || mkdir -p "$ZSH_COMPLETION_DIR" 2>/dev/null; then
+            cp "$zsh_comp" "${ZSH_COMPLETION_DIR}/_cac"
+            chmod 644 "${ZSH_COMPLETION_DIR}/_cac"
+            success "Installed zsh completion to ${ZSH_COMPLETION_DIR}/_cac"
+        else
+            info "Skipping zsh completion (directory not writable)"
+        fi
+    fi
+}
+
 # Install files to final locations
 install_files() {
     local temp_dir="$1"
 
     info "Installing to ${BIN_DIR} (${INSTALL_MODE})..."
 
-    # Create directories
-    mkdir -p "$BIN_DIR" "$LIB_DIR" "$CONFIG_DIR"
+    # Create directories with error checking
+    if ! mkdir -p "$BIN_DIR" "$LIB_DIR" "$CONFIG_DIR"; then
+        die "Failed to create installation directories"
+    fi
 
     # Set permissions for config directory
     chmod 700 "$CONFIG_DIR"
@@ -178,6 +241,9 @@ install_files() {
 
     success "Installed cac to ${BIN_DIR}/cac"
     success "Installed libraries to ${LIB_DIR}/"
+
+    # Install shell completions (optional)
+    install_completions "$temp_dir"
 }
 
 # Setup or prompt for configuration
@@ -255,9 +321,12 @@ setup_config() {
 
             # Create local storage directory if it doesn't exist
             if [[ ! -d "$local_storage" ]]; then
-                mkdir -p "$local_storage"
-                chmod 700 "$local_storage"
-                success "Created storage directory: ${local_storage}"
+                if mkdir -p "$local_storage" && chmod 700 "$local_storage"; then
+                    success "Created storage directory: ${local_storage}"
+                else
+                    warn "Could not create storage directory: ${local_storage}"
+                    warn "Please create it manually and ensure it has 700 permissions"
+                fi
             fi
         fi
     } > "$env_file"
@@ -303,6 +372,18 @@ do_uninstall() {
     if [[ -d "$LIB_DIR" ]]; then
         rm -rf "$LIB_DIR"
         success "Removed ${LIB_DIR}"
+        ((removed++))
+    fi
+
+    # Remove shell completions
+    if [[ -f "${BASH_COMPLETION_DIR}/cac" ]]; then
+        rm -f "${BASH_COMPLETION_DIR}/cac"
+        success "Removed bash completion"
+        ((removed++))
+    fi
+    if [[ -f "${ZSH_COMPLETION_DIR}/_cac" ]]; then
+        rm -f "${ZSH_COMPLETION_DIR}/_cac"
+        success "Removed zsh completion"
         ((removed++))
     fi
 

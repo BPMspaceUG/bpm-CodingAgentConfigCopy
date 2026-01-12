@@ -1,11 +1,70 @@
 #!/usr/bin/env bash
 # lib/security.sh - Security validations, permission checks, zip-slip protection
 
-# Maximum allowed ZIP file size (100MB)
+# Source dependencies
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/logging.sh
+source "${SCRIPT_DIR}/logging.sh"
+
+# Maximum allowed ZIP file size (100MB = 100 * 1024 * 1024 = 104857600 bytes)
 SECURITY_MAX_ZIP_SIZE=${SECURITY_MAX_ZIP_SIZE:-104857600}
 
 # Maximum number of files allowed in a ZIP
 SECURITY_MAX_ZIP_FILES=${SECURITY_MAX_ZIP_FILES:-100}
+
+# ============================================================================
+# Permission Constants
+# ============================================================================
+# Standard permission modes for security-sensitive operations.
+# Use these instead of raw numeric values for clarity and consistency.
+# Exported for use by scripts that source this module.
+# Guard with -v check to allow sourcing from multiple files.
+
+if [[ ! -v PERM_SECURE_FILE ]]; then
+    # Secure file permissions (rw-------): owner read/write only
+    readonly PERM_SECURE_FILE="600"
+    export PERM_SECURE_FILE
+
+    # Secure directory permissions (rwx------): owner full access only
+    readonly PERM_SECURE_DIR="700"
+    export PERM_SECURE_DIR
+
+    # Executable file permissions (rwxr-xr-x): world executable
+    readonly PERM_EXECUTABLE="755"
+    export PERM_EXECUTABLE
+
+    # Readable file permissions (rw-r--r--): world readable
+    readonly PERM_READABLE="644"
+    export PERM_READABLE
+fi
+
+# ============================================================================
+# Cross-Platform Stat Utilities
+# ============================================================================
+
+# Get file permissions in octal format (cross-platform)
+# Usage: security_get_file_perms <path>
+# Returns: Permissions in octal (e.g., "600", "755")
+# Works on both Linux (stat -c) and macOS (stat -f)
+security_get_file_perms() {
+    local path="$1"
+
+    stat -c "%a" "$path" 2>/dev/null || stat -f "%Lp" "$path" 2>/dev/null
+}
+
+# Get file size in bytes (cross-platform)
+# Usage: security_get_file_size <path>
+# Returns: File size in bytes
+# Works on both Linux (stat -c) and macOS (stat -f)
+security_get_file_size() {
+    local path="$1"
+
+    stat -c "%s" "$path" 2>/dev/null || stat -f "%z" "$path" 2>/dev/null
+}
+
+# ============================================================================
+# User Access Checks
+# ============================================================================
 
 # Check if current user can operate on target user's files
 # Returns 0 if allowed, 1 if not
@@ -21,7 +80,7 @@ security_check_user_access() {
 
     # Different user - requires root
     if [[ "$EUID" -ne 0 ]]; then
-        echo "ERROR: Root privileges required to operate on user '$target_user'" >&2
+        utils_error "Root privileges required to operate on user '$target_user'"
         return 1
     fi
 
@@ -36,12 +95,12 @@ security_resolve_user_home() {
     home_dir=$(getent passwd "$username" 2>/dev/null | cut -d: -f6)
 
     if [[ -z "$home_dir" ]]; then
-        echo "ERROR: User '$username' does not exist" >&2
+        utils_error "User '$username' does not exist"
         return 1
     fi
 
     if [[ ! -d "$home_dir" ]]; then
-        echo "ERROR: Home directory for user '$username' does not exist: $home_dir" >&2
+        utils_error "Home directory for user '$username' does not exist: $home_dir"
         return 1
     fi
 
@@ -61,7 +120,7 @@ security_check_file_permissions() {
     fi
 
     local perms
-    perms=$(stat -c "%a" "$file" 2>/dev/null || stat -f "%Lp" "$file" 2>/dev/null)
+    perms=$(security_get_file_perms "$file")
 
     # Convert to numeric for comparison
     local file_mode=$((8#$perms))
@@ -69,11 +128,36 @@ security_check_file_permissions() {
 
     # Check if any bits beyond max_perms are set
     if [[ $((file_mode & ~max_mode)) -ne 0 ]]; then
-        echo "ERROR: File '$file' has insecure permissions ($perms). Maximum allowed: $max_perms" >&2
+        utils_error "File '$file' has insecure permissions ($perms). Maximum allowed: $max_perms"
         return 1
     fi
 
     return 0
+}
+
+# List entries in a ZIP file (one per line)
+# Usage: security_list_zip_entries <zip_file>
+# Returns: One entry per line (files and directories)
+# Exit code: 0 on success, 1 if zip file doesn't exist or unzip fails
+#
+# This consolidates the common `unzip -Z1` pattern used for iterating over
+# ZIP contents. Output includes both files and directory entries (ending in /).
+# Callers typically filter directory entries with: [[ "$entry" == */ ]] && continue
+#
+# Example:
+#   while IFS= read -r entry; do
+#       [[ -z "$entry" ]] && continue
+#       [[ "$entry" == */ ]] && continue  # Skip directories
+#       process_file "$entry"
+#   done < <(security_list_zip_entries "$zip_file")
+security_list_zip_entries() {
+    local zip_file="$1"
+
+    if [[ ! -f "$zip_file" ]]; then
+        return 1
+    fi
+
+    unzip -Z1 "$zip_file" 2>/dev/null
 }
 
 # Validate a path within a ZIP is safe (no zip-slip)
@@ -84,13 +168,13 @@ security_validate_zip_path() {
 
     # Reject absolute paths
     if [[ "$zip_entry" == /* ]]; then
-        echo "ERROR: Absolute path in ZIP rejected: $zip_entry" >&2
+        utils_error "Absolute path in ZIP rejected: $zip_entry"
         return 1
     fi
 
     # Reject path traversal
     if [[ "$zip_entry" == *".."* ]]; then
-        echo "ERROR: Path traversal in ZIP rejected: $zip_entry" >&2
+        utils_error "Path traversal in ZIP rejected: $zip_entry"
         return 1
     fi
 
@@ -98,8 +182,9 @@ security_validate_zip_path() {
     local resolved_path
     resolved_path=$(realpath -m "${target_dir}/${zip_entry}" 2>/dev/null)
 
-    if [[ "$resolved_path" != "${target_dir}"* ]]; then
-        echo "ERROR: ZIP entry escapes target directory: $zip_entry" >&2
+    # Use trailing slash to prevent /home/user123 matching /home/user prefix
+    if [[ "$resolved_path" != "${target_dir}/"* && "$resolved_path" != "${target_dir}" ]]; then
+        utils_error "ZIP entry escapes target directory: $zip_entry"
         return 1
     fi
 
@@ -112,17 +197,21 @@ security_validate_zip() {
     local zip_file="$1"
     local target_dir="$2"
 
+    utils_verbose "Validating ZIP: $zip_file"
+
     if [[ ! -f "$zip_file" ]]; then
-        echo "ERROR: ZIP file does not exist: $zip_file" >&2
+        utils_error "ZIP file does not exist: $zip_file"
         return 1
     fi
 
     # Check file size
     local zip_size
-    zip_size=$(stat -c "%s" "$zip_file" 2>/dev/null || stat -f "%z" "$zip_file" 2>/dev/null)
+    zip_size=$(security_get_file_size "$zip_file")
+
+    utils_verbose "ZIP size: $zip_size bytes (max: $SECURITY_MAX_ZIP_SIZE)"
 
     if [[ "$zip_size" -gt "$SECURITY_MAX_ZIP_SIZE" ]]; then
-        echo "ERROR: ZIP file exceeds maximum size ($zip_size > $SECURITY_MAX_ZIP_SIZE bytes)" >&2
+        utils_error "ZIP file exceeds maximum size ($zip_size > $SECURITY_MAX_ZIP_SIZE bytes)"
         return 1
     fi
 
@@ -138,14 +227,14 @@ security_validate_zip() {
         ((entry_count++))
 
         if [[ "$entry_count" -gt "$SECURITY_MAX_ZIP_FILES" ]]; then
-            echo "ERROR: ZIP contains too many files (> $SECURITY_MAX_ZIP_FILES)" >&2
+            utils_error "ZIP contains too many files (> $SECURITY_MAX_ZIP_FILES)"
             return 1
         fi
 
         if ! security_validate_zip_path "$entry" "$target_dir"; then
             return 1
         fi
-    done < <(unzip -Z1 "$zip_file" 2>/dev/null)
+    done < <(security_list_zip_entries "$zip_file")
 
     return 0
 }
@@ -155,32 +244,100 @@ security_mktemp_dir() {
     local prefix="${1:-cac}"
     local tmpdir
 
-    tmpdir=$(mktemp -d -t "${prefix}.XXXXXXXXXX")
-    chmod 700 "$tmpdir"
+    if ! tmpdir=$(mktemp -d -t "${prefix}.XXXXXXXXXX"); then
+        return 1
+    fi
+    if ! chmod "$PERM_SECURE_DIR" "$tmpdir"; then
+        rm -rf "$tmpdir" 2>/dev/null
+        return 1
+    fi
 
     echo "$tmpdir"
 }
 
-# Set secure permissions on a file (600) and correct ownership
+# Set secure permissions and ownership on a path
+# Usage: security_secure_path <path> <owner> <mode>
+# Example: security_secure_path "$file" "root" "600"
+#          security_secure_path "$dir" "alice" "700"
+#
+# This is the core function for setting secure permissions.
+# The mode parameter must be specified (common values: 600 for files, 700 for dirs).
+# Ownership is only changed when running as root and owner is non-empty.
+# Returns: 0 on success, 1 if chmod or chown fails
+security_secure_path() {
+    local path="$1"
+    local owner="$2"
+    local mode="$3"
+
+    if ! chmod "$mode" "$path"; then
+        return 1
+    fi
+
+    if [[ -n "$owner" && "$EUID" -eq 0 ]]; then
+        if ! chown "$owner:$owner" "$path"; then
+            return 1
+        fi
+    fi
+}
+
+# Set secure permissions on a file and correct ownership
+# Usage: security_secure_file <file> <owner>
 security_secure_file() {
     local file="$1"
     local owner="$2"
 
-    chmod 600 "$file"
-
-    if [[ -n "$owner" && "$EUID" -eq 0 ]]; then
-        chown "$owner:$owner" "$file"
-    fi
+    security_secure_path "$file" "$owner" "$PERM_SECURE_FILE"
 }
 
-# Set secure permissions on a directory (700) and correct ownership
+# Set secure permissions on a directory and correct ownership
+# Usage: security_secure_dir <dir> <owner>
 security_secure_dir() {
     local dir="$1"
     local owner="$2"
 
-    chmod 700 "$dir"
+    security_secure_path "$dir" "$owner" "$PERM_SECURE_DIR"
+}
 
-    if [[ -n "$owner" && "$EUID" -eq 0 ]]; then
-        chown "$owner:$owner" "$dir"
-    fi
+# ============================================================================
+# Cleanup Trap Utilities
+# ============================================================================
+
+# Set up a RETURN trap to clean up a temp directory variable
+# Usage: security_setup_cleanup_trap <var_name>
+# Example: security_setup_cleanup_trap temp_dir
+#
+# This centralizes the common pattern:
+#   trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
+#
+# The variable name must be provided (not the value) so the trap can
+# evaluate it at cleanup time, not at setup time.
+#
+# Note: Uses RETURN signal, suitable for function-scoped cleanup.
+# For script-level cleanup, use EXIT directly.
+security_setup_cleanup_trap() {
+    local var_name="$1"
+
+    # shellcheck disable=SC2064  # Intentional: var_name captured at setup, value evaluated at cleanup
+    trap "[[ -n \"\${${var_name}:-}\" ]] && rm -rf \"\$${var_name}\"" RETURN
+}
+
+# Create a secure temp directory and set up RETURN cleanup trap
+# Usage: security_init_temp_dir <var_name> <prefix>
+# Example: security_init_temp_dir temp_dir "cac-push"
+#
+# This consolidates the common 3-line pattern:
+#   local temp_dir
+#   temp_dir=$(security_mktemp_dir "prefix")
+#   security_setup_cleanup_trap temp_dir
+#
+# After calling, the variable named by var_name contains the temp directory path.
+# The trap is set to clean up the directory on function RETURN.
+#
+# Note: Uses nameref to set the caller's variable.
+security_init_temp_dir() {
+    local -n _temp_dir_ref="$1"
+    local prefix="$2"
+
+    _temp_dir_ref=$(security_mktemp_dir "$prefix")
+    security_setup_cleanup_trap "$1"
 }

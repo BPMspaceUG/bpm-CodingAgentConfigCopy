@@ -12,20 +12,51 @@ source "${SCRIPT_DIR}/utils.sh"
 CAC_GOKAPI_EXPIRY_DAYS="${CAC_GOKAPI_EXPIRY_DAYS:-0}"
 CAC_GOKAPI_ALLOWED_DOWNLOADS="${CAC_GOKAPI_ALLOWED_DOWNLOADS:-0}"
 
+# Network retry settings (can be overridden via env)
+# - MAX_RETRIES: Number of retry attempts after initial failure (3 = up to 4 total attempts)
+# - RETRY_DELAY: Seconds to wait between retries (2s balances responsiveness with server recovery)
+CAC_GOKAPI_MAX_RETRIES="${CAC_GOKAPI_MAX_RETRIES:-3}"
+CAC_GOKAPI_RETRY_DELAY="${CAC_GOKAPI_RETRY_DELAY:-2}"
+
+# Internal: Attempt a single API request and store result in GOKAPI_RESPONSE
+# Usage: _gokapi_try_request <method> <endpoint> [curl_options...]
+# Sets: GOKAPI_RESPONSE on success
+# Returns: 0 if request succeeded with non-empty response, 1 otherwise
+_gokapi_try_request() {
+    local method="$1"
+    local endpoint="$2"
+    shift 2
+
+    local response
+    response=$(_gokapi_request "$method" "$endpoint" "$@")
+
+    if [[ $? -eq 0 && -n "$response" ]]; then
+        # shellcheck disable=SC2034  # GOKAPI_RESPONSE is used by callers
+        GOKAPI_RESPONSE="$response"
+        return 0
+    fi
+    return 1
+}
+
+# Internal: Attempt a single file download
+# Usage: _gokapi_try_download <url> <output_file>
+# Returns: 0 if download succeeded and file is non-empty, 1 otherwise
+_gokapi_try_download() {
+    local url="$1"
+    local output_file="$2"
+
+    if curl -s -o "$output_file" "$url" && [[ -s "$output_file" ]]; then
+        return 0
+    fi
+    return 1
+}
+
 # Internal: Validate Gokapi configuration
 # Usage: _gokapi_validate_config
 # Returns: 0 if valid, 1 if not (with error message)
 _gokapi_validate_config() {
-    if [[ -z "${CAC_GOKAPI_URL:-}" ]]; then
-        utils_error "CAC_GOKAPI_URL not configured"
-        return 1
-    fi
-
-    if [[ -z "${CAC_GOKAPI_API_KEY:-}" ]]; then
-        utils_error "CAC_GOKAPI_API_KEY not configured"
-        return 1
-    fi
-
+    utils_require_var CAC_GOKAPI_URL || return 1
+    utils_require_var CAC_GOKAPI_API_KEY || return 1
     return 0
 }
 
@@ -45,6 +76,73 @@ _gokapi_request() {
         "$url"
 }
 
+# Internal: Execute a Gokapi operation with retry logic and exponential backoff
+# Usage: _gokapi_op_with_retry <operation_type> <function> [args...]
+# operation_type: "request" for API requests (sets GOKAPI_RESPONSE), "download" for file downloads
+# Returns: 0 on success, 1 on failure after all retries exhausted
+#
+# Uses exponential backoff: RETRY_DELAY * 2^attempt (2s, 4s, 8s by default)
+_gokapi_op_with_retry() {
+    local op_type="$1"
+    local func="$2"
+    shift 2
+
+    local op_name error_msg
+    case "$op_type" in
+        request)
+            op_name="Network request"
+            error_msg="Failed to connect to Gokapi server after ${CAC_GOKAPI_MAX_RETRIES} attempts"
+            ;;
+        download)
+            op_name="Download"
+            error_msg="Failed to download bundle after ${CAC_GOKAPI_MAX_RETRIES} attempts"
+            ;;
+        *)
+            utils_error "Unknown operation type: $op_type"
+            return 1
+            ;;
+    esac
+
+    if utils_retry "${CAC_GOKAPI_MAX_RETRIES}" "${CAC_GOKAPI_RETRY_DELAY}" \
+        "$op_name" "$func" "$@"; then
+        return 0
+    fi
+    utils_error "$error_msg"
+    return 1
+}
+
+# Internal: Validate API response is not empty/null
+# Usage: _gokapi_validate_response <response> <operation>
+# Returns: 0 if valid, 1 if empty/null (with error message)
+_gokapi_validate_response() {
+    local response="$1"
+    local operation="$2"
+
+    if [[ -z "$response" || "$response" == "null" ]]; then
+        utils_error "Failed to $operation from Gokapi"
+        return 1
+    fi
+    return 0
+}
+
+# Internal: Fetch file list from Gokapi with retry and validation
+# Usage: _gokapi_fetch_file_list
+# Sets: GOKAPI_FILE_LIST on success (via GOKAPI_RESPONSE)
+# Returns: 0 on success, 1 on failure
+_gokapi_fetch_file_list() {
+    if ! _gokapi_op_with_retry request _gokapi_try_request GET "/api/files/list"; then
+        return 1
+    fi
+
+    if ! _gokapi_validate_response "$GOKAPI_RESPONSE" "retrieve file list"; then
+        return 1
+    fi
+
+    # shellcheck disable=SC2034  # GOKAPI_FILE_LIST is used by callers
+    GOKAPI_FILE_LIST="$GOKAPI_RESPONSE"
+    return 0
+}
+
 # Upload a bundle to Gokapi
 # Usage: backend_gokapi_upload <bundle_file>
 backend_gokapi_upload() {
@@ -62,29 +160,26 @@ backend_gokapi_upload() {
     local filename
     filename=$(basename "$bundle_file")
 
-    local response
-    response=$(_gokapi_request POST "/api/files/add" \
+    # Use retry logic for upload
+    if ! _gokapi_op_with_retry request _gokapi_try_request POST "/api/files/add" \
         -H "Content-Type: multipart/form-data" \
         -F "allowedDownloads=${CAC_GOKAPI_ALLOWED_DOWNLOADS}" \
         -F "expiryDays=${CAC_GOKAPI_EXPIRY_DAYS}" \
         -F "password=" \
-        -F "file=@${bundle_file}")
-
-    local exit_code=$?
-    if [[ $exit_code -ne 0 ]]; then
-        utils_error "Failed to connect to Gokapi server"
+        -F "file=@${bundle_file}"; then
         return 1
     fi
 
+    local response="$GOKAPI_RESPONSE"
+
     # Check for error in response
-    if utils_json_is_error "$response"; then
-        utils_error "Gokapi upload failed: $(utils_json_get_error "$response")"
+    if ! utils_json_check_error "$response" "upload"; then
         return 1
     fi
 
     # Extract file ID from response
     local file_id
-    file_id=$(utils_json_extract_field "$response" "Id")
+    file_id=$(utils_json_extract_field "$response" "$GOKAPI_FIELD_ID")
 
     if [[ -z "$file_id" ]]; then
         utils_error "Failed to parse upload response"
@@ -108,39 +203,36 @@ backend_gokapi_download() {
     fi
 
     # Get file list to find the download URL
-    local response
-    response=$(_gokapi_request GET "/api/files/list")
-
-    if [[ -z "$response" ]] || [[ "$response" == "null" ]]; then
-        utils_error "Failed to retrieve file list from Gokapi"
+    if ! _gokapi_fetch_file_list; then
         return 1
     fi
 
     # Find matching file using shared utility
-    local result download_url found_name
-    local find_status
-    result=$(utils_gokapi_find_file "$response" "$bundle_id")
+    local result download_url found_name find_status
+    result=$(utils_gokapi_find_file "$GOKAPI_FILE_LIST" "$bundle_id")
     find_status=$?
 
-    if [[ $find_status -eq 1 ]]; then
-        utils_error "No bundle found matching: $bundle_id"
-        return 1
-    elif [[ $find_status -eq 2 ]]; then
-        # Error message already printed by utility
+    # Handle find errors (code 2 error already printed by utils_gokapi_find_file)
+    if ! utils_handle_find_result "$find_status" "$bundle_id"; then
         return 1
     fi
 
     # Parse result "url|name"
     IFS='|' read -r download_url found_name <<< "$result"
 
+    # Validate parsed fields
+    if [[ -z "$download_url" || -z "$found_name" ]]; then
+        utils_error "Failed to parse file information for: $bundle_id"
+        return 1
+    fi
+
     # Construct full download URL if it's relative
     if [[ ! "$download_url" =~ ^https?:// ]]; then
         download_url="${CAC_GOKAPI_URL}${download_url}"
     fi
 
-    # Download the file
-    if ! curl -s -o "$output_file" "$download_url"; then
-        utils_error "Failed to download bundle"
+    # Download the file with retry logic
+    if ! _gokapi_op_with_retry download _gokapi_try_download "$download_url" "$output_file"; then
         return 1
     fi
 
@@ -165,10 +257,12 @@ backend_gokapi_list() {
         return 1
     fi
 
-    local response
-    response=$(_gokapi_request GET "/api/files/list")
+    # Fetch file list (empty response is OK for list operation)
+    if ! _gokapi_op_with_retry request _gokapi_try_request GET "/api/files/list"; then
+        return 1
+    fi
 
-    if [[ -z "$response" ]] || [[ "$response" == "null" ]]; then
+    if [[ -z "$GOKAPI_RESPONSE" || "$GOKAPI_RESPONSE" == "null" ]]; then
         echo "No bundles found"
         return 0
     fi
@@ -185,7 +279,7 @@ backend_gokapi_list() {
             entries+=("${metadata}|${id}")
             ((found++))
         fi
-    done < <(utils_gokapi_extract_names "$response")
+    done < <(utils_gokapi_extract_names "$GOKAPI_RESPONSE")
 
     if [[ "$found" -eq 0 ]]; then
         echo "No bundles found"
@@ -193,17 +287,15 @@ backend_gokapi_list() {
     fi
 
     # Sort by timestamp (newest first) and print
-    printf "%-40s %-15s %-15s %s\n" "BUNDLE" "HOST" "USER" "TIMESTAMP"
-    printf "%s\n" "--------------------------------------------------------------------------------"
+    utils_print_bundle_list_header
 
     # Sort entries by timestamp (field 4)
     # shellcheck disable=SC2034  # id is intentionally unused
     printf '%s\n' "${entries[@]}" | sort -t'|' -k4 -r | while IFS='|' read -r name host user timestamp id; do
-        printf "%-40s %-15s %-15s %s\n" "$name" "$host" "$user" "$timestamp"
+        utils_print_bundle_list_entry "$name" "$host" "$user" "$timestamp"
     done
 
-    echo ""
-    echo "Total: $found bundle(s)"
+    utils_print_bundle_list_footer "$found"
     return 0
 }
 
@@ -220,36 +312,21 @@ backend_gokapi_get_newest() {
         return 1
     fi
 
-    local response
-    response=$(_gokapi_request GET "/api/files/list")
-
-    if [[ -z "$response" ]] || [[ "$response" == "null" ]]; then
+    # Fetch file list
+    if ! _gokapi_fetch_file_list; then
         return 1
     fi
 
-    local newest_name=""
-    local newest_timestamp=""
-
-    # Parse and filter results using shared utilities
+    # Collect filtered metadata entries and find newest
+    local newest_name
     # shellcheck disable=SC2034  # id is intentionally unused
-    while IFS='|' read -r name id; do
-        [[ -z "$name" ]] && continue
-
-        local metadata
-        if metadata=$(utils_parse_bundle_metadata "$name" "$filter_host" "$filter_user"); then
-            # metadata format: "name|host|user|timestamp"
-            local timestamp
-            timestamp=$(echo "$metadata" | cut -d'|' -f4)
-
-            # Compare timestamps (YYMMDD-HHMMSS format sorts correctly)
-            if [[ -z "$newest_timestamp" || "$timestamp" > "$newest_timestamp" ]]; then
-                newest_timestamp="$timestamp"
-                newest_name="$name"
-            fi
-        fi
-    done < <(utils_gokapi_extract_names "$response")
-
-    if [[ -z "$newest_name" ]]; then
+    if ! newest_name=$(
+        while IFS='|' read -r name id; do
+            [[ -z "$name" ]] && continue
+            utils_parse_bundle_metadata "$name" "$filter_host" "$filter_user"
+        done < <(utils_gokapi_extract_names "$GOKAPI_FILE_LIST") | utils_find_newest_bundle
+    ); then
+        utils_error_no_bundle_found "$filter_host" "$filter_user" "on server"
         return 1
     fi
 
@@ -270,11 +347,14 @@ backend_gokapi_delete() {
     local file_id="$bundle_id"
     local found_name=""
 
-    if [[ "$bundle_id" == CodingAgentConfig_* ]]; then
-        local response
-        response=$(_gokapi_request GET "/api/files/list")
+    # BUNDLE_NAME_PREFIX is defined in bundle.sh
+    if [[ "$bundle_id" == ${BUNDLE_NAME_PREFIX}_* ]]; then
+        # Fetch file list with retry logic
+        if ! _gokapi_op_with_retry request _gokapi_try_request GET "/api/files/list"; then
+            return 1
+        fi
 
-        file_id=$(utils_gokapi_find_id "$response" "$bundle_id")
+        file_id=$(utils_gokapi_find_id "$GOKAPI_RESPONSE" "$bundle_id")
         found_name="$bundle_id"
 
         if [[ -z "$file_id" ]]; then
@@ -283,16 +363,15 @@ backend_gokapi_delete() {
         fi
     fi
 
-    # Delete by ID
-    local response
-    response=$(curl -s -X DELETE "${CAC_GOKAPI_URL}/api/files/delete" \
+    # Delete by ID with retry logic
+    if ! _gokapi_op_with_retry request _gokapi_try_request DELETE "/api/files/delete" \
         -H "accept: */*" \
-        -H "id: ${file_id}" \
-        -H "apikey: ${CAC_GOKAPI_API_KEY}")
+        -H "id: ${file_id}"; then
+        return 1
+    fi
 
     # Check for success (Gokapi returns empty response on success)
-    if utils_json_is_error "$response"; then
-        utils_error "Gokapi delete failed: $(utils_json_get_error "$response")"
+    if ! utils_json_check_error "$GOKAPI_RESPONSE" "delete"; then
         return 1
     fi
 

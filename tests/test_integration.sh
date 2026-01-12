@@ -11,53 +11,27 @@
 set -euo pipefail
 
 # ============================================================================
-# Test Framework Setup
+# Setup
 # ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# Source shared test framework
+source "${SCRIPT_DIR}/test_framework.sh"
+
 # Check for required dependencies
-check_dependencies() {
-    local missing=()
+framework_require_commands zip unzip
 
-    if ! command -v zip &>/dev/null; then
-        missing+=("zip")
-    fi
-    if ! command -v unzip &>/dev/null; then
-        missing+=("unzip")
-    fi
-
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        echo "ERROR: Missing required dependencies: ${missing[*]}" >&2
-        echo "Install with: sudo apt-get install ${missing[*]}" >&2
-        exit 1
-    fi
-}
-
-check_dependencies
-
-# Test counters
-TESTS_RUN=0
-TESTS_PASSED=0
-TESTS_FAILED=0
-
-# Test output colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-# shellcheck disable=SC2034  # reserved for skip() output
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-# Temporary test directory
-TEST_TMPDIR=""
+# Additional test directory paths (set by setup_integration_env)
 TEST_HOME=""
 TEST_STORAGE=""
 TEST_CONFIG_DIR=""
 
-setup_test_env() {
-    TEST_TMPDIR=$(mktemp -d -t cac-integration.XXXXXXXXXX)
-    chmod 700 "$TEST_TMPDIR"
+# Override the default framework setup with integration-specific setup
+setup_integration_env() {
+    # Call the base framework init to create TEST_TMPDIR
+    framework_init
 
     # Create fake home directory with config files
     TEST_HOME="${TEST_TMPDIR}/home"
@@ -87,85 +61,28 @@ EOF
     chmod 600 "${TEST_CONFIG_DIR}/.env"
 }
 
-cleanup_test_env() {
-    if [[ -n "$TEST_TMPDIR" && -d "$TEST_TMPDIR" ]]; then
-        rm -rf "$TEST_TMPDIR"
-    fi
-}
-
-trap cleanup_test_env EXIT
-
-# Test result helpers
-pass() {
-    local test_name="$1"
-    TESTS_PASSED=$((TESTS_PASSED + 1))
-    echo -e "${GREEN}✓ PASS${NC}: $test_name"
-}
-
-fail() {
-    local test_name="$1"
-    local message="${2:-}"
-    TESTS_FAILED=$((TESTS_FAILED + 1))
-    echo -e "${RED}✗ FAIL${NC}: $test_name"
-    if [[ -n "$message" ]]; then
-        echo "         $message"
-    fi
-}
-
-run_test() {
-    local test_name="$1"
-    local test_func="$2"
-    TESTS_RUN=$((TESTS_RUN + 1))
-
-    # Run test in subshell to catch failures without exiting main script
-    if (set +e; $test_func); then
-        pass "$test_name"
-    else
-        fail "$test_name"
-    fi
-}
-
 # ============================================================================
 # Config Loading Tests
 # ============================================================================
 
 test_config_load_from_env() {
-    # Source the config module
     source "${PROJECT_ROOT}/lib/config.sh"
-
-    # Set config dir environment variable
     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
 
-    if config_load 2>/dev/null; then
-        if [[ "$CAC_BACKEND" == "local" && "$CAC_LOCAL_STORAGE" == "$TEST_STORAGE" ]]; then
-            unset CAC_CONFIG_DIR
-            return 0
-        else
-            echo "Config values not loaded correctly" >&2
-            unset CAC_CONFIG_DIR
-            return 1
-        fi
-    else
-        echo "config_load failed" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    assert_success "config_load" config_load || { unset CAC_CONFIG_DIR; return 1; }
+    assert_equals "local" "$CAC_BACKEND" "CAC_BACKEND" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_equals "$TEST_STORAGE" "$CAC_LOCAL_STORAGE" "CAC_LOCAL_STORAGE" || { unset CAC_CONFIG_DIR; return 1; }
+
+    unset CAC_CONFIG_DIR
 }
 
 test_config_validate_local_backend() {
     source "${PROJECT_ROOT}/lib/config.sh"
-
     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
     config_load 2>/dev/null
 
-    if config_validate 2>/dev/null; then
-        unset CAC_CONFIG_DIR
-        return 0
-    else
-        echo "config_validate failed" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    assert_success "config_validate" config_validate || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
 }
 
 test_config_insecure_permissions_rejected() {
@@ -177,15 +94,8 @@ test_config_insecure_permissions_rejected() {
     chmod 644 "${insecure_config}/.env"  # World-readable
 
     export CAC_CONFIG_DIR="$insecure_config"
-
-    if config_load 2>/dev/null; then
-        echo "Expected failure for insecure .env" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
-
+    assert_fails "insecure .env should be rejected" config_load || { unset CAC_CONFIG_DIR; return 1; }
     unset CAC_CONFIG_DIR
-    return 0
 }
 
 # ============================================================================
@@ -198,12 +108,8 @@ test_tools_get_files_claude() {
     local files
     files=$(tools_get_files "claude")
 
-    if [[ "$files" == *".claude.json"* && "$files" == *".claude/.credentials.json"* ]]; then
-        return 0
-    else
-        echo "Missing expected claude files" >&2
-        return 1
-    fi
+    assert_contains ".claude.json" "$files" "claude files" &&
+    assert_contains ".claude/.credentials.json" "$files" "claude files"
 }
 
 test_tools_get_files_all() {
@@ -212,40 +118,18 @@ test_tools_get_files_all() {
     local files
     files=$(tools_get_files "all")
 
-    if [[ "$files" == *".claude.json"* && \
-          "$files" == *".codex/auth.json"* && \
-          "$files" == *".gemini/oauth_creds.json"* ]]; then
-        return 0
-    else
-        echo "Missing expected files" >&2
-        return 1
-    fi
+    assert_contains ".claude.json" "$files" "all files" &&
+    assert_contains ".codex/auth.json" "$files" "all files" &&
+    assert_contains ".gemini/oauth_creds.json" "$files" "all files"
 }
 
 test_tools_is_valid() {
     source "${PROJECT_ROOT}/lib/tools.sh"
 
-    if ! tools_is_valid "claude"; then
-        echo "claude should be valid" >&2
-        return 1
-    fi
-
-    if ! tools_is_valid "codex"; then
-        echo "codex should be valid" >&2
-        return 1
-    fi
-
-    if ! tools_is_valid "all"; then
-        echo "all should be valid" >&2
-        return 1
-    fi
-
-    if tools_is_valid "invalid_tool"; then
-        echo "invalid_tool should not be valid" >&2
-        return 1
-    fi
-
-    return 0
+    assert_success "claude is valid" tools_is_valid "claude" &&
+    assert_success "codex is valid" tools_is_valid "codex" &&
+    assert_success "all is valid" tools_is_valid "all" &&
+    assert_fails "invalid_tool is not valid" tools_is_valid "invalid_tool"
 }
 
 test_tools_collect_existing() {
@@ -254,15 +138,9 @@ test_tools_collect_existing() {
     local files
     files=$(tools_collect_existing "$TEST_HOME" "all")
 
-    # Should find our test files
-    if [[ "$files" == *".claude.json"* && \
-          "$files" == *".codex/auth.json"* && \
-          "$files" == *".gemini/oauth_creds.json"* ]]; then
-        return 0
-    else
-        echo "Missing expected existing files" >&2
-        return 1
-    fi
+    assert_contains ".claude.json" "$files" "existing files" &&
+    assert_contains ".codex/auth.json" "$files" "existing files" &&
+    assert_contains ".gemini/oauth_creds.json" "$files" "existing files"
 }
 
 test_tools_count_existing() {
@@ -271,13 +149,107 @@ test_tools_count_existing() {
     local count
     count=$(tools_count_existing "$TEST_HOME" "all")
 
-    # We created 4 files in setup
-    if [[ "$count" -ge 4 ]]; then
-        return 0
-    else
-        echo "Expected at least 4 files, got $count" >&2
-        return 1
-    fi
+    # We created 4 files in setup - check minimum
+    [[ "$count" -ge 4 ]] || { echo "Expected at least 4 files, got $count" >&2; return 1; }
+}
+
+# ============================================================================
+# Local Backend Internal Utility Tests
+# ============================================================================
+
+test_local_find_bundle_exact_match() {
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Create a test bundle
+    local test_bundle="${TEST_STORAGE}/CodingAgentConfig_findtest_alice_250101-100000.zip"
+    echo "test" | zip -q "$test_bundle" -
+
+    # Test exact filename match
+    local result
+    result=$(_local_find_bundle_file "$TEST_STORAGE" "CodingAgentConfig_findtest_alice_250101-100000.zip")
+
+    assert_equals "$test_bundle" "$result" "exact match result" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+test_local_find_bundle_partial_match() {
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Create a test bundle
+    local test_bundle="${TEST_STORAGE}/CodingAgentConfig_partialtest_bob_250102-100000.zip"
+    echo "test" | zip -q "$test_bundle" -
+
+    # Test partial match
+    local result
+    result=$(_local_find_bundle_file "$TEST_STORAGE" "partialtest_bob")
+
+    assert_equals "$test_bundle" "$result" "partial match result" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+test_local_find_bundle_not_found() {
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Search for non-existent bundle - should return 1 (not found)
+    _local_find_bundle_file "$TEST_STORAGE" "nonexistent_xyz123" >/dev/null 2>&1
+    local ret=$?
+
+    assert_equals "1" "$ret" "not found return code" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+test_local_find_bundle_multiple_matches() {
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Create multiple matching bundles
+    echo "test1" | zip -q "${TEST_STORAGE}/CodingAgentConfig_multitest_user1_250101-100000.zip" -
+    echo "test2" | zip -q "${TEST_STORAGE}/CodingAgentConfig_multitest_user2_250101-110000.zip" -
+
+    # Search for ambiguous pattern - should return 2 (multiple matches)
+    _local_find_bundle_file "$TEST_STORAGE" "multitest" >/dev/null 2>&1
+    local ret=$?
+
+    assert_equals "2" "$ret" "multiple matches return code" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+test_local_list_bundle_files_sorted() {
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Create bundles with different modification times
+    local bundle1="${TEST_STORAGE}/CodingAgentConfig_listtest_user1_250101-090000.zip"
+    local bundle2="${TEST_STORAGE}/CodingAgentConfig_listtest_user2_250101-100000.zip"
+
+    echo "old" | zip -q "$bundle1" -
+    sleep 1
+    echo "new" | zip -q "$bundle2" -
+
+    # List should return newest first
+    local result
+    result=$(_local_list_bundle_files "$TEST_STORAGE" | head -1)
+
+    assert_equals "$bundle2" "$result" "newest bundle first" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
 }
 
 # ============================================================================
@@ -285,7 +257,6 @@ test_tools_count_existing() {
 # ============================================================================
 
 test_local_backend_push_and_list() {
-    # Source all required modules
     source "${PROJECT_ROOT}/lib/config.sh"
     source "${PROJECT_ROOT}/lib/tools.sh"
     source "${PROJECT_ROOT}/lib/security.sh"
@@ -300,31 +271,15 @@ test_local_backend_push_and_list() {
     bundle_name=$(bundle_generate_filename "testuser")
     local bundle_path="${TEST_TMPDIR}/${bundle_name}"
 
-    if ! bundle_create "$TEST_HOME" "$bundle_path" "all" >/dev/null 2>&1; then
-        echo "bundle_create failed" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    assert_success "bundle_create" bundle_create "$TEST_HOME" "$bundle_path" "all" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_success "backend_local_upload" backend_local_upload "$bundle_path" || { unset CAC_CONFIG_DIR; return 1; }
 
-    # Upload to local storage
-    if ! backend_local_upload "$bundle_path" >/dev/null 2>&1; then
-        echo "backend_local_upload failed" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
-
-    # List bundles
+    # List bundles and verify output
     local list_output
     list_output=$(backend_local_list 2>&1)
 
-    if [[ "$list_output" != *"testuser"* ]]; then
-        echo "List output missing testuser: $list_output" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
-
+    assert_contains "testuser" "$list_output" "list output" || { unset CAC_CONFIG_DIR; return 1; }
     unset CAC_CONFIG_DIR
-    return 0
 }
 
 test_local_backend_download() {
@@ -348,27 +303,11 @@ test_local_backend_download() {
     # Download it
     local download_path="${TEST_TMPDIR}/downloaded.zip"
 
-    if ! backend_local_download "$bundle_name" "$download_path" >/dev/null 2>&1; then
-        echo "backend_local_download failed" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
-
-    if [[ ! -f "$download_path" ]]; then
-        echo "Downloaded file not found" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
-
-    # Verify it's a valid ZIP
-    if ! unzip -t "$download_path" >/dev/null 2>&1; then
-        echo "Downloaded file is not a valid ZIP" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    assert_success "backend_local_download" backend_local_download "$bundle_name" "$download_path" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_file_exists "$download_path" "downloaded file" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_success "unzip validation" unzip -t "$download_path" || { unset CAC_CONFIG_DIR; return 1; }
 
     unset CAC_CONFIG_DIR
-    return 0
 }
 
 test_local_backend_get_newest() {
@@ -385,7 +324,6 @@ test_local_backend_get_newest() {
     local bundle1="${TEST_TMPDIR}/bundle1.zip"
     local bundle2="${TEST_TMPDIR}/bundle2.zip"
 
-    # Create first bundle
     bundle_create "$TEST_HOME" "$bundle1" "all" >/dev/null 2>&1
     sleep 1  # Ensure different timestamp
     bundle_create "$TEST_HOME" "$bundle2" "all" >/dev/null 2>&1
@@ -398,21 +336,11 @@ test_local_backend_get_newest() {
 
     # Get newest
     local newest
-    if ! newest=$(backend_local_get_newest --host "$host" --user "newestuser"); then
-        echo "backend_local_get_newest failed" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    newest=$(backend_local_get_newest --host "$host" --user "newestuser") || { echo "backend_local_get_newest failed" >&2; unset CAC_CONFIG_DIR; return 1; }
 
     # Should be the one with later timestamp
-    if [[ "$newest" == *"120000"* ]]; then
-        unset CAC_CONFIG_DIR
-        return 0
-    else
-        echo "Expected newest bundle with 120000, got: $newest" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    assert_contains "120000" "$newest" "newest bundle timestamp" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
 }
 
 test_local_backend_filter_by_host() {
@@ -436,14 +364,10 @@ test_local_backend_filter_by_host() {
     local list_output
     list_output=$(backend_local_list --host "host-a" 2>&1)
 
-    if [[ "$list_output" == *"host-a"* && "$list_output" != *"host-b"* ]]; then
-        unset CAC_CONFIG_DIR
-        return 0
-    else
-        echo "Host filter not working correctly" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    assert_contains "host-a" "$list_output" "filtered list" || { unset CAC_CONFIG_DIR; return 1; }
+    # Ensure host-b is NOT in output
+    [[ "$list_output" != *"host-b"* ]] || { echo "Host filter should exclude host-b" >&2; unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
 }
 
 test_local_backend_filter_by_user() {
@@ -467,14 +391,10 @@ test_local_backend_filter_by_user() {
     local list_output
     list_output=$(backend_local_list --user "charlie" 2>&1)
 
-    if [[ "$list_output" == *"charlie"* && "$list_output" != *"david"* ]]; then
-        unset CAC_CONFIG_DIR
-        return 0
-    else
-        echo "User filter not working correctly" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    assert_contains "charlie" "$list_output" "filtered list" || { unset CAC_CONFIG_DIR; return 1; }
+    # Ensure david is NOT in output
+    [[ "$list_output" != *"david"* ]] || { echo "User filter should exclude david" >&2; unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
 }
 
 # ============================================================================
@@ -517,16 +437,10 @@ test_full_push_pull_workflow() {
     bundle_extract "$download_path" "$target_home" "$(whoami)" >/dev/null 2>&1
 
     # Verify files were restored
-    if [[ -f "${target_home}/.claude.json" && \
-          -f "${target_home}/.codex/auth.json" && \
-          -f "${target_home}/.gemini/oauth_creds.json" ]]; then
-        unset CAC_CONFIG_DIR
-        return 0
-    else
-        echo "Restored files missing" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    assert_file_exists "${target_home}/.claude.json" "restored claude.json" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_file_exists "${target_home}/.codex/auth.json" "restored codex auth" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_file_exists "${target_home}/.gemini/oauth_creds.json" "restored gemini oauth" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
 }
 
 test_extract_preserves_content() {
@@ -550,20 +464,12 @@ test_extract_preserves_content() {
     bundle_extract "$bundle_path" "$target_home" "$(whoami)" >/dev/null 2>&1
 
     # Verify content matches
-    local original_content
-    local extracted_content
-
+    local original_content extracted_content
     original_content=$(cat "${TEST_HOME}/.claude.json")
     extracted_content=$(cat "${target_home}/.claude.json")
 
-    if [[ "$original_content" == "$extracted_content" ]]; then
-        unset CAC_CONFIG_DIR
-        return 0
-    else
-        echo "Content mismatch after extraction" >&2
-        unset CAC_CONFIG_DIR
-        return 1
-    fi
+    assert_equals "$original_content" "$extracted_content" "file content" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
 }
 
 # ============================================================================
@@ -576,7 +482,7 @@ main() {
     echo "========================================"
     echo ""
 
-    setup_test_env
+    setup_integration_env
 
     echo "--- Configuration ---"
     run_test "config load from env" test_config_load_from_env
@@ -592,7 +498,15 @@ main() {
     run_test "tools_count_existing" test_tools_count_existing
     echo ""
 
-    echo "--- Local Backend ---"
+    echo "--- Local Backend Utilities ---"
+    run_test "find bundle exact match" test_local_find_bundle_exact_match
+    run_test "find bundle partial match" test_local_find_bundle_partial_match
+    run_test "find bundle not found" test_local_find_bundle_not_found
+    run_test "find bundle multiple matches" test_local_find_bundle_multiple_matches
+    run_test "list bundle files sorted" test_local_list_bundle_files_sorted
+    echo ""
+
+    echo "--- Local Backend Operations ---"
     run_test "push and list" test_local_backend_push_and_list
     run_test "download" test_local_backend_download
     run_test "get newest" test_local_backend_get_newest
@@ -605,15 +519,8 @@ main() {
     run_test "extract preserves content" test_extract_preserves_content
     echo ""
 
-    echo "========================================"
-    echo "Results: $TESTS_PASSED/$TESTS_RUN passed"
-    if [[ $TESTS_FAILED -gt 0 ]]; then
-        echo -e "${RED}$TESTS_FAILED test(s) failed${NC}"
-        exit 1
-    else
-        echo -e "${GREEN}All tests passed!${NC}"
-        exit 0
-    fi
+    framework_report
+    exit $?
 }
 
 main "$@"

@@ -1,0 +1,62 @@
+#compdef cac
+# Zsh completion for cac (Coding Agent Config)
+# Install: Copy to /usr/local/share/zsh/site-functions/_cac
+#          or ~/.local/share/zsh/site-functions/_cac
+# Then run: autoload -U compinit && compinit
+
+_cac() {
+    local context state state_descr line
+    typeset -A opt_args
+
+    _arguments -C \
+        '(-h --help)'{-h,--help}'[Show help message]' \
+        '(-v --version)'{-v,--version}'[Show version information]' \
+        '--verbose[Enable verbose output for debugging]' \
+        '1: :_cac_commands' \
+        '*:: :->args'
+
+    case $state in
+        args)
+            case $words[1] in
+                push)
+                    _arguments \
+                        '--user[Operate on specified user]:username:_users' \
+                        '--dry-run[Preview what would happen without making changes]'
+                    ;;
+                pull)
+                    _arguments \
+                        '--user[Operate on specified user]:username:_users' \
+                        '--dry-run[Preview what would happen without making changes]'
+                    ;;
+                list)
+                    _arguments \
+                        '--host[Filter bundles by hostname]:hostname:' \
+                        '--user[Filter bundles by username]:username:_users'
+                    ;;
+                get)
+                    _arguments \
+                        '--user[Operate on specified user]:username:_users' \
+                        '1:bundle_id:'
+                    ;;
+                test)
+                    _arguments \
+                        '--user[Test as specified user]:username:_users'
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_cac_commands() {
+    local -a commands
+    commands=(
+        'push:Create and upload config bundle'
+        'pull:Download and apply newest matching bundle'
+        'get:Download a specific bundle (by ID or interactive)'
+        'list:List available bundles'
+        'test:Test API connectivity for AI tools'
+    )
+    _describe -t commands 'cac commands' commands
+}
+
+_cac "$@"
