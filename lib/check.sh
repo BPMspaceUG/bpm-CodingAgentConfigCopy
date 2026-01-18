@@ -430,18 +430,18 @@ check_single_tool() {
 
     # Update cache and display result
     case $exit_code in
-        $CHECK_EXIT_SUCCESS)
+        "$CHECK_EXIT_SUCCESS")
             echo "OK"
             _check_cache_set "$tool" "$cache_key" "OK"
             ;;
-        $CHECK_EXIT_AUTH_FAIL)
+        "$CHECK_EXIT_AUTH_FAIL")
             echo "FAILED"
             _check_cache_set "$tool" "$cache_key" "FAIL"
             ;;
-        $CHECK_EXIT_TIMEOUT)
+        "$CHECK_EXIT_TIMEOUT")
             echo "TIMEOUT"
             ;;
-        $CHECK_EXIT_MISSING_DEP)
+        "$CHECK_EXIT_MISSING_DEP")
             echo "MISSING"
             ;;
     esac
@@ -471,7 +471,7 @@ check_all_tools() {
                 # Skipped (not configured)
                 ((skipped++)) || true
                 ;;
-            $CHECK_EXIT_SUCCESS)
+            "$CHECK_EXIT_SUCCESS")
                 ((passed++)) || true
                 ((total++)) || true
                 ;;
