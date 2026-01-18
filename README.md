@@ -217,6 +217,40 @@ sudo apt-get install zip unzip
 shellcheck bin/cac lib/*.sh install.sh uninstall.sh tests/*.sh
 ```
 
+## Multi-Agent Workflow
+
+This project uses a multi-agent development workflow:
+
+- **Claude** - Primary orchestrator and main executor
+- **Codex** - Primary review and approval authority
+- **Gemini** - Consensus and fallback reviewer
+
+### Segregation of Duty (SoD)
+
+No LLM may review or approve work it has performed itself. If both Codex and Gemini are unavailable, Claude may self-review only with documented exception (see [agent.md](agent.md)).
+
+### Consensus and Fallback
+
+When Claude and Codex disagree, Gemini provides independent assessment.
+
+**Rate-limit fallback:**
+- Codex unavailable: gpt-5.1-codex-mini → Gemini → Claude (with SoD exception)
+- Gemini unavailable: gemini-2.5-flash-lite → Codex → Claude (with SoD exception)
+- Claude unavailable: STOP - no release allowed
+
+### Required Approvals Before Git Push
+
+1. PLAN AND AGENT/SKILL ASSIGNMENT APPROVED
+2. IMPLEMENTATION APPROVED
+3. TEST DESIGN APPROVED
+4. TEST RESULTS APPROVED
+5. DOCUMENTATION UPDATED AND CONSISTENT APPROVED
+
+For detailed policies, see:
+- [agent.md](agent.md) - Full SoD rules, rate-limit handling, approval workflow
+- [gemini.md](gemini.md) - Consensus process, fallback logic, exception handling
+- [CLAUDE.md](CLAUDE.md) - Technical reference for Claude Code
+
 ## Legacy Script
 
 The original `cpaiagentconfig.sh` script is still available for simple local copy operations between users on the same machine.

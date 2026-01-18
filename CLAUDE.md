@@ -150,3 +150,42 @@ shellcheck bin/cac lib/*.sh install.sh uninstall.sh tests/*.sh
 - `check_single_tool(tool, user)` - Verify one tool's credentials with caching
 - `check_all_tools(user)` - Verify all configured tools
 - `check_tool_claude/codex/gemini(user)` - Provider-specific verification
+
+## Multi-Agent Workflow
+
+This project uses a multi-agent development workflow:
+
+- **Claude** - Primary orchestrator and main executor
+- **Codex** - Primary review and approval authority
+- **Gemini** - Consensus and fallback reviewer
+
+### Segregation of Duty (SoD)
+
+**Default Rule:** No LLM may review or approve work it has performed itself.
+
+**Controlled Exception:** Claude may self-review only if:
+1. Work was NOT performed by Claude
+2. Codex is rate-limited or unavailable
+3. Gemini is rate-limited or unavailable
+4. Exception is documented in the issue with "SEGREGATION OF DUTY EXCEPTION APPLIED"
+
+### Consensus and Fallback Logic
+
+- When Claude and Codex disagree, Gemini provides independent assessment
+- Codex rate-limit fallback: gpt-5.1-codex-mini → Gemini → Claude (with SoD exception)
+- Gemini rate-limit fallback: gemini-2.5-flash-lite → Codex → Claude (with SoD exception)
+- Claude rate-limit: STOP - no release allowed without orchestrator
+
+### Required Approvals Before Git Push
+
+All must be documented in the issue:
+1. PLAN AND AGENT/SKILL ASSIGNMENT APPROVED
+2. IMPLEMENTATION APPROVED
+3. TEST DESIGN APPROVED
+4. TEST RESULTS APPROVED
+5. DOCUMENTATION UPDATED AND CONSISTENT APPROVED
+
+### Related Documentation
+
+- [agent.md](agent.md) - Full multi-agent model, skill selection, SoD rules, approval workflow
+- [gemini.md](gemini.md) - Consensus process, fallback logic, exception handling
