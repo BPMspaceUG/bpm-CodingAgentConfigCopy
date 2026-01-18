@@ -76,8 +76,8 @@ backend_call() {
 
 # Internal: Generic argument parser supporting multiple option types
 # Usage: _utils_parse_args <options_spec> [--strict] "$@"
-# options_spec: Space-separated list of options to parse (e.g., "user" or "user dry-run")
-# Sets: PARSED_USER, PARSED_DRY_RUN (depending on options_spec)
+# options_spec: Space-separated list of options to parse (e.g., "user" or "user dry-run skip-check")
+# Sets: PARSED_USER, PARSED_DRY_RUN, PARSED_SKIP_CHECK (depending on options_spec)
 # Returns: 0 on success, 1 on error
 #
 # This is the core implementation; use the wrapper functions below for cleaner API.
@@ -99,6 +99,10 @@ _utils_parse_args() {
     # shellcheck disable=SC2034  # Variables are used by callers
     if [[ "$options_spec" == *"dry-run"* ]]; then
         PARSED_DRY_RUN="false"
+    fi
+    # shellcheck disable=SC2034  # Variables are used by callers
+    if [[ "$options_spec" == *"skip-check"* ]]; then
+        PARSED_SKIP_CHECK="false"
     fi
 
     while [[ $# -gt 0 ]]; do
@@ -131,6 +135,19 @@ _utils_parse_args() {
                 fi
                 # shellcheck disable=SC2034  # PARSED_DRY_RUN is used by callers
                 PARSED_DRY_RUN="true"
+                shift
+                ;;
+            --skip-check)
+                if [[ "$options_spec" != *"skip-check"* ]]; then
+                    if $strict; then
+                        utils_error "Unknown option: $1"
+                        return 1
+                    fi
+                    shift
+                    continue
+                fi
+                # shellcheck disable=SC2034  # PARSED_SKIP_CHECK is used by callers
+                PARSED_SKIP_CHECK="true"
                 shift
                 ;;
             *)
@@ -183,6 +200,14 @@ utils_parse_command_args() {
     _utils_parse_args "user dry-run" "$@"
 }
 
+# Parse push command arguments including --user, --dry-run, and --skip-check
+# Usage: utils_parse_push_args [--strict] "$@"
+# Sets: PARSED_USER, PARSED_DRY_RUN, PARSED_SKIP_CHECK
+# Returns: 0 on success, 1 on error
+utils_parse_push_args() {
+    _utils_parse_args "user dry-run skip-check" "$@"
+}
+
 # Initialize command context: parse args, validate user, resolve home
 # Usage: utils_init_command_context [--strict] "$@"
 # Sets: PARSED_TARGET_USER, PARSED_DRY_RUN, PARSED_HOME_DIR
@@ -209,6 +234,40 @@ utils_init_command_context() {
 
     # Parse command arguments (--user, --dry-run)
     if ! utils_parse_command_args $strict "$@"; then
+        return 1
+    fi
+
+    # Default target user to current user
+    # shellcheck disable=SC2034  # PARSED_TARGET_USER is used by callers
+    PARSED_TARGET_USER="${PARSED_USER:-$USER}"
+
+    # Validate user access
+    if ! security_check_user_access "$PARSED_TARGET_USER"; then
+        return 1
+    fi
+
+    # Resolve home directory
+    # shellcheck disable=SC2034  # PARSED_HOME_DIR is used by callers
+    if ! PARSED_HOME_DIR=$(security_resolve_user_home "$PARSED_TARGET_USER"); then
+        return 1
+    fi
+
+    return 0
+}
+
+# Initialize push command context: parse args including --skip-check, validate user, resolve home
+# Usage: utils_init_push_context [--strict] "$@"
+# Sets: PARSED_TARGET_USER, PARSED_DRY_RUN, PARSED_SKIP_CHECK, PARSED_HOME_DIR
+# Returns: 0 on success, 1 on error
+utils_init_push_context() {
+    local strict=""
+    if [[ "${1:-}" == "--strict" ]]; then
+        strict="--strict"
+        shift
+    fi
+
+    # Parse push arguments (--user, --dry-run, --skip-check)
+    if ! utils_parse_push_args $strict "$@"; then
         return 1
     fi
 

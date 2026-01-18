@@ -34,9 +34,10 @@ bpm-CodingAgentConfigCopy/
 ├── bin/
 │   └── cac                      # Main CLI entrypoint
 ├── lib/
-│   ├── backend_gokapi.sh        # Gokapi REST API integration
+│   ├── backend_gokapi.sh        # Gokapi REST API integration (7-day max TTL)
 │   ├── backend_local.sh         # Local filesystem backend
 │   ├── bundle.sh                # ZIP creation/extraction logic
+│   ├── check.sh                 # Credential verification with caching
 │   ├── config.sh                # Configuration loading (.env)
 │   ├── security.sh              # Permission checks, zip-slip protection
 │   └── tools.sh                 # Tool-specific file mappings
@@ -58,11 +59,12 @@ bpm-CodingAgentConfigCopy/
 
 | Command | Description |
 |---------|-------------|
-| `cac push [--user USER]` | Create ZIP bundle from user configs and upload to backend |
+| `cac push [--user USER] [--skip-check]` | Create ZIP bundle from user configs and upload to backend |
 | `cac pull [--user USER]` | Download and apply newest bundle matching current host/user |
 | `cac list [--host HOST] [--user USER]` | List available bundles with optional filtering |
 | `cac get [BUNDLE_ID]` | Download and apply specific bundle (by ID or interactive) |
-| `cac test [--user USER]` | Test AI tool API connectivity |
+| `cac check [TOOL] [--user USER]` | Verify AI tool credentials work (real API calls) |
+| `cac test [--user USER]` | Alias for check (backward compatibility) |
 
 ### Library Modules
 
@@ -71,7 +73,8 @@ bpm-CodingAgentConfigCopy/
 - **tools.sh**: Maps AI tools to their configuration files, collects/counts existing files
 - **bundle.sh**: ZIP creation with correct naming convention, secure extraction with backups
 - **backend_local.sh**: Local filesystem storage operations (upload, download, list, get_newest)
-- **backend_gokapi.sh**: Gokapi REST API operations (upload, download, list, get_newest, delete)
+- **backend_gokapi.sh**: Gokapi REST API operations (upload, download, list, get_newest, delete); enforces 7-day max TTL
+- **check.sh**: Credential verification via real API calls; 5-minute cache, 10-second timeout per provider
 
 ### Bundle Naming Convention
 
@@ -142,3 +145,8 @@ shellcheck bin/cac lib/*.sh install.sh uninstall.sh tests/*.sh
 - `backend_*_download(bundle_id, output_file)` - Download bundle
 - `backend_*_list([--host HOST] [--user USER])` - List bundles
 - `backend_*_get_newest([--host HOST] [--user USER])` - Get newest matching
+
+**check.sh:**
+- `check_single_tool(tool, user)` - Verify one tool's credentials with caching
+- `check_all_tools(user)` - Verify all configured tools
+- `check_tool_claude/codex/gemini(user)` - Provider-specific verification

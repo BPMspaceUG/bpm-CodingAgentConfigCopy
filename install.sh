@@ -51,22 +51,75 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 die() { error "$*"; exit 1; }
 
-# Set installation directories based on privilege level
+# Set installation directories for user-local install
+set_user_local_paths() {
+    BIN_DIR="$USER_BIN_DIR"
+    LIB_DIR="$USER_LIB_DIR"
+    CONFIG_DIR="$USER_CONFIG_DIR"
+    BASH_COMPLETION_DIR="$USER_BASH_COMPLETION_DIR"
+    ZSH_COMPLETION_DIR="$USER_ZSH_COMPLETION_DIR"
+    INSTALL_MODE="user-local"
+}
+
+# Set installation directories for system-wide install
+set_system_wide_paths() {
+    BIN_DIR="$SYS_BIN_DIR"
+    LIB_DIR="$SYS_LIB_DIR"
+    CONFIG_DIR="$SYS_CONFIG_DIR"
+    BASH_COMPLETION_DIR="$SYS_BASH_COMPLETION_DIR"
+    ZSH_COMPLETION_DIR="$SYS_ZSH_COMPLETION_DIR"
+    INSTALL_MODE="system-wide"
+}
+
+# Prompt user for install type (interactive mode only)
+# Returns: Sets install paths based on user choice
+prompt_install_type() {
+    while true; do
+        echo ""
+        echo "Select installation type:"
+        echo "  1) This user only (~/.local/bin/cac)"
+        echo "  2) All users (/usr/local/bin/cac) - requires root"
+        echo ""
+        read -rp "Choice [1]: " install_choice
+
+        case "${install_choice:-1}" in
+            1)
+                set_user_local_paths
+                return 0
+                ;;
+            2)
+                if is_root; then
+                    set_system_wide_paths
+                    return 0
+                else
+                    echo ""
+                    error "System-wide installation requires root privileges."
+                    echo "Please run with sudo, or choose option 1 for user-local install."
+                    echo ""
+                    # Re-prompt
+                fi
+                ;;
+            *)
+                echo ""
+                warn "Invalid choice. Please enter 1 or 2."
+                ;;
+        esac
+    done
+}
+
+# Set installation directories based on privilege level (auto-detect for non-interactive)
 set_install_paths() {
+    # Interactive mode: prompt user for install type
+    if [[ -t 0 ]]; then
+        prompt_install_type
+        return 0
+    fi
+
+    # Non-interactive mode: auto-detect based on privileges (backward compatible)
     if is_root; then
-        BIN_DIR="$SYS_BIN_DIR"
-        LIB_DIR="$SYS_LIB_DIR"
-        CONFIG_DIR="$SYS_CONFIG_DIR"
-        BASH_COMPLETION_DIR="$SYS_BASH_COMPLETION_DIR"
-        ZSH_COMPLETION_DIR="$SYS_ZSH_COMPLETION_DIR"
-        INSTALL_MODE="system-wide"
+        set_system_wide_paths
     else
-        BIN_DIR="$USER_BIN_DIR"
-        LIB_DIR="$USER_LIB_DIR"
-        CONFIG_DIR="$USER_CONFIG_DIR"
-        BASH_COMPLETION_DIR="$USER_BASH_COMPLETION_DIR"
-        ZSH_COMPLETION_DIR="$USER_ZSH_COMPLETION_DIR"
-        INSTALL_MODE="user-local"
+        set_user_local_paths
     fi
 }
 

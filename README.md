@@ -12,11 +12,15 @@ A production-grade CLI tool for managing versioned ZIP-based configuration bundl
 
 ### Quick Install (curl|bash)
 
-```bash
-# User-local install (no root required)
-curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-CodingAgentConfigCopy/main/install.sh | bash
+#### User-local Install (no root required)
 
-# System-wide install (requires root)
+```bash
+curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-CodingAgentConfigCopy/main/install.sh | bash
+```
+
+#### System-wide Install (requires root)
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-CodingAgentConfigCopy/main/install.sh | sudo bash
 ```
 
@@ -66,7 +70,15 @@ CAC_LOCAL_STORAGE=/path/to/bundle/storage
 # For gokapi backend
 CAC_GOKAPI_URL=https://your-gokapi-instance.example.com
 CAC_GOKAPI_API_KEY=your-api-key-here
+CAC_GOKAPI_EXPIRY_DAYS=7  # Max 7 days (enforced for security)
 ```
+
+### Bundle Expiration (Gokapi Backend)
+
+For security, all bundles uploaded to Gokapi have a maximum TTL of 7 days:
+- Values > 7 are automatically capped to 7 with a warning
+- Value 0 (unlimited) is treated as 7 days
+- Expired bundles are automatically deleted by Gokapi
 
 ## Usage
 
@@ -112,14 +124,35 @@ cac get
 cac get CodingAgentConfig_myhost_user_250111-120000.zip
 ```
 
-### Test API Connectivity
+### Check/Test Credentials
+
+The `check` command verifies that AI tool credentials actually work by making real API calls.
 
 ```bash
-# Test current user's AI tool credentials
-cac test
+# Verify all configured tools for current user
+cac check
 
-# Test another user (requires root)
-sudo cac test --user ubuntu
+# Verify specific tool only
+cac check claude
+cac check codex
+cac check gemini
+
+# Verify another user's credentials (requires root)
+sudo cac check --user ubuntu
+```
+
+**Note:** `cac test` is an alias for `cac check` for backward compatibility.
+
+### Push with Credential Verification
+
+By default, `cac push` runs credential verification before uploading. Use `--skip-check` to bypass:
+
+```bash
+# Normal push (runs check first, aborts if any fail)
+cac push
+
+# Skip credential verification (for emergency uploads)
+cac push --skip-check
 ```
 
 ### Help

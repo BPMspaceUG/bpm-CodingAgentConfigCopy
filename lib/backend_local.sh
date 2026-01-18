@@ -172,7 +172,7 @@ backend_local_list() {
         fi
 
         utils_print_bundle_list_entry "$filename" "$host" "$user" "$timestamp"
-        ((found++))
+        ((found++)) || true  # Prevent errexit when incrementing from 0
 
     done < <(_local_list_bundle_files "$storage_dir")
 

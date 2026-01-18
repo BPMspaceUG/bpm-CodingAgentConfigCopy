@@ -1,0 +1,12 @@
+# Sensitive configuration files
+.env
+*.env
+.env.*
+!.env.example
+
+# Backup files
+*.bak
+*~
+
+# Test artifacts
+tests/tmp/

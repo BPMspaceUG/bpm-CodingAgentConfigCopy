@@ -97,6 +97,22 @@ main() {
         echo ""
     fi
 
+    # Run Gokapi unit tests
+    if $run_all || [[ "$filter" == "gokapi_unit" ]] || [[ "$filter" == "gokapi" ]]; then
+        if ! run_test_suite "Gokapi Unit Tests" "test_gokapi_unit.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Gokapi e2e tests
+    if $run_all || [[ "$filter" == "gokapi_e2e" ]] || [[ "$filter" == "gokapi" ]]; then
+        if ! run_test_suite "Gokapi E2E Tests" "test_gokapi_e2e.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     echo "========================================"
     echo "Overall Summary"
     echo "========================================"

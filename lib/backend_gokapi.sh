@@ -9,8 +9,48 @@ source "${SCRIPT_DIR}/bundle.sh"
 source "${SCRIPT_DIR}/utils.sh"
 
 # Default expiry settings (can be overridden via env)
-CAC_GOKAPI_EXPIRY_DAYS="${CAC_GOKAPI_EXPIRY_DAYS:-0}"
+# Maximum allowed TTL is 7 days (enforced by _gokapi_validate_ttl)
+CAC_GOKAPI_EXPIRY_DAYS="${CAC_GOKAPI_EXPIRY_DAYS:-7}"
 CAC_GOKAPI_ALLOWED_DOWNLOADS="${CAC_GOKAPI_ALLOWED_DOWNLOADS:-0}"
+
+# Maximum TTL allowed (7 days)
+_GOKAPI_MAX_TTL=7
+
+# Internal: Validate and cap TTL value
+# Enforces maximum 7-day TTL for all config bundles
+# Usage: _gokapi_validate_ttl
+# Sets: CAC_GOKAPI_EXPIRY_DAYS (capped if necessary)
+# Output: Warning to STDERR if value was overridden
+_gokapi_validate_ttl() {
+    local original_value="$CAC_GOKAPI_EXPIRY_DAYS"
+
+    # Handle non-numeric values - treat as invalid, use max
+    if ! [[ "$CAC_GOKAPI_EXPIRY_DAYS" =~ ^[0-9]+$ ]]; then
+        # warn_ttl: Invalid value
+        echo >&2 "Warning: Invalid TTL/expiry value '${original_value}', using ${_GOKAPI_MAX_TTL} days"
+        CAC_GOKAPI_EXPIRY_DAYS="$_GOKAPI_MAX_TTL"
+        return 0
+    fi
+
+    # Handle 0 (unlimited) - override to max
+    if [[ "$CAC_GOKAPI_EXPIRY_DAYS" -eq 0 ]]; then
+        # warn_ttl: Unlimited override
+        echo >&2 "Warning: TTL/expiry value 0 (unlimited) overridden to ${_GOKAPI_MAX_TTL} days"
+        CAC_GOKAPI_EXPIRY_DAYS="$_GOKAPI_MAX_TTL"
+        return 0
+    fi
+
+    # Handle values > 7 - cap to max (7 days maximum TTL enforced)
+    if [[ "$CAC_GOKAPI_EXPIRY_DAYS" -gt 7 ]]; then
+        # warn_ttl: Exceeded maximum
+        echo >&2 "Warning: TTL/expiry value ${original_value} exceeds maximum, capped to 7 days"
+        CAC_GOKAPI_EXPIRY_DAYS=7
+        return 0
+    fi
+
+    # Valid value 1-7: no change, no warning
+    return 0
+}
 
 # Network retry settings (can be overridden via env)
 # - MAX_RETRIES: Number of retry attempts after initial failure (3 = up to 4 total attempts)
@@ -157,6 +197,9 @@ backend_gokapi_upload() {
         return 1
     fi
 
+    # Validate and cap TTL before upload
+    _gokapi_validate_ttl
+
     local filename
     filename=$(basename "$bundle_file")
 
@@ -277,7 +320,7 @@ backend_gokapi_list() {
         local metadata
         if metadata=$(utils_parse_bundle_metadata "$name" "$filter_host" "$filter_user"); then
             entries+=("${metadata}|${id}")
-            ((found++))
+            ((found++)) || true  # Prevent errexit when incrementing from 0
         fi
     done < <(utils_gokapi_extract_names "$GOKAPI_RESPONSE")
 

@@ -25,6 +25,8 @@ source "${LIB_DIR}/utils.sh"
 source "${LIB_DIR}/backend_local.sh"
 # shellcheck source=lib/backend_gokapi.sh
 source "${LIB_DIR}/backend_gokapi.sh"
+# shellcheck source=lib/check.sh
+source "${LIB_DIR}/check.sh"
 
 # ============================================================================
 # Help / Usage
@@ -41,16 +43,18 @@ USAGE:
     cac <command> [options]
 
 COMMANDS:
-    push [--user USER] [--dry-run]  Create and upload config bundle
+    push [--user USER] [--dry-run] [--skip-check]  Create and upload config bundle
     pull [--user USER] [--dry-run]  Download and apply newest matching bundle
     get [BUNDLE_ID] [--dry-run]     Download a specific bundle (by ID or interactive)
     list [--host HOST] [--user USER]  List available bundles
-    test [--user USER]              Test API connectivity for AI tools
+    check [TOOL] [--user USER]      Verify AI tool credentials work
+    test [--user USER]              (Alias for check) Test API connectivity
 
 OPTIONS:
     --user USER     Operate on specified user (requires root for other users)
     --host HOST     Filter bundles by hostname
     --dry-run       Preview what would happen without making changes
+    --skip-check    Skip credential verification before push
     --verbose       Enable verbose output for debugging
     --help, -h      Show this help message
     --version, -v   Show version information
@@ -58,6 +62,7 @@ OPTIONS:
 EXAMPLES:
     cac push                    Bundle and upload current user's config
     cac push --dry-run          Preview what would be bundled
+    cac push --skip-check       Skip credential verification before upload
     cac push --user ubuntu      Bundle ubuntu user's config (requires root)
     cac pull                    Apply newest bundle for current user/host
     cac pull --dry-run          Preview what would be extracted
@@ -67,7 +72,9 @@ EXAMPLES:
     cac get                     Interactive bundle selection
     cac get CodingAgentConfig_myhost_user_250111-120000.zip
     cac get mybundle --dry-run  Preview what would be extracted from specific bundle
-    cac test                    Test AI tool API connectivity
+    cac check                   Verify all AI tool credentials work
+    cac check claude            Verify only Claude credentials
+    cac check --user bob        Verify credentials for user bob (requires root)
 
 CONFIGURATION:
     Config file locations (in order of precedence):
@@ -90,52 +97,17 @@ show_version() {
 }
 
 # ============================================================================
-# Internal Helpers
-# ============================================================================
-
-# Run command as target user (uses sudo if needed)
-# Usage: _run_as_user <use_sudo> <target_user> <command...>
-_run_as_user() {
-    local use_sudo="$1"
-    local target_user="$2"
-    shift 2
-
-    if [[ "$use_sudo" == "true" ]]; then
-        sudo -u "$target_user" "$@"
-    else
-        "$@"
-    fi
-}
-
-# Test a single AI tool's API connectivity
-# Usage: _test_tool <use_sudo> <target_user> <display_name> <expected_response> <command...>
-_test_tool() {
-    local use_sudo="$1"
-    local target_user="$2"
-    local name="$3"
-    local expected="$4"
-    shift 4
-
-    echo "--- $name ---"
-    if _run_as_user "$use_sudo" "$target_user" "$@" 2>/dev/null | grep -q "$expected"; then
-        echo "✓ $name: OK"
-    else
-        echo "✗ $name: FAILED"
-    fi
-    echo ""
-}
-
-# ============================================================================
 # Commands
 # ============================================================================
 
 cmd_push() {
-    # Parse arguments, validate user access, and resolve home directory
-    if ! utils_init_command_context --strict "$@"; then
+    # Parse arguments including --skip-check, validate user access, and resolve home directory
+    if ! utils_init_push_context --strict "$@"; then
         return 1
     fi
     local target_user="$PARSED_TARGET_USER"
     local dry_run="$PARSED_DRY_RUN"
+    local skip_check="$PARSED_SKIP_CHECK"
     local home_dir="$PARSED_HOME_DIR"
 
     # Check if any config files exist
@@ -157,6 +129,11 @@ cmd_push() {
         utils_dryrun "Files to include: $file_count"
         utils_dryrun "Bundle name: $bundle_name"
         utils_dryrun "Backend: ${CAC_BACKEND}"
+        if [[ "$skip_check" == "true" ]]; then
+            utils_dryrun "Credential check: SKIPPED"
+        else
+            utils_dryrun "Credential check: Would run before push"
+        fi
         echo ""
         echo "Files that would be bundled:"
         # Use process substitution to avoid pipe subshell masking errors
@@ -165,6 +142,23 @@ cmd_push() {
         done < <(tools_collect_existing "$home_dir" "all")
         utils_dryrun_footer
         return 0
+    fi
+
+    # Run credential check before push (unless skipped)
+    if [[ "$skip_check" != "true" ]]; then
+        echo "=== Verifying credentials before push ==="
+        echo ""
+
+        local use_sudo="false"
+        if [[ "$target_user" != "$(whoami)" ]]; then
+            use_sudo="true"
+        fi
+
+        if ! check_all_tools "$use_sudo" "$target_user" "$home_dir"; then
+            utils_error "Credential check failed. Use --skip-check to bypass."
+            return 1
+        fi
+        echo ""
     fi
 
     echo "Creating bundle for user: $target_user"
@@ -287,37 +281,56 @@ cmd_list() {
     backend_call list "$@"
 }
 
-cmd_test() {
-    # Parse arguments
-    if ! utils_parse_user_arg --strict "$@"; then
+cmd_check() {
+    local tool_arg=""
+    local args=()
+
+    # Extract tool argument (first non-option argument)
+    for arg in "$@"; do
+        if [[ "$arg" != --* && -z "$tool_arg" ]]; then
+            tool_arg="$arg"
+        else
+            args+=("$arg")
+        fi
+    done
+
+    # Parse remaining arguments
+    if ! utils_parse_user_arg --strict "${args[@]+"${args[@]}"}"; then
         return 1
     fi
     local target_user="${PARSED_USER:-$USER}"
     local use_sudo="false"
 
-    # Check if testing another user
+    # Check if checking another user
     if [[ "$target_user" != "$(whoami)" ]]; then
         if [[ "$EUID" -ne 0 ]]; then
-            utils_error "Root required to test as another user"
+            utils_error "Root required to check as another user"
             return 1
         fi
         use_sudo="true"
     fi
 
-    echo "=== Testing AI Tools for user: $target_user ==="
+    # Resolve home directory
+    local home_dir
+    if ! home_dir=$(security_resolve_user_home "$target_user"); then
+        return 1
+    fi
+
+    echo "=== Checking AI Tool Credentials for user: $target_user ==="
     echo ""
 
-    # Test each configured AI tool using extracted helper
-    _test_tool "$use_sudo" "$target_user" "Claude Code" "CLAUDE_OK" \
-        claude -p "Respond only with: CLAUDE_OK" --dangerously-skip-permissions
+    if [[ -n "$tool_arg" ]]; then
+        # Check specific tool
+        check_single_tool "$tool_arg" "$use_sudo" "$target_user" "$home_dir"
+    else
+        # Check all tools
+        check_all_tools "$use_sudo" "$target_user" "$home_dir"
+    fi
+}
 
-    _test_tool "$use_sudo" "$target_user" "Codex" "CODEX_OK" \
-        codex exec "Respond only with the text: CODEX_OK" --skip-git-repo-check
-
-    _test_tool "$use_sudo" "$target_user" "Gemini" "GEMINI_OK" \
-        gemini -p "Respond only with: GEMINI_OK"
-
-    echo "=== Test Complete ==="
+# Alias: cmd_test is now an alias for cmd_check (backward compatibility)
+cmd_test() {
+    cmd_check "$@"
 }
 
 # ============================================================================
@@ -360,9 +373,9 @@ main() {
 
     utils_verbose "Command: $command"
 
-    # Test command doesn't require backend config
-    if [[ "$command" == "test" ]]; then
-        cmd_test "$@"
+    # Check/test commands don't require backend config
+    if [[ "$command" == "check" || "$command" == "test" ]]; then
+        cmd_check "$@"
         exit $?
     fi
 
