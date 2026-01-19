@@ -49,14 +49,25 @@ sudo ./uninstall.sh
 
 Before using cac, create a `.env` configuration file:
 
-**User-local:** `~/.config/cac/.env`
-**System-wide:** `/etc/cac/.env`
+**User-local:** `~/.config/cac/.env` (takes precedence)
+**System-wide:** `/etc/cac/.env` (fallback for all users)
 
 ```bash
 # Copy the example and edit
 cp .env.example ~/.config/cac/.env
 chmod 600 ~/.config/cac/.env
 ```
+
+### Config Precedence
+
+If both user and system config exist, the **user config takes precedence** and a warning is shown:
+```
+ATTENTION: User config overrides central system config!
+  Using:    /home/user/.config/cac/.env
+  Ignoring: /etc/cac/.env
+```
+
+For centralized management, use only the system-wide config (`/etc/cac/.env`).
 
 ### Required Settings
 
@@ -100,7 +111,12 @@ cac pull
 
 # Apply to another user (requires root)
 sudo cac pull --user bob
+
+# Pull to ALL users with AI tool configs (requires root)
+sudo cac pull --all
 ```
+
+The `--all` flag scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`) or files (`.claude.json`) and pulls the matching bundle for each.
 
 ### List Bundles
 
@@ -126,7 +142,7 @@ cac get CodingAgentConfig_myhost_user_250111-120000.zip
 
 ### Check/Test Credentials
 
-The `check` command verifies that AI tool credentials actually work by making real API calls.
+The `check` command verifies that AI tool CLI subscriptions work by running each CLI with a test prompt. A spinner shows progress during the check (up to 30 seconds per tool).
 
 ```bash
 # Verify all configured tools for current user
@@ -142,6 +158,8 @@ sudo cac check --user ubuntu
 ```
 
 **Note:** `cac test` is an alias for `cac check` for backward compatibility.
+
+Results are cached for 5 minutes to avoid repeated checks.
 
 ### Push with Credential Verification
 
@@ -181,10 +199,11 @@ Example: `CodingAgentConfig_prod-server-01_ubuntu_250111-143022.zip`
 
 ## Security
 
-- `.env` file must have 600 permissions (owner read/write only)
+- User `.env` file must have 600 permissions (owner read/write only)
+- System `.env` file (`/etc/cac/.env`) allows 644 for shared access
 - Extracted configuration files are set to 600 permissions
 - ZIP extraction validates against path traversal attacks (zip-slip protection)
-- API keys and credentials are never logged or echoed
+- Credentials are never logged or echoed
 - Temporary files use secure permissions and are cleaned up
 
 ## Installation Paths

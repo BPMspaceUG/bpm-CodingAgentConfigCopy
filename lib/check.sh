@@ -15,8 +15,8 @@ source "${SCRIPT_DIR}/tools.sh"
 # Constants
 # ============================================================================
 
-# Timeout for each check (seconds)
-readonly CHECK_TIMEOUT=10
+# Timeout for each check (seconds) - CLI responses can take up to 30s
+readonly CHECK_TIMEOUT=30
 
 # Cache TTL (seconds) - 5 minutes
 readonly CHECK_CACHE_TTL=300
@@ -148,7 +148,28 @@ _check_get_timeout_cmd() {
     fi
 }
 
-# Run command with timeout
+# Show spinning animation while a background process runs
+# Usage: _check_spinner <pid>
+# Writes directly to /dev/tty to avoid capture by $()
+_check_spinner() {
+    local pid="$1"
+    local frames=('|' '/' '-' '\')
+    local i=0
+
+    # Only show spinner if terminal is available
+    [[ -c /dev/tty ]] || return 0
+
+    while kill -0 "$pid" 2>/dev/null; do
+        printf '%s\b' "${frames[i]}" > /dev/tty
+        i=$(( (i + 1) % 4 ))
+        sleep 0.2
+    done
+
+    # Clear spinner character
+    printf ' \b' > /dev/tty
+}
+
+# Run command with timeout and spinner
 # Usage: _check_with_timeout <seconds> <command...>
 # Returns: 0 on success, CHECK_EXIT_TIMEOUT on timeout, command exit code otherwise
 _check_with_timeout() {
@@ -160,16 +181,40 @@ _check_with_timeout() {
         return $CHECK_EXIT_MISSING_DEP
     fi
 
+    # Create temp files for output and exit code
+    local tmpfile exitfile
+    tmpfile=$(mktemp)
+    exitfile=$(mktemp)
+
+    # Run command in subshell, save exit code
+    (
+        "$timeout_cmd" "$seconds" "$@" > "$tmpfile" 2>&1
+        echo $? > "$exitfile"
+    ) &
+    local pid=$!
+
+    # Show spinner while waiting (writes to /dev/tty directly)
+    _check_spinner "$pid"
+
+    # Wait for completion
+    wait "$pid" 2>/dev/null
+
+    # Get the actual command exit code
     local exit_code
-    "$timeout_cmd" "$seconds" "$@"
-    exit_code=$?
+    exit_code=$(cat "$exitfile")
+
+    # Output the captured result
+    cat "$tmpfile"
+
+    # Cleanup
+    rm -f "$tmpfile" "$exitfile"
 
     # Translate timeout exit codes to our standard
     if [[ $exit_code -eq 124 || $exit_code -eq 137 ]]; then
         return $CHECK_EXIT_TIMEOUT
     fi
 
-    return $exit_code
+    return "$exit_code"
 }
 
 # ============================================================================

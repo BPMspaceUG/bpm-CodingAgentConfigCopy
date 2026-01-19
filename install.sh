@@ -366,9 +366,9 @@ setup_config() {
             echo "CAC_GOKAPI_URL=${gokapi_url}"
             echo "CAC_GOKAPI_API_KEY=${gokapi_key}"
             echo ""
-            echo "# Optional: Gokapi expiry settings"
-            echo "# CAC_GOKAPI_EXPIRY_DAYS=0"
-            echo "# CAC_GOKAPI_ALLOWED_DOWNLOADS=0"
+            echo "# Gokapi expiry settings"
+            echo "CAC_GOKAPI_EXPIRY_DAYS=7        # 1-7 days (0 or >7 defaults to 7 for security)"
+            echo "CAC_GOKAPI_ALLOWED_DOWNLOADS=0  # 0 = unlimited downloads"
         else
             echo "CAC_LOCAL_STORAGE=${local_storage}"
 

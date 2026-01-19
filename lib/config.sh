@@ -21,29 +21,47 @@ CAC_GOKAPI_ALLOWED_DOWNLOADS="${CAC_GOKAPI_ALLOWED_DOWNLOADS:-0}"
 
 # Find .env file location following XDG conventions
 # Priority: 1) Explicit CAC_CONFIG_DIR, 2) XDG_CONFIG_HOME/cac, 3) ~/.config/cac, 4) /etc/cac
+# Warns if user config overrides existing system config
 config_find_env_path() {
+    local user_config=""
+    local system_config="/etc/cac/.env"
+
+    # Check explicit CAC_CONFIG_DIR first
     if [[ -n "${CAC_CONFIG_DIR:-}" && -f "${CAC_CONFIG_DIR}/.env" ]]; then
-        echo "${CAC_CONFIG_DIR}/.env"
+        user_config="${CAC_CONFIG_DIR}/.env"
+    fi
+
+    # Check XDG config location
+    if [[ -z "$user_config" ]]; then
+        local xdg_config="${XDG_CONFIG_HOME:-$HOME/.config}"
+        if [[ -f "${xdg_config}/cac/.env" ]]; then
+            user_config="${xdg_config}/cac/.env"
+        fi
+    fi
+
+    # If user config found, warn if system config also exists
+    if [[ -n "$user_config" ]]; then
+        if [[ -f "$system_config" ]]; then
+            echo "ATTENTION: User config overrides central system config!" >&2
+            echo "  Using:    $user_config" >&2
+            echo "  Ignoring: $system_config" >&2
+        fi
+        echo "$user_config"
         return 0
     fi
 
-    local xdg_config="${XDG_CONFIG_HOME:-$HOME/.config}"
-    if [[ -f "${xdg_config}/cac/.env" ]]; then
-        echo "${xdg_config}/cac/.env"
-        return 0
-    fi
-
-    if [[ -f "/etc/cac/.env" ]]; then
-        echo "/etc/cac/.env"
+    # Fall back to system config
+    if [[ -f "$system_config" ]]; then
+        echo "$system_config"
         return 0
     fi
 
     return 1
 }
 
-# Validate .env file permissions (must be exactly 600)
-# Uses security_check_file_permissions for the core check, but also
-# requires the file to exist (security_check_file_permissions skips missing files)
+# Validate .env file permissions
+# User config: must be 600 (contains user-specific settings)
+# System config: allows 644 (readable by all users)
 config_check_permissions() {
     local env_path="$1"
 
@@ -52,7 +70,18 @@ config_check_permissions() {
         return 1
     fi
 
-    # Use security module for permission check (max PERM_SECURE_FILE for sensitive files)
+    # System config (/etc/cac/.env) allows 644 for shared access
+    if [[ "$env_path" == "/etc/cac/.env" ]]; then
+        local perms
+        perms=$(stat -c '%a' "$env_path" 2>/dev/null)
+        if [[ "$perms" != "600" && "$perms" != "644" ]]; then
+            utils_error "System config '$env_path' has invalid permissions ($perms). Use 600 or 644."
+            return 1
+        fi
+        return 0
+    fi
+
+    # User config: strict 600 permissions required
     if ! security_check_file_permissions "$env_path" "$PERM_SECURE_FILE"; then
         echo "Fix with: chmod $PERM_SECURE_FILE '$env_path'" >&2
         return 1

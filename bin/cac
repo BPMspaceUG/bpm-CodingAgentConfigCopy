@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="0.1.0"
+VERSION="260119-182719"
 
 # Determine script location and library path
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,7 +44,7 @@ USAGE:
 
 COMMANDS:
     push [--user USER] [--dry-run] [--skip-check]  Create and upload config bundle
-    pull [--user USER] [--dry-run]  Download and apply newest matching bundle
+    pull [--user USER] [--dry-run] [--all]  Download and apply newest matching bundle
     get [BUNDLE_ID] [--dry-run]     Download a specific bundle (by ID or interactive)
     list [--host HOST] [--user USER]  List available bundles
     check [TOOL] [--user USER]      Verify AI tool credentials work
@@ -53,6 +53,7 @@ COMMANDS:
 OPTIONS:
     --user USER     Operate on specified user (requires root for other users)
     --host HOST     Filter bundles by hostname
+    --all           Pull to all users with AI tool configs (requires root)
     --dry-run       Preview what would happen without making changes
     --skip-check    Skip credential verification before push
     --verbose       Enable verbose output for debugging
@@ -67,6 +68,7 @@ EXAMPLES:
     cac pull                    Apply newest bundle for current user/host
     cac pull --dry-run          Preview what would be extracted
     cac pull --user bob         Apply newest bundle to user bob (requires root)
+    sudo cac pull --all         Pull config to all users with AI tool dirs
     cac list                    List all available bundles
     cac list --host prod-01     List bundles from specific host
     cac get                     Interactive bundle selection
@@ -186,12 +188,34 @@ cmd_push() {
 }
 
 cmd_pull() {
+    local pull_all="false"
+    local dry_run="false"
+    local args=()
+
+    # Check for --all flag
+    for arg in "$@"; do
+        if [[ "$arg" == "--all" ]]; then
+            pull_all="true"
+        elif [[ "$arg" == "--dry-run" ]]; then
+            dry_run="true"
+            args+=("$arg")
+        else
+            args+=("$arg")
+        fi
+    done
+
+    # Handle --all mode
+    if [[ "$pull_all" == "true" ]]; then
+        cmd_pull_all "$dry_run"
+        return $?
+    fi
+
     # Parse arguments, validate user access, and resolve home directory
-    if ! utils_init_command_context --strict "$@"; then
+    if ! utils_init_command_context --strict "${args[@]+"${args[@]}"}"; then
         return 1
     fi
     local target_user="$PARSED_TARGET_USER"
-    local dry_run="$PARSED_DRY_RUN"
+    dry_run="$PARSED_DRY_RUN"
     local home_dir="$PARSED_HOME_DIR"
     local target_host
     target_host=$(hostname -s)
@@ -225,6 +249,125 @@ cmd_pull() {
 
     echo ""
     echo "Pull complete!"
+}
+
+# Pull config to all users who have AI tool directories
+cmd_pull_all() {
+    local dry_run="${1:-false}"
+
+    # Require root
+    if [[ "$EUID" -ne 0 ]]; then
+        utils_error "Root required for --all (pulls to all users)"
+        return 1
+    fi
+
+    echo "=== Pulling config to all AI tool users ==="
+    echo ""
+
+    local target_host
+    target_host=$(hostname -s)
+
+    # Find users with AI tool config directories or files
+    local users_found=()
+    local tool_dirs=(".claude" ".codex" ".gemini")
+    local tool_files=(".claude.json")
+
+    for user_home in /home/*; do
+        [[ -d "$user_home" ]] || continue
+        local username
+        username=$(basename "$user_home")
+        local found=false
+
+        # Check for config directories
+        for tool_dir in "${tool_dirs[@]}"; do
+            if [[ -d "${user_home}/${tool_dir}" ]]; then
+                found=true
+                break
+            fi
+        done
+
+        # Check for config files (e.g., .claude.json)
+        if [[ "$found" != "true" ]]; then
+            for tool_file in "${tool_files[@]}"; do
+                if [[ -f "${user_home}/${tool_file}" ]]; then
+                    found=true
+                    break
+                fi
+            done
+        fi
+
+        if [[ "$found" == "true" && ! " ${users_found[*]} " =~ " ${username} " ]]; then
+            users_found+=("$username")
+        fi
+    done
+
+    # Also check root
+    local root_found=false
+    for tool_dir in "${tool_dirs[@]}"; do
+        if [[ -d "/root/${tool_dir}" ]]; then
+            root_found=true
+            break
+        fi
+    done
+    if [[ "$root_found" != "true" ]]; then
+        for tool_file in "${tool_files[@]}"; do
+            if [[ -f "/root/${tool_file}" ]]; then
+                root_found=true
+                break
+            fi
+        done
+    fi
+    if [[ "$root_found" == "true" ]]; then
+        users_found+=("root")
+    fi
+
+    if [[ ${#users_found[@]} -eq 0 ]]; then
+        echo "No users with AI tool configs found (.claude, .codex, .gemini, .claude.json)"
+        return 0
+    fi
+
+    echo "Found ${#users_found[@]} user(s) with AI tool configs:"
+    printf '  - %s\n' "${users_found[@]}"
+    echo ""
+
+    local success=0
+    local failed=0
+
+    for username in "${users_found[@]}"; do
+        echo "--- Processing: $username ---"
+
+        local home_dir
+        if [[ "$username" == "root" ]]; then
+            home_dir="/root"
+        else
+            home_dir="/home/$username"
+        fi
+
+        # Find newest bundle for this user
+        local newest_bundle
+        if ! newest_bundle=$(backend_call get_newest --host "$target_host" --user "$username" 2>/dev/null); then
+            echo "  No bundle found for $username@$target_host, skipping"
+            echo ""
+            continue
+        fi
+
+        if [[ "$dry_run" == "true" ]]; then
+            utils_dryrun "Would pull $newest_bundle to $home_dir"
+        else
+            echo "  Bundle: $newest_bundle"
+            if utils_download_and_extract "$newest_bundle" "$home_dir" "$username"; then
+                echo "  OK"
+                ((success++))
+            else
+                echo "  FAILED"
+                ((failed++))
+            fi
+        fi
+        echo ""
+    done
+
+    echo "=== Summary ==="
+    echo "Success: $success, Failed: $failed, Total: ${#users_found[@]}"
 }
 
 cmd_get() {
@@ -282,6 +425,8 @@ cmd_list() {
 }
 
 cmd_check() {
+    echo "cac v${VERSION}"
+    echo ""
     local tool_arg=""
     local args=()
 
