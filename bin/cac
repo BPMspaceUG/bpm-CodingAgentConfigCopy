@@ -27,6 +27,8 @@ source "${LIB_DIR}/backend_local.sh"
 source "${LIB_DIR}/backend_gokapi.sh"
 # shellcheck source=lib/check.sh
 source "${LIB_DIR}/check.sh"
+# shellcheck source=lib/env.sh
+source "${LIB_DIR}/env.sh"
 
 # ============================================================================
 # Help / Usage
@@ -49,6 +51,9 @@ COMMANDS:
     list [--host HOST] [--user USER]  List available bundles
     check [TOOL] [--user USER]      Verify AI tool credentials work
     test [--user USER]              (Alias for check) Test API connectivity
+    env install [TOOL] [--user|--global]  Install AI tool environments
+    env update [TOOL] [--user|--global]   Update AI tool environments
+    env status [--parseable]        Show AI tool installation status
 
 OPTIONS:
     --user USER     Operate on specified user (requires root for other users)
@@ -478,6 +483,62 @@ cmd_test() {
     cmd_check "$@"
 }
 
+cmd_env() {
+    local subcommand="${1:-status}"
+    shift || true
+
+    case "$subcommand" in
+        install)
+            env_cmd_install "$@"
+            ;;
+        update)
+            env_cmd_update "$@"
+            ;;
+        status)
+            env_cmd_status "$@"
+            ;;
+        --help|-h)
+            cat <<EOF
+cac env - Manage AI tool environments
+
+USAGE:
+    cac env <subcommand> [options]
+
+SUBCOMMANDS:
+    install [TOOL] [--user|--global] [--yes]  Install AI tool environments
+    update [TOOL] [--user|--global]           Update AI tool environments
+    status [--parseable]                      Show installation status
+
+TOOLS:
+    claude            Claude Code CLI
+    codex             OpenAI Codex CLI
+    gemini            Google Gemini CLI
+    continuous-claude continuous-claude (optional)
+
+OPTIONS:
+    --user            Install/update for current user only (default)
+    --global          Install/update system-wide (requires root)
+    --yes, -y         Skip confirmation prompts
+    --parseable       Output status in tab-separated format
+
+EXAMPLES:
+    cac env status                    Show status of all AI tools
+    cac env install                   Interactive tool selection
+    cac env install claude            Install Claude Code
+    cac env install --global          Install all tools system-wide
+    cac env update codex              Update Codex CLI
+    cac env status --parseable        Machine-readable status output
+
+EOF
+            ;;
+        *)
+            utils_error "Unknown env subcommand: $subcommand"
+            echo "Run 'cac env --help' for usage information." >&2
+            return 1
+            ;;
+    esac
+}
+
 # ============================================================================
 # Main Entry Point
 # ============================================================================
@@ -518,9 +579,14 @@ main() {
 
     utils_verbose "Command: $command"
 
-    # Check/test commands don't require backend config
+    # Check/test/env commands don't require backend config
     if [[ "$command" == "check" || "$command" == "test" ]]; then
         cmd_check "$@"
+        exit $?
+    fi
+
+    if [[ "$command" == "env" ]]; then
+        cmd_env "$@"
         exit $?
     fi
 

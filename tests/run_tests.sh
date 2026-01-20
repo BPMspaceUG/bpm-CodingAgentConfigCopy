@@ -97,6 +97,14 @@ main() {
         echo ""
     fi
 
+    # Run env tests (Issue #16)
+    if $run_all || [[ "$filter" == "env" ]]; then
+        if ! run_test_suite "Environment Tests" "test_env.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Gokapi unit tests
     if $run_all || [[ "$filter" == "gokapi_unit" ]] || [[ "$filter" == "gokapi" ]]; then
         if ! run_test_suite "Gokapi Unit Tests" "test_gokapi_unit.sh"; then

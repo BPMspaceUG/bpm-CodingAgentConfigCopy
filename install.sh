@@ -672,6 +672,34 @@ do_install() {
         echo "Configuration: ${CONFIG_DIR}/.env"
     fi
     echo ""
+
+    # Check for CAC_ENV_INSTALL environment variable for AI tool installation
+    if [[ -n "${CAC_ENV_INSTALL:-}" ]]; then
+        echo ""
+        echo "==================================="
+        echo "   Installing AI Tool Environments"
+        echo "==================================="
+        echo ""
+
+        case "$CAC_ENV_INSTALL" in
+            global)
+                if is_root; then
+                    info "Installing AI tools system-wide (CAC_ENV_INSTALL=global)..."
+                    "${BIN_DIR}/cac" env install --global --yes
+                else
+                    warn "CAC_ENV_INSTALL=global requires root privileges. Skipping AI tool installation."
+                fi
+                ;;
+            user)
+                info "Installing AI tools for current user (CAC_ENV_INSTALL=user)..."
+                "${BIN_DIR}/cac" env install --user --yes
+                ;;
+            *)
+                warn "Unknown CAC_ENV_INSTALL value: $CAC_ENV_INSTALL"
+                warn "Valid values: 'user' or 'global'"
+                ;;
+        esac
+    fi
 }
 
 # Global config variables for CLI args (used by setup_config)
@@ -763,6 +791,22 @@ Examples:
   # Using environment variables
   export CAC_BACKEND=gokapi CAC_GOKAPI_URL=https://... CAC_GOKAPI_API_KEY=...
   curl -fsSL URL | bash
+
+Environment Variables:
+  CAC_BACKEND          Backend type ('gokapi' or 'local')
+  CAC_GOKAPI_URL       Gokapi server URL
+  CAC_GOKAPI_API_KEY   Gokapi API key
+  CAC_LOCAL_STORAGE    Local storage path
+  CAC_ENV_INSTALL      Install AI tools after cac ('user' or 'global')
+
+AI Tool Installation:
+  Set CAC_ENV_INSTALL to automatically install AI tools after cac:
+
+  # Install cac + AI tools for current user
+  curl -fsSL URL | CAC_ENV_INSTALL=user bash
+
+  # Install cac + AI tools system-wide (requires root)
+  curl -fsSL URL | CAC_ENV_INSTALL=global sudo bash
 EOF
 }
 

@@ -223,6 +223,67 @@ cac push
 cac push --skip-check
 ```
 
+### Manage AI Tool Environments
+
+The `env` subcommand installs, updates, and checks status of AI coding tool environments.
+
+```bash
+# Show status of all AI tools
+cac env status
+
+# Machine-readable status (tab-separated)
+cac env status --parseable
+
+# Install tools interactively (prompts for selection)
+cac env install
+
+# Install specific tool
+cac env install claude
+cac env install codex
+cac env install gemini
+cac env install continuous-claude
+
+# Install with --yes to skip confirmation prompts
+cac env install claude --yes
+
+# Global scope (requires root)
+sudo cac env install --global             # Interactive tool selection
+sudo cac env install claude --global      # Install specific tool globally
+
+# Update tools
+cac env update              # Update all installed tools
+cac env update codex        # Update specific tool
+```
+
+**Scope flags:**
+
+| Flag | Behavior |
+|------|----------|
+| `--user` | User-local install (default). npm tools use `~/.local` prefix |
+| `--global` | System-wide install (requires root). npm tools use global prefix |
+| `--yes`, `-y` | Skip confirmation prompts (for curl-based installers) |
+
+**Note:** Scope flags control npm install prefix. Curl-based installers (Claude, continuous-claude) use their own install logic and may install to different locations.
+
+**Tools registry:**
+
+| Tool | Install Method | Optional |
+|------|---------------|----------|
+| Claude Code | curl installer | No |
+| Codex CLI | npm | No |
+| Gemini CLI | npm | No |
+| continuous-claude | curl installer | Yes |
+
+**Automated installation with cac installer:**
+
+```bash
+# Install cac + AI tools for current user (non-interactive)
+curl -fsSL URL | CAC_ENV_INSTALL=user bash
+
+# Install cac + AI tools system-wide (non-interactive)
+curl -fsSL URL | CAC_ENV_INSTALL=global sudo bash
+```
+
 ### Help
 
 ```bash
