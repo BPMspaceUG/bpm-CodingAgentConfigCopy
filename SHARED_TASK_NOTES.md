@@ -1,31 +1,34 @@
 # Shared Task Notes
 
-## Current Status
+## Current Status (2026-01-21, verified this iteration)
 
-**Code Quality - Iteration 81** - 2026-01-12
+**All feature development complete.** Tests: 222/222 passing (6 test suites). Shellcheck: clean (info-level only).
 
-All tests passing:
-- 164/164 tests pass (16 bundle + 23 security + 80 utils + 20 integration + 25 install)
-- ShellCheck passes with zero warnings/errors
+**Open Issues: 2 (both blocked on human action)**
 
-## Quick Verification
+| Issue | Description | Status |
+|-------|-------------|--------|
+| #15 | Security review for public release | Blocked: awaiting key revocation + git history rewrite |
+| #18 | API key breach detected | Blocked: awaiting key revocation |
 
-```bash
-./tests/run_tests.sh                              # All 164 tests pass
-shellcheck --severity=warning bin/cac lib/*.sh    # No warnings
-```
+## Required Human Actions
 
-## Project Status
+1. **Revoke leaked API keys:**
+   - Historical: `j8aI5uDt9...` @ `offload.ico-cert.com`
+   - Current: `2OVJ3oUoz...` @ `gokapi.bpmspace.org`
 
-The codebase is **complete and production-ready**.
+2. **Rewrite git history** (user stated: "will be done separately"):
+   ```bash
+   git filter-repo --invert-paths --path .env
+   git push --force --all
+   ```
 
-Final review (iteration 80) confirms:
-- Code quality is excellent with proper error handling throughout
-- Security-conscious design with zip-slip protection, secure temp dirs, permission validation
-- Well-structured modularity with clear separation of concerns
-- Comprehensive test coverage across all modules
-- DRY principles followed consistently
+3. **Close issues after remediation:**
+   - #18 after keys revoked
+   - #15 after full remediation + history rewrite
 
-No remaining actionable improvements identified.
+## Next Iteration
 
-**CONTINUOUS_CLAUDE_PROJECT_COMPLETE**
+**No AI-actionable work remaining** until human completes key revocation and git history rewrite.
+
+After remediation: close #18 and #15 via GitHub.
