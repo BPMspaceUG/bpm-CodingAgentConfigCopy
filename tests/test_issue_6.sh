@@ -238,7 +238,8 @@ test_6_1() {
     # Create a valid cache entry (less than 5 minutes old)
     local cache_file="$MOCK_CACHE/cac/check_results"
     mkdir -p "$(dirname "$cache_file")"
-    local now=$(date +%s)
+    local now
+    now=$(date +%s)
     local recent=$((now - 60))  # 60 seconds ago
 
     echo "claude:testhash123:${recent}:OK" > "$cache_file"
@@ -270,7 +271,8 @@ test_6_2() {
     # Create an expired cache entry (more than 5 minutes old)
     local cache_file="$MOCK_CACHE/cac/check_results"
     mkdir -p "$(dirname "$cache_file")"
-    local now=$(date +%s)
+    local now
+    now=$(date +%s)
     local old=$((now - 400))  # 400 seconds ago (> 300 TTL)
 
     echo "claude:testhash456:${old}:OK" > "$cache_file"
@@ -302,7 +304,8 @@ test_6_3() {
     # Create cache entry with old key
     local cache_file="$MOCK_CACHE/cac/check_results"
     mkdir -p "$(dirname "$cache_file")"
-    local now=$(date +%s)
+    local now
+    now=$(date +%s)
     local recent=$((now - 60))
 
     # Cache entry with key "oldhash789"

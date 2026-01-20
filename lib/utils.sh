@@ -389,7 +389,11 @@ utils_json_extract_field() {
     local field="$2"
     local result
 
-    result=$(echo "$json" | grep -o "\"${field}\":\"[^\"]*\"" | head -1 | cut -d'"' -f4)
+    # Escape field name for safe use in grep pattern (security fix)
+    local escaped_field
+    escaped_field=$(utils_escape_regex "$field")
+
+    result=$(echo "$json" | grep -o "\"${escaped_field}\":\"[^\"]*\"" | head -1 | cut -d'"' -f4)
 
     if [[ -z "$result" ]]; then
         utils_verbose "JSON field '$field' not found or empty in response"

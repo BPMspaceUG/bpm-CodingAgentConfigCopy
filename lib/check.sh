@@ -181,15 +181,17 @@ _check_with_timeout() {
         return $CHECK_EXIT_MISSING_DEP
     fi
 
-    # Create temp files for output and exit code
+    # Create temp files for output and exit code with secure permissions
     local tmpfile exitfile
     tmpfile=$(mktemp)
     exitfile=$(mktemp)
+    chmod 600 "$tmpfile" "$exitfile"
 
-    # Run command in subshell, save exit code
+    # Run command in subshell, save exit code (capture before echo overwrites $?)
     (
         "$timeout_cmd" "$seconds" "$@" > "$tmpfile" 2>&1
-        echo $? > "$exitfile"
+        cmd_exit=$?
+        echo "$cmd_exit" > "$exitfile"
     ) &
     local pid=$!
 

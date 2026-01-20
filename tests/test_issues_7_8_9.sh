@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1090  # Dynamic source paths are intentional in tests
 # Test script for Issues #7, #8, #9
 # Execute: ./tests/test_issues_7_8_9.sh
 #
