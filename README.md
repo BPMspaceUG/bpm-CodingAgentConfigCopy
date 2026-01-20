@@ -24,6 +24,56 @@ curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-CodingAgentConfigCop
 curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-CodingAgentConfigCopy/main/install.sh | sudo bash
 ```
 
+### Installation Location Flags
+
+Control where cac is installed with explicit flags:
+
+| Flag | Behavior |
+|------|----------|
+| `--user` | Install to `~/.local/bin` only (works even as root) |
+| `--global` | Install to `/usr/local/bin` only (requires root) |
+| `--all` | Install to both locations (requires root) |
+| (no flag) | Auto-detect: root→global, non-root→user (or prompt in interactive mode) |
+
+```bash
+# Explicit user-local install (even when running as root)
+sudo ./install.sh --user
+
+# Explicit system-wide install
+sudo ./install.sh --global
+
+# Install to both locations
+sudo ./install.sh --all
+
+# With curl (non-interactive)
+curl -fsSL URL | bash -s -- --user
+curl -fsSL URL | sudo bash -s -- --global
+```
+
+### Non-Interactive Configuration
+
+For automated installations, provide configuration via CLI arguments:
+
+```bash
+# Gokapi backend
+curl -fsSL URL | bash -s -- --backend gokapi --url https://gokapi.example.com --api-key SECRET
+
+# Local backend
+curl -fsSL URL | bash -s -- --backend local --storage /path/to/bundles
+
+# Combined with location flag
+curl -fsSL URL | bash -s -- --user --backend local
+```
+
+Or via environment variables:
+
+```bash
+export CAC_BACKEND=gokapi
+export CAC_GOKAPI_URL=https://gokapi.example.com
+export CAC_GOKAPI_API_KEY=your-api-key
+curl -fsSL URL | bash
+```
+
 ### Manual Install from Repository
 
 ```bash

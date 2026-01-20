@@ -574,9 +574,22 @@ do_uninstall() {
     fi
 }
 
+# Perform single installation to current paths
+do_single_install() {
+    local temp_dir="$1"
+
+    # Install files
+    install_files "$temp_dir"
+
+    # Setup configuration
+    setup_config "$temp_dir"
+}
+
 # Perform installation
 do_install() {
-    set_install_paths
+    # Validate mode first (checks root requirements)
+    validate_install_mode
+
     check_dependencies
 
     echo ""
@@ -584,8 +597,6 @@ do_install() {
     echo "   cac - Coding Agent Config"
     echo "   Bootstrap Installer"
     echo "==================================="
-    echo ""
-    info "Installation mode: ${INSTALL_MODE}"
     echo ""
 
     # Get version to install
@@ -604,11 +615,41 @@ do_install() {
     # Verify checksums
     verify_checksums "$version" "$temp_dir"
 
-    # Install files
-    install_files "$temp_dir"
-
-    # Setup configuration
-    setup_config "$temp_dir"
+    # Install based on mode
+    case "$INSTALL_MODE_FLAG" in
+        user)
+            set_user_local_paths
+            info "Installation mode: user-local (--user)"
+            echo ""
+            do_single_install "$temp_dir"
+            ;;
+        global)
+            set_system_wide_paths
+            info "Installation mode: system-wide (--global)"
+            echo ""
+            do_single_install "$temp_dir"
+            ;;
+        all)
+            info "Installation mode: both locations (--all)"
+            echo ""
+            # Install to user-local first
+            set_user_local_paths
+            info "Installing to user-local location..."
+            do_single_install "$temp_dir"
+            echo ""
+            # Then install to system-wide
+            set_system_wide_paths
+            info "Installing to system-wide location..."
+            do_single_install "$temp_dir"
+            ;;
+        "")
+            # Auto-detect: use existing behavior (prompt or EUID-based)
+            set_install_paths
+            info "Installation mode: ${INSTALL_MODE}"
+            echo ""
+            do_single_install "$temp_dir"
+            ;;
+    esac
 
     # Setup PATH for user installation
     setup_path
@@ -625,7 +666,11 @@ do_install() {
     echo "  cac test          - Test AI tool connectivity"
     echo "  cac --help        - Show all commands"
     echo ""
-    echo "Configuration: ${CONFIG_DIR}/.env"
+    if [[ "$INSTALL_MODE_FLAG" == "all" ]]; then
+        echo "Configuration: ${USER_CONFIG_DIR}/.env (user) and ${SYS_CONFIG_DIR}/.env (system)"
+    else
+        echo "Configuration: ${CONFIG_DIR}/.env"
+    fi
     echo ""
 }
 
@@ -635,6 +680,9 @@ ARG_URL=""
 ARG_API_KEY=""
 ARG_STORAGE=""
 
+# Installation mode: "" (auto), "user", "global", "all"
+INSTALL_MODE_FLAG=""
+
 # Validate URL format (must start with http:// or https://)
 validate_url() {
     local url="$1"
@@ -642,6 +690,34 @@ validate_url() {
         error "Invalid URL format: must start with http:// or https://"
         exit 1
     fi
+}
+
+# Validate installation mode flag (check for conflicts and root requirements)
+validate_install_mode() {
+    case "$INSTALL_MODE_FLAG" in
+        global)
+            if ! is_root; then
+                die "--global requires root privileges"
+            fi
+            ;;
+        all)
+            if ! is_root; then
+                die "--all requires root privileges"
+            fi
+            ;;
+        user|"")
+            # No root required
+            ;;
+    esac
+}
+
+# Set install mode flag with conflict detection
+set_install_mode_flag() {
+    local new_mode="$1"
+    if [[ -n "$INSTALL_MODE_FLAG" && "$INSTALL_MODE_FLAG" != "$new_mode" ]]; then
+        die "Conflicting flags: only one of --user, --global, --all allowed"
+    fi
+    INSTALL_MODE_FLAG="$new_mode"
 }
 
 # Show help text
@@ -653,25 +729,36 @@ Options:
   --uninstall, -u        Remove cac installation
   --help, -h             Show this help message
 
+Installation location options:
+  --user                 Install to ~/.local/bin only (user-local)
+  --global               Install to /usr/local/bin only (requires root)
+  --all                  Install to both locations (requires root)
+  (no flag)              Auto-detect: root→global, non-root→user
+
 Configuration options (for non-interactive installation):
   --backend, -b TYPE     Backend type: 'gokapi' or 'local'
   --url, -U URL          Gokapi server URL (required for gokapi backend)
   --api-key, -k KEY      Gokapi API key (required for gokapi backend)
   --storage, -s PATH     Local storage path (optional for local backend)
 
-Installation modes:
-  Root:     Installs to /usr/local/bin + /etc/cac/
-  Non-root: Installs to ~/.local/bin + ~/.config/cac/
-
 Examples:
-  # Interactive installation
+  # Interactive installation (prompts for install type)
   ./install.sh
+
+  # User-local installation (even as root)
+  sudo ./install.sh --user
+
+  # System-wide installation
+  sudo ./install.sh --global
+
+  # Install to both locations
+  sudo ./install.sh --all
 
   # Non-interactive with Gokapi backend
   curl -fsSL URL | bash -s -- --backend gokapi --url https://gokapi.example.com --api-key SECRET
 
-  # Non-interactive with local backend
-  curl -fsSL URL | bash -s -- --backend local --storage /path/to/bundles
+  # Non-interactive user-local with local backend
+  curl -fsSL URL | bash -s -- --user --backend local --storage /path/to/bundles
 
   # Using environment variables
   export CAC_BACKEND=gokapi CAC_GOKAPI_URL=https://... CAC_GOKAPI_API_KEY=...
@@ -693,6 +780,18 @@ main() {
             --help|-h)
                 show_help
                 exit 0
+                ;;
+            --user)
+                set_install_mode_flag "user"
+                shift
+                ;;
+            --global)
+                set_install_mode_flag "global"
+                shift
+                ;;
+            --all)
+                set_install_mode_flag "all"
+                shift
                 ;;
             --backend|-b)
                 if [[ -z "${2:-}" ]]; then

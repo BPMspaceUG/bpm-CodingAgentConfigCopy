@@ -1113,6 +1113,112 @@ EOF
 }
 
 # ============================================================================
+# Issue #13: Installation mode flag tests
+# ============================================================================
+
+# Global variable for install mode flag (mirrors install.sh)
+INSTALL_MODE_FLAG=""
+
+# Copy of set_install_mode_flag from install.sh for testing
+# SYNC: install.sh lines 715-720 - if install.sh changes, update this copy
+set_install_mode_flag() {
+    local new_mode="$1"
+    if [[ -n "$INSTALL_MODE_FLAG" && "$INSTALL_MODE_FLAG" != "$new_mode" ]]; then
+        die "Conflicting flags: only one of --user, --global, --all allowed"
+    fi
+    INSTALL_MODE_FLAG="$new_mode"
+}
+
+# Copy of validate_install_mode from install.sh for testing
+# SYNC: install.sh lines 696-712 - if install.sh changes, update this copy
+validate_install_mode() {
+    case "$INSTALL_MODE_FLAG" in
+        global)
+            if ! is_root; then
+                die "--global requires root privileges"
+            fi
+            ;;
+        all)
+            if ! is_root; then
+                die "--all requires root privileges"
+            fi
+            ;;
+        user|"")
+            # No root required
+            ;;
+    esac
+}
+
+# Helper to parse install mode args (simulates main() arg parsing)
+parse_install_mode_args() {
+    INSTALL_MODE_FLAG=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --user)
+                set_install_mode_flag "user"
+                shift
+                ;;
+            --global)
+                set_install_mode_flag "global"
+                shift
+                ;;
+            --all)
+                set_install_mode_flag "all"
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+}
+
+test_parse_user_flag() {
+    parse_install_mode_args --user
+    assert_equals "user" "$INSTALL_MODE_FLAG" "--user sets INSTALL_MODE_FLAG"
+}
+
+test_parse_global_flag() {
+    parse_install_mode_args --global
+    assert_equals "global" "$INSTALL_MODE_FLAG" "--global sets INSTALL_MODE_FLAG"
+}
+
+test_parse_all_flag() {
+    parse_install_mode_args --all
+    assert_equals "all" "$INSTALL_MODE_FLAG" "--all sets INSTALL_MODE_FLAG"
+}
+
+test_conflicting_flags_error() {
+    local exit_code=0
+    # --user followed by --global should error with exit code 1
+    (parse_install_mode_args --user --global 2>/dev/null) || exit_code=$?
+    [[ $exit_code -eq 1 ]]
+}
+
+test_global_requires_root() {
+    _TEST_EUID=1000  # Simulate non-root user
+    INSTALL_MODE_FLAG="global"
+    local exit_code=0
+    # --global without root should exit with code 1
+    (validate_install_mode 2>/dev/null) || exit_code=$?
+    _TEST_EUID=""
+    INSTALL_MODE_FLAG=""
+    [[ $exit_code -eq 1 ]]
+}
+
+test_all_requires_root() {
+    _TEST_EUID=1000  # Simulate non-root user
+    INSTALL_MODE_FLAG="all"
+    local exit_code=0
+    # --all without root should exit with code 1
+    (validate_install_mode 2>/dev/null) || exit_code=$?
+    _TEST_EUID=""
+    INSTALL_MODE_FLAG=""
+    [[ $exit_code -eq 1 ]]
+}
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 
@@ -1217,6 +1323,15 @@ run_test "removes original pattern" test_update_cli_lib_path_removes_original
 run_test "handles user-local paths" test_update_cli_lib_path_user_local
 run_test "preserves file permissions" test_update_cli_lib_path_preserves_permissions
 run_test "handles files without pattern" test_update_cli_lib_path_warns_on_failure
+
+echo ""
+echo "--- Issue #13: Installation mode flags ---"
+run_test "parses --user flag" test_parse_user_flag
+run_test "parses --global flag" test_parse_global_flag
+run_test "parses --all flag" test_parse_all_flag
+run_test "conflicting flags error" test_conflicting_flags_error
+run_test "--global requires root" test_global_requires_root
+run_test "--all requires root" test_all_requires_root
 
 echo ""
 framework_report
