@@ -230,6 +230,44 @@ verify_checksums() {
     fi
 }
 
+# Update the CLI binary to use the correct library path
+# Cross-platform: works on Linux (GNU sed) and macOS (BSD sed)
+# Args: $1 = path to cac binary, $2 = library directory path
+update_cli_lib_path() {
+    local cac_file="$1"
+    local lib_path="$2"
+    local pattern='LIB_DIR="${SCRIPT_DIR}/../lib"'
+    local replacement="LIB_DIR=\"${lib_path}\""
+
+    # Try GNU sed first (Linux)
+    if sed -i "s|${pattern}|${replacement}|" "$cac_file" 2>/dev/null; then
+        : # Success
+    # Try BSD sed (macOS) - requires empty extension for in-place edit
+    elif sed -i '' "s|${pattern}|${replacement}|" "$cac_file" 2>/dev/null; then
+        : # Success
+    else
+        # Fallback: use temp file approach (works everywhere)
+        local temp_file
+        temp_file=$(mktemp)
+        if sed "s|${pattern}|${replacement}|" "$cac_file" > "$temp_file" && \
+           mv "$temp_file" "$cac_file" && \
+           chmod 755 "$cac_file"; then
+            : # Success
+        else
+            rm -f "$temp_file" 2>/dev/null || true
+            warn "Failed to update library path using sed"
+        fi
+    fi
+
+    # Verify the replacement worked
+    if grep -qF 'LIB_DIR="${SCRIPT_DIR}/../lib"' "$cac_file" 2>/dev/null; then
+        warn "Library path was not updated in CLI binary"
+        warn "Manual fix required: Edit ${cac_file} line 11"
+        warn "Change: LIB_DIR=\"\${SCRIPT_DIR}/../lib\""
+        warn "    To: LIB_DIR=\"${lib_path}\""
+    fi
+}
+
 # Install shell completion files
 install_completions() {
     local temp_dir="$1"
@@ -288,15 +326,52 @@ install_files() {
     chmod 644 "${LIB_DIR}/"*
 
     # Update CLI to use correct library path
-    # The CLI auto-detects lib path relative to its location, but for system-wide
-    # we need to ensure the lib path is correct
-    sed -i "s|LIB_DIR=\"\${SCRIPT_DIR}/../lib\"|LIB_DIR=\"${LIB_DIR}\"|" "${BIN_DIR}/cac" 2>/dev/null || true
+    # The CLI auto-detects lib path relative to its location, but for installed version
+    # we need to use the absolute path where libraries are installed
+    update_cli_lib_path "${BIN_DIR}/cac" "${LIB_DIR}"
 
     success "Installed cac to ${BIN_DIR}/cac"
     success "Installed libraries to ${LIB_DIR}/"
 
     # Install shell completions (optional)
     install_completions "$temp_dir"
+}
+
+# Show error message for missing config in non-interactive mode
+show_noninteractive_config_error() {
+    error "Non-interactive mode requires configuration values."
+    echo ""
+    echo "Provide configuration via CLI arguments:"
+    echo ""
+    echo "  For Gokapi backend:"
+    echo "    curl -fsSL URL | bash -s -- --backend gokapi --url https://your-server.com --api-key YOUR_KEY"
+    echo ""
+    echo "  For local backend:"
+    echo "    curl -fsSL URL | bash -s -- --backend local [--storage /path/to/bundles]"
+    echo ""
+    echo "Or set environment variables before running:"
+    echo "    export CAC_BACKEND=gokapi"
+    echo "    export CAC_GOKAPI_URL=https://your-server.com"
+    echo "    export CAC_GOKAPI_API_KEY=YOUR_KEY"
+    echo "    curl -fsSL URL | bash"
+    echo ""
+    exit 2
+}
+
+# Resolve config value from CLI arg, env var, or default
+# Usage: resolve_config_value "ARG_VALUE" "ENV_VAR_NAME" "DEFAULT"
+resolve_config_value() {
+    local arg_value="$1"
+    local env_var_name="$2"
+    local default_value="${3:-}"
+
+    if [[ -n "$arg_value" ]]; then
+        echo "$arg_value"
+    elif [[ -n "${!env_var_name:-}" ]]; then
+        echo "${!env_var_name}"
+    else
+        echo "$default_value"
+    fi
 }
 
 # Setup or prompt for configuration
@@ -347,12 +422,47 @@ setup_config() {
                 ;;
         esac
     else
-        # Non-interactive: create example config
-        info "Non-interactive mode: creating example configuration"
-        cp "${temp_dir}/.env.example" "$env_file"
-        chmod 600 "$env_file"
-        warn "Please edit ${env_file} with your configuration"
-        return 0
+        # Non-interactive mode: use CLI args or environment variables
+        backend=$(resolve_config_value "$ARG_BACKEND" "CAC_BACKEND" "")
+
+        if [[ -z "$backend" ]]; then
+            show_noninteractive_config_error
+        fi
+
+        if [[ "$backend" != "gokapi" && "$backend" != "local" ]]; then
+            error "Invalid backend: '$backend'. Must be 'gokapi' or 'local'."
+            exit 2
+        fi
+
+        if [[ "$backend" == "gokapi" ]]; then
+            gokapi_url=$(resolve_config_value "$ARG_URL" "CAC_GOKAPI_URL" "")
+            gokapi_key=$(resolve_config_value "$ARG_API_KEY" "CAC_GOKAPI_API_KEY" "")
+
+            if [[ -z "$gokapi_url" || -z "$gokapi_key" ]]; then
+                error "Gokapi backend requires both URL and API key."
+                echo ""
+                echo "Provide via CLI: --backend gokapi --url URL --api-key KEY"
+                echo "Or via env vars: CAC_GOKAPI_URL and CAC_GOKAPI_API_KEY"
+                exit 2
+            fi
+
+            # Validate URL format
+            if [[ ! "$gokapi_url" =~ ^https?:// ]]; then
+                error "Invalid URL format: must start with http:// or https://"
+                exit 2
+            fi
+        else
+            # Local backend
+            local default_storage
+            if is_root; then
+                default_storage="/var/lib/cac/bundles"
+            else
+                default_storage="${HOME}/.local/share/cac/bundles"
+            fi
+            local_storage=$(resolve_config_value "$ARG_STORAGE" "CAC_LOCAL_STORAGE" "$default_storage")
+        fi
+
+        info "Non-interactive mode: using provided configuration"
     fi
 
     # Generate config file
@@ -483,10 +593,10 @@ do_install() {
     version=$(get_latest_version)
     info "Latest version: ${version}"
 
-    # Create temp directory
-    local temp_dir
+    # Create temp directory with safe trap
+    local temp_dir=""
+    trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' EXIT
     temp_dir=$(mktemp -d -t cac-install.XXXXXXXXXX)
-    trap 'rm -rf "$temp_dir"' EXIT
 
     # Download project files
     download_project "$version" "$temp_dir"
@@ -519,6 +629,56 @@ do_install() {
     echo ""
 }
 
+# Global config variables for CLI args (used by setup_config)
+ARG_BACKEND=""
+ARG_URL=""
+ARG_API_KEY=""
+ARG_STORAGE=""
+
+# Validate URL format (must start with http:// or https://)
+validate_url() {
+    local url="$1"
+    if [[ ! "$url" =~ ^https?:// ]]; then
+        error "Invalid URL format: must start with http:// or https://"
+        exit 1
+    fi
+}
+
+# Show help text
+show_help() {
+    cat << 'EOF'
+Usage: install.sh [OPTIONS]
+
+Options:
+  --uninstall, -u        Remove cac installation
+  --help, -h             Show this help message
+
+Configuration options (for non-interactive installation):
+  --backend, -b TYPE     Backend type: 'gokapi' or 'local'
+  --url, -U URL          Gokapi server URL (required for gokapi backend)
+  --api-key, -k KEY      Gokapi API key (required for gokapi backend)
+  --storage, -s PATH     Local storage path (optional for local backend)
+
+Installation modes:
+  Root:     Installs to /usr/local/bin + /etc/cac/
+  Non-root: Installs to ~/.local/bin + ~/.config/cac/
+
+Examples:
+  # Interactive installation
+  ./install.sh
+
+  # Non-interactive with Gokapi backend
+  curl -fsSL URL | bash -s -- --backend gokapi --url https://gokapi.example.com --api-key SECRET
+
+  # Non-interactive with local backend
+  curl -fsSL URL | bash -s -- --backend local --storage /path/to/bundles
+
+  # Using environment variables
+  export CAC_BACKEND=gokapi CAC_GOKAPI_URL=https://... CAC_GOKAPI_API_KEY=...
+  curl -fsSL URL | bash
+EOF
+}
+
 # Main entry point
 main() {
     local uninstall=false
@@ -531,16 +691,40 @@ main() {
                 shift
                 ;;
             --help|-h)
-                echo "Usage: install.sh [OPTIONS]"
-                echo ""
-                echo "Options:"
-                echo "  --uninstall, -u    Remove cac installation"
-                echo "  --help, -h         Show this help message"
-                echo ""
-                echo "Installation modes:"
-                echo "  Root:     Installs to /usr/local/bin + /etc/cac/"
-                echo "  Non-root: Installs to ~/.local/bin + ~/.config/cac/"
+                show_help
                 exit 0
+                ;;
+            --backend|-b)
+                if [[ -z "${2:-}" ]]; then
+                    die "--backend requires a value (gokapi or local)"
+                fi
+                if [[ "$2" != "gokapi" && "$2" != "local" ]]; then
+                    die "--backend must be 'gokapi' or 'local'"
+                fi
+                ARG_BACKEND="$2"
+                shift 2
+                ;;
+            --url|-U)
+                if [[ -z "${2:-}" ]]; then
+                    die "--url requires a value"
+                fi
+                validate_url "$2"
+                ARG_URL="$2"
+                shift 2
+                ;;
+            --api-key|-k)
+                if [[ -z "${2:-}" ]]; then
+                    die "--api-key requires a value"
+                fi
+                ARG_API_KEY="$2"
+                shift 2
+                ;;
+            --storage|-s)
+                if [[ -z "${2:-}" ]]; then
+                    die "--storage requires a value"
+                fi
+                ARG_STORAGE="$2"
+                shift 2
                 ;;
             *)
                 die "Unknown option: $1"

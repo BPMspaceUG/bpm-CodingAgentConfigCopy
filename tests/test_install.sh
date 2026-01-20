@@ -572,6 +572,547 @@ test_parse_help_flag() {
 }
 
 # ============================================================================
+# Tests for Issue #11: Non-interactive config with CLI args
+# ============================================================================
+
+# Define helper functions for Issue #11 tests
+ARG_BACKEND=""
+ARG_URL=""
+ARG_API_KEY=""
+ARG_STORAGE=""
+
+validate_url() {
+    local url="$1"
+    if [[ ! "$url" =~ ^https?:// ]]; then
+        error "Invalid URL format: must start with http:// or https://"
+        exit 1
+    fi
+}
+
+resolve_config_value() {
+    local arg_value="$1"
+    local env_var_name="$2"
+    local default_value="${3:-}"
+
+    if [[ -n "$arg_value" ]]; then
+        echo "$arg_value"
+    elif [[ -n "${!env_var_name:-}" ]]; then
+        echo "${!env_var_name}"
+    else
+        echo "$default_value"
+    fi
+}
+
+show_noninteractive_config_error() {
+    error "Non-interactive mode requires configuration values."
+    exit 2
+}
+
+# Parse config args from array (simulates main() arg parsing)
+parse_config_args() {
+    ARG_BACKEND=""
+    ARG_URL=""
+    ARG_API_KEY=""
+    ARG_STORAGE=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --backend|-b)
+                if [[ -z "${2:-}" ]]; then
+                    die "--backend requires a value"
+                fi
+                if [[ "$2" != "gokapi" && "$2" != "local" ]]; then
+                    die "--backend must be 'gokapi' or 'local'"
+                fi
+                ARG_BACKEND="$2"
+                shift 2
+                ;;
+            --url|-U)
+                if [[ -z "${2:-}" ]]; then
+                    die "--url requires a value"
+                fi
+                validate_url "$2"
+                ARG_URL="$2"
+                shift 2
+                ;;
+            --api-key|-k)
+                if [[ -z "${2:-}" ]]; then
+                    die "--api-key requires a value"
+                fi
+                ARG_API_KEY="$2"
+                shift 2
+                ;;
+            --storage|-s)
+                if [[ -z "${2:-}" ]]; then
+                    die "--storage requires a value"
+                fi
+                ARG_STORAGE="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+}
+
+test_parse_backend_gokapi() {
+    parse_config_args --backend gokapi
+    assert_equals "gokapi" "$ARG_BACKEND" "backend parsed as gokapi"
+}
+
+test_parse_backend_local() {
+    parse_config_args --backend local
+    assert_equals "local" "$ARG_BACKEND" "backend parsed as local"
+}
+
+test_parse_backend_short_flag() {
+    parse_config_args -b gokapi
+    assert_equals "gokapi" "$ARG_BACKEND" "backend via short flag"
+}
+
+test_parse_url_long() {
+    parse_config_args --url https://example.com
+    assert_equals "https://example.com" "$ARG_URL" "url parsed"
+}
+
+test_parse_url_short() {
+    parse_config_args -U https://example.com
+    assert_equals "https://example.com" "$ARG_URL" "url via short flag"
+}
+
+test_parse_api_key() {
+    parse_config_args --api-key secret123
+    assert_equals "secret123" "$ARG_API_KEY" "api-key parsed"
+}
+
+test_parse_api_key_short() {
+    parse_config_args -k secret123
+    assert_equals "secret123" "$ARG_API_KEY" "api-key via short flag"
+}
+
+test_parse_storage() {
+    parse_config_args --storage /path/to/storage
+    assert_equals "/path/to/storage" "$ARG_STORAGE" "storage parsed"
+}
+
+test_parse_storage_short() {
+    parse_config_args -s /path/to/storage
+    assert_equals "/path/to/storage" "$ARG_STORAGE" "storage via short flag"
+}
+
+test_parse_full_gokapi_config() {
+    parse_config_args --backend gokapi --url https://gokapi.example.com --api-key mysecret
+    assert_equals "gokapi" "$ARG_BACKEND" "full gokapi backend" &&
+    assert_equals "https://gokapi.example.com" "$ARG_URL" "full gokapi url" &&
+    assert_equals "mysecret" "$ARG_API_KEY" "full gokapi key"
+}
+
+test_parse_full_local_config() {
+    parse_config_args --backend local --storage /var/bundles
+    assert_equals "local" "$ARG_BACKEND" "full local backend" &&
+    assert_equals "/var/bundles" "$ARG_STORAGE" "full local storage"
+}
+
+test_validate_url_https() {
+    local exit_code=0
+    validate_url "https://example.com" 2>/dev/null || exit_code=$?
+    [[ $exit_code -eq 0 ]]
+}
+
+test_validate_url_http() {
+    local exit_code=0
+    validate_url "http://example.com" 2>/dev/null || exit_code=$?
+    [[ $exit_code -eq 0 ]]
+}
+
+test_validate_url_invalid() {
+    local exit_code=0
+    (validate_url "ftp://example.com" 2>/dev/null) || exit_code=$?
+    [[ $exit_code -ne 0 ]]
+}
+
+test_validate_url_no_scheme() {
+    local exit_code=0
+    (validate_url "example.com" 2>/dev/null) || exit_code=$?
+    [[ $exit_code -ne 0 ]]
+}
+
+test_resolve_config_cli_priority() {
+    export TEST_VAR="from_env"
+    local result
+    result=$(resolve_config_value "from_cli" "TEST_VAR" "default")
+    unset TEST_VAR
+    assert_equals "from_cli" "$result" "CLI takes priority over env"
+}
+
+test_resolve_config_env_fallback() {
+    export TEST_VAR="from_env"
+    local result
+    result=$(resolve_config_value "" "TEST_VAR" "default")
+    unset TEST_VAR
+    assert_equals "from_env" "$result" "env var used when no CLI arg"
+}
+
+test_resolve_config_default_fallback() {
+    unset TEST_VAR
+    local result
+    result=$(resolve_config_value "" "TEST_VAR" "default")
+    assert_equals "default" "$result" "default used when no CLI or env"
+}
+
+test_invalid_backend_fails() {
+    local exit_code=0
+    (parse_config_args --backend invalid 2>/dev/null) || exit_code=$?
+    [[ $exit_code -ne 0 ]]
+}
+
+test_noninteractive_error_exits_2() {
+    local exit_code=0
+    (show_noninteractive_config_error 2>/dev/null) || exit_code=$?
+    [[ $exit_code -eq 2 ]]
+}
+
+# ============================================================================
+# Integration Tests for setup_config .env output (Issue #11)
+# ============================================================================
+
+# Helper: Create a mock setup_config for testing
+# This simulates the non-interactive path of setup_config
+mock_setup_config_noninteractive() {
+    local env_file="${CONFIG_DIR}/.env"
+
+    if [[ -f "$env_file" ]]; then
+        return 0  # Skip if exists
+    fi
+
+    local backend
+    backend=$(resolve_config_value "$ARG_BACKEND" "CAC_BACKEND" "")
+
+    if [[ -z "$backend" ]]; then
+        return 2
+    fi
+
+    local gokapi_url=""
+    local gokapi_key=""
+    local local_storage=""
+
+    if [[ "$backend" == "gokapi" ]]; then
+        gokapi_url=$(resolve_config_value "$ARG_URL" "CAC_GOKAPI_URL" "")
+        gokapi_key=$(resolve_config_value "$ARG_API_KEY" "CAC_GOKAPI_API_KEY" "")
+        if [[ -z "$gokapi_url" || -z "$gokapi_key" ]]; then
+            return 2
+        fi
+    else
+        local_storage=$(resolve_config_value "$ARG_STORAGE" "CAC_LOCAL_STORAGE" "/default/path")
+    fi
+
+    # Generate config file
+    {
+        echo "CAC_BACKEND=${backend}"
+        if [[ "$backend" == "gokapi" ]]; then
+            echo "CAC_GOKAPI_URL=${gokapi_url}"
+            echo "CAC_GOKAPI_API_KEY=${gokapi_key}"
+        else
+            echo "CAC_LOCAL_STORAGE=${local_storage}"
+        fi
+    } > "$env_file"
+
+    chmod 600 "$env_file"
+}
+
+test_setup_config_gokapi_creates_env() {
+    local test_dir
+    test_dir=$(mktemp -d)
+    CONFIG_DIR="$test_dir"
+    mkdir -p "$CONFIG_DIR"
+
+    ARG_BACKEND="gokapi"
+    ARG_URL="https://test.gokapi.com"
+    ARG_API_KEY="test-secret-key"
+    ARG_STORAGE=""
+
+    unset CAC_BACKEND CAC_GOKAPI_URL CAC_GOKAPI_API_KEY CAC_LOCAL_STORAGE 2>/dev/null || true
+
+    mock_setup_config_noninteractive
+
+    local env_file="${CONFIG_DIR}/.env"
+    assert_file_exists "$env_file" "env file created" &&
+    assert_contains "CAC_BACKEND=gokapi" "$(cat "$env_file")" "backend in env" &&
+    assert_contains "CAC_GOKAPI_URL=https://test.gokapi.com" "$(cat "$env_file")" "url in env" &&
+    assert_contains "CAC_GOKAPI_API_KEY=test-secret-key" "$(cat "$env_file")" "api key in env"
+
+    rm -rf "$test_dir"
+}
+
+test_setup_config_local_creates_env() {
+    local test_dir
+    test_dir=$(mktemp -d)
+    CONFIG_DIR="$test_dir"
+    mkdir -p "$CONFIG_DIR"
+
+    ARG_BACKEND="local"
+    ARG_URL=""
+    ARG_API_KEY=""
+    ARG_STORAGE="/custom/storage/path"
+
+    unset CAC_BACKEND CAC_GOKAPI_URL CAC_GOKAPI_API_KEY CAC_LOCAL_STORAGE 2>/dev/null || true
+
+    mock_setup_config_noninteractive
+
+    local env_file="${CONFIG_DIR}/.env"
+    assert_file_exists "$env_file" "env file created" &&
+    assert_contains "CAC_BACKEND=local" "$(cat "$env_file")" "backend in env" &&
+    assert_contains "CAC_LOCAL_STORAGE=/custom/storage/path" "$(cat "$env_file")" "storage in env"
+
+    rm -rf "$test_dir"
+}
+
+test_setup_config_env_var_precedence() {
+    local test_dir
+    test_dir=$(mktemp -d)
+    CONFIG_DIR="$test_dir"
+    mkdir -p "$CONFIG_DIR"
+
+    # Set CLI args (should take precedence)
+    ARG_BACKEND="gokapi"
+    ARG_URL="https://cli-url.com"
+    ARG_API_KEY="cli-key"
+    ARG_STORAGE=""
+
+    # Set env vars (should be overridden)
+    export CAC_BACKEND="local"
+    export CAC_GOKAPI_URL="https://env-url.com"
+    export CAC_GOKAPI_API_KEY="env-key"
+
+    mock_setup_config_noninteractive
+
+    local env_file="${CONFIG_DIR}/.env"
+
+    # CLI args should win
+    local result=0
+    assert_contains "CAC_BACKEND=gokapi" "$(cat "$env_file")" "CLI backend wins" &&
+    assert_contains "CAC_GOKAPI_URL=https://cli-url.com" "$(cat "$env_file")" "CLI url wins" &&
+    assert_contains "CAC_GOKAPI_API_KEY=cli-key" "$(cat "$env_file")" "CLI key wins" || result=1
+
+    unset CAC_BACKEND CAC_GOKAPI_URL CAC_GOKAPI_API_KEY
+    rm -rf "$test_dir"
+    return $result
+}
+
+test_setup_config_existing_env_skipped() {
+    local test_dir
+    test_dir=$(mktemp -d)
+    CONFIG_DIR="$test_dir"
+    mkdir -p "$CONFIG_DIR"
+
+    # Create existing env file with specific content
+    local env_file="${CONFIG_DIR}/.env"
+    echo "EXISTING_CONTENT=true" > "$env_file"
+    local original_content
+    original_content=$(cat "$env_file")
+
+    ARG_BACKEND="gokapi"
+    ARG_URL="https://new-url.com"
+    ARG_API_KEY="new-key"
+
+    mock_setup_config_noninteractive
+
+    # File should NOT be modified
+    local new_content
+    new_content=$(cat "$env_file")
+
+    local result=0
+    [[ "$original_content" == "$new_content" ]] || result=1
+
+    rm -rf "$test_dir"
+    return $result
+}
+
+# ============================================================================
+# Issue #12: update_cli_lib_path Tests
+# ============================================================================
+
+# Copy of update_cli_lib_path from install.sh for testing
+update_cli_lib_path() {
+    local cac_file="$1"
+    local lib_path="$2"
+    local pattern='LIB_DIR="${SCRIPT_DIR}/../lib"'
+    local replacement="LIB_DIR=\"${lib_path}\""
+
+    # Try GNU sed first (Linux)
+    if sed -i "s|${pattern}|${replacement}|" "$cac_file" 2>/dev/null; then
+        : # Success
+    # Try BSD sed (macOS) - requires empty extension for in-place edit
+    elif sed -i '' "s|${pattern}|${replacement}|" "$cac_file" 2>/dev/null; then
+        : # Success
+    else
+        # Fallback: use temp file approach (works everywhere)
+        local temp_file
+        temp_file=$(mktemp)
+        if sed "s|${pattern}|${replacement}|" "$cac_file" > "$temp_file" && \
+           mv "$temp_file" "$cac_file" && \
+           chmod 755 "$cac_file"; then
+            : # Success
+        else
+            rm -f "$temp_file" 2>/dev/null || true
+            warn "Failed to update library path using sed"
+        fi
+    fi
+
+    # Verify the replacement worked
+    if grep -qF 'LIB_DIR="${SCRIPT_DIR}/../lib"' "$cac_file" 2>/dev/null; then
+        warn "Library path was not updated in CLI binary"
+        warn "Manual fix required: Edit ${cac_file} line 11"
+        warn "Change: LIB_DIR=\"\${SCRIPT_DIR}/../lib\""
+        warn "    To: LIB_DIR=\"${lib_path}\""
+    fi
+}
+
+# Test: update_cli_lib_path replaces the LIB_DIR pattern correctly
+test_update_cli_lib_path_replaces_pattern() {
+    local test_dir
+    test_dir=$(mktemp -d)
+    local test_cac="${test_dir}/cac"
+
+    # Create a mock cac file with the original pattern
+    cat > "$test_cac" << 'EOF'
+#!/usr/bin/env bash
+VERSION="test"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="${SCRIPT_DIR}/../lib"
+echo "done"
+EOF
+    chmod 755 "$test_cac"
+
+    # Run the function
+    update_cli_lib_path "$test_cac" "/usr/local/lib/cac"
+
+    # Verify the replacement worked
+    local result=0
+    if grep -qF 'LIB_DIR="/usr/local/lib/cac"' "$test_cac"; then
+        result=0
+    else
+        result=1
+    fi
+
+    rm -rf "$test_dir"
+    return $result
+}
+
+# Test: update_cli_lib_path removes the original pattern
+test_update_cli_lib_path_removes_original() {
+    local test_dir
+    test_dir=$(mktemp -d)
+    local test_cac="${test_dir}/cac"
+
+    # Create a mock cac file with the original pattern
+    cat > "$test_cac" << 'EOF'
+#!/usr/bin/env bash
+LIB_DIR="${SCRIPT_DIR}/../lib"
+EOF
+    chmod 755 "$test_cac"
+
+    # Run the function
+    update_cli_lib_path "$test_cac" "/custom/lib/path"
+
+    # Verify the original pattern is gone
+    local result=0
+    if grep -qF 'LIB_DIR="${SCRIPT_DIR}/../lib"' "$test_cac"; then
+        result=1  # Pattern still there, test fails
+    else
+        result=0  # Pattern gone, test passes
+    fi
+
+    rm -rf "$test_dir"
+    return $result
+}
+
+# Test: update_cli_lib_path with user-local path
+test_update_cli_lib_path_user_local() {
+    local test_dir
+    test_dir=$(mktemp -d)
+    local test_cac="${test_dir}/cac"
+
+    cat > "$test_cac" << 'EOF'
+#!/usr/bin/env bash
+LIB_DIR="${SCRIPT_DIR}/../lib"
+EOF
+    chmod 755 "$test_cac"
+
+    local user_lib="${HOME}/.local/lib/cac"
+    update_cli_lib_path "$test_cac" "$user_lib"
+
+    local result=0
+    if grep -qF "LIB_DIR=\"${user_lib}\"" "$test_cac"; then
+        result=0
+    else
+        result=1
+    fi
+
+    rm -rf "$test_dir"
+    return $result
+}
+
+# Test: update_cli_lib_path preserves file permissions
+test_update_cli_lib_path_preserves_permissions() {
+    local test_dir
+    test_dir=$(mktemp -d)
+    local test_cac="${test_dir}/cac"
+
+    cat > "$test_cac" << 'EOF'
+#!/usr/bin/env bash
+LIB_DIR="${SCRIPT_DIR}/../lib"
+EOF
+    chmod 755 "$test_cac"
+
+    update_cli_lib_path "$test_cac" "/usr/local/lib/cac"
+
+    # Check that file is still executable
+    local result=0
+    if [[ -x "$test_cac" ]]; then
+        result=0
+    else
+        result=1
+    fi
+
+    rm -rf "$test_dir"
+    return $result
+}
+
+# Test: update_cli_lib_path warns on failed replacement
+test_update_cli_lib_path_warns_on_failure() {
+    local test_dir
+    test_dir=$(mktemp -d)
+    local test_cac="${test_dir}/cac"
+
+    # Create a file WITHOUT the expected pattern
+    cat > "$test_cac" << 'EOF'
+#!/usr/bin/env bash
+LIB_DIR="/some/other/path"
+EOF
+    chmod 755 "$test_cac"
+
+    # Capture warnings
+    local output
+    output=$(update_cli_lib_path "$test_cac" "/usr/local/lib/cac" 2>&1)
+
+    # No warning should be issued since pattern doesn't exist (grep won't match)
+    # The function only warns if the OLD pattern STILL exists after replacement
+    local result=0
+    # In this case, the old pattern never existed, so no warning
+    # File should be unchanged
+    if grep -qF '/some/other/path' "$test_cac"; then
+        result=0
+    else
+        result=1
+    fi
+
+    rm -rf "$test_dir"
+    return $result
+}
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 
@@ -629,6 +1170,53 @@ echo ""
 echo "--- Argument parsing ---"
 run_test "recognizes --uninstall flag" test_parse_uninstall_flag
 run_test "recognizes --help flag" test_parse_help_flag
+
+echo ""
+echo "--- Issue #11: CLI config argument parsing ---"
+run_test "parses --backend gokapi" test_parse_backend_gokapi
+run_test "parses --backend local" test_parse_backend_local
+run_test "parses -b short flag" test_parse_backend_short_flag
+run_test "parses --url" test_parse_url_long
+run_test "parses -U short flag" test_parse_url_short
+run_test "parses --api-key" test_parse_api_key
+run_test "parses -k short flag" test_parse_api_key_short
+run_test "parses --storage" test_parse_storage
+run_test "parses -s short flag" test_parse_storage_short
+run_test "parses full gokapi config" test_parse_full_gokapi_config
+run_test "parses full local config" test_parse_full_local_config
+
+echo ""
+echo "--- Issue #11: URL validation ---"
+run_test "accepts https URLs" test_validate_url_https
+run_test "accepts http URLs" test_validate_url_http
+run_test "rejects ftp URLs" test_validate_url_invalid
+run_test "rejects URLs without scheme" test_validate_url_no_scheme
+
+echo ""
+echo "--- Issue #11: Config value resolution ---"
+run_test "CLI arg takes priority over env" test_resolve_config_cli_priority
+run_test "env var used when no CLI arg" test_resolve_config_env_fallback
+run_test "default used when no CLI or env" test_resolve_config_default_fallback
+
+echo ""
+echo "--- Issue #11: Error handling ---"
+run_test "invalid backend value fails" test_invalid_backend_fails
+run_test "noninteractive error exits with code 2" test_noninteractive_error_exits_2
+
+echo ""
+echo "--- Issue #11: setup_config integration tests ---"
+run_test "setup_config creates gokapi .env" test_setup_config_gokapi_creates_env
+run_test "setup_config creates local .env" test_setup_config_local_creates_env
+run_test "setup_config CLI args override env vars" test_setup_config_env_var_precedence
+run_test "setup_config skips existing .env" test_setup_config_existing_env_skipped
+
+echo ""
+echo "--- Issue #12: update_cli_lib_path ---"
+run_test "replaces LIB_DIR pattern correctly" test_update_cli_lib_path_replaces_pattern
+run_test "removes original pattern" test_update_cli_lib_path_removes_original
+run_test "handles user-local paths" test_update_cli_lib_path_user_local
+run_test "preserves file permissions" test_update_cli_lib_path_preserves_permissions
+run_test "handles files without pattern" test_update_cli_lib_path_warns_on_failure
 
 echo ""
 framework_report

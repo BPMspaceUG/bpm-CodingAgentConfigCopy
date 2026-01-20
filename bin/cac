@@ -296,7 +296,7 @@ cmd_pull_all() {
             done
         fi
 
-        if [[ "$found" == "true" && ! " ${users_found[*]} " =~ " ${username} " ]]; then
+        if [[ "$found" == "true" && ! " ${users_found[*]} " =~ \ ${username}\  ]]; then
             users_found+=("$username")
         fi
     done
