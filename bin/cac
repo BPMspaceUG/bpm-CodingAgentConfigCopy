@@ -46,8 +46,8 @@ USAGE:
 
 COMMANDS:
     push [--user USER] [--dry-run] [--skip-check]  Create and upload config bundle
-    pull [--user USER] [--dry-run] [--all]  Download and apply newest matching bundle
-    get [BUNDLE_ID] [--dry-run]     Download a specific bundle (by ID or interactive)
+    pull [BUNDLE_ID] [--host HOST] [--user USER] [--dry-run] [--all]
+                                    Download and apply bundle (newest or specific)
     list [--host HOST] [--user USER]  List available bundles
     check [TOOL] [--user USER]      Verify AI tool credentials work
     test [--user USER]              (Alias for check) Test API connectivity
@@ -70,15 +70,16 @@ EXAMPLES:
     cac push --dry-run          Preview what would be bundled
     cac push --skip-check       Skip credential verification before upload
     cac push --user ubuntu      Bundle ubuntu user's config (requires root)
-    cac pull                    Apply newest bundle for current user/host
-    cac pull --dry-run          Preview what would be extracted
+    cac pull                    Apply globally newest bundle
+    cac pull --host mypc        Apply newest bundle from specific host
     cac pull --user bob         Apply newest bundle to user bob (requires root)
+    cac pull --dry-run          Preview what would be extracted
+    cac pull CodingAgentConfig_myhost_user_250111-120000.zip
+                                Download and apply a specific bundle
+    cac pull mybundle           Partial match on bundle name
     sudo cac pull --all         Pull config to all users with AI tool dirs
     cac list                    List all available bundles
     cac list --host prod-01     List bundles from specific host
-    cac get                     Interactive bundle selection
-    cac get CodingAgentConfig_myhost_user_250111-120000.zip
-    cac get mybundle --dry-run  Preview what would be extracted from specific bundle
     cac check                   Verify all AI tool credentials work
     cac check claude            Verify only Claude credentials
     cac check --user bob        Verify credentials for user bob (requires root)
@@ -173,9 +174,10 @@ cmd_push() {
     echo "Files found: $file_count"
     echo ""
 
-    # Create temp directory for bundle (auto-cleaned on return)
+    # Create temp directory for bundle (cleaned on return)
     local temp_dir
     security_init_temp_dir temp_dir "cac-push"
+    trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
 
     local bundle_path="${temp_dir}/${bundle_name}"
 
@@ -195,18 +197,43 @@ cmd_push() {
 cmd_pull() {
     local pull_all="false"
     local dry_run="false"
+    local explicit_host=""
+    local host_provided="false"
+    local bundle_id=""
     local args=()
 
-    # Check for --all flag
-    for arg in "$@"; do
-        if [[ "$arg" == "--all" ]]; then
-            pull_all="true"
-        elif [[ "$arg" == "--dry-run" ]]; then
-            dry_run="true"
-            args+=("$arg")
-        else
-            args+=("$arg")
-        fi
+    # Pre-parse pull-specific flags (--all, --host need special handling)
+    # and capture optional positional BUNDLE_ID argument
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --all)
+                pull_all="true"
+                shift
+                ;;
+            --host)
+                if [[ $# -lt 2 ]]; then
+                    utils_error "Option --host requires an argument"
+                    return 1
+                fi
+                explicit_host="$2"
+                host_provided="true"
+                shift 2
+                ;;
+            --*)
+                # Pass other flags through for standard parsing
+                args+=("$1")
+                shift
+                ;;
+            *)
+                # First non-flag argument is the BUNDLE_ID
+                if [[ -z "$bundle_id" ]]; then
+                    bundle_id="$1"
+                else
+                    args+=("$1")
+                fi
+                shift
+                ;;
+        esac
     done
 
     # Handle --all mode
@@ -216,25 +243,67 @@ cmd_pull() {
     fi
 
     # Parse arguments, validate user access, and resolve home directory
-    if ! utils_init_command_context --strict "${args[@]+"${args[@]}"}"; then
+    if ! utils_init_command_context "${args[@]+"${args[@]}"}"; then
         return 1
     fi
     local target_user="$PARSED_TARGET_USER"
     dry_run="$PARSED_DRY_RUN"
     local home_dir="$PARSED_HOME_DIR"
-    local target_host
-    target_host=$(hostname -s)
 
-    # Find newest matching bundle
+    # If a specific BUNDLE_ID was provided, download that bundle directly
+    if [[ -n "$bundle_id" ]]; then
+        # Show what would happen (dry-run stops here)
+        if [[ "$dry_run" == "true" ]]; then
+            utils_dryrun "Would get bundle: $bundle_id"
+            utils_dryrun "Target user: $target_user"
+            utils_dryrun "Target directory: $home_dir"
+            echo ""
+            utils_preview_extraction "$bundle_id" "$home_dir"
+            utils_dryrun_footer
+            return 0
+        fi
+
+        echo "Getting bundle: $bundle_id"
+        echo "Target user: $target_user"
+
+        # Download and extract
+        if ! utils_download_and_extract "$bundle_id" "$home_dir" "$target_user"; then
+            return 1
+        fi
+
+        echo ""
+        echo "Pull complete!"
+        return 0
+    fi
+
+    # Build backend filter arguments (only pass explicitly provided filters)
+    local filter_args=()
+    if [[ "$host_provided" == "true" ]]; then
+        filter_args+=(--host "$explicit_host")
+    fi
+    if [[ -n "$PARSED_USER" ]]; then
+        filter_args+=(--user "$PARSED_USER")
+    fi
+
+    # Find newest matching bundle (globally unless filters are specified)
     local newest_bundle
-    if ! newest_bundle=$(backend_call get_newest --host "$target_host" --user "$target_user"); then
-        utils_error "No bundle found matching host='$target_host', user='$target_user'"
+    if ! newest_bundle=$(backend_call get_newest "${filter_args[@]+"${filter_args[@]}"}"); then
+        if [[ ${#filter_args[@]} -gt 0 ]]; then
+            utils_error "No bundle found matching ${filter_args[*]}"
+        else
+            utils_error "No bundle found"
+        fi
         return 1
     fi
 
     # Show what would happen (dry-run stops here)
     if [[ "$dry_run" == "true" ]]; then
-        utils_dryrun "Would pull bundle for user: $target_user, host: $target_host"
+        utils_dryrun "Would pull newest bundle (applying to user: $target_user)"
+        if [[ ${#filter_args[@]} -gt 0 ]]; then
+            utils_dryrun "Filters: ${filter_args[*]}"
+        else
+            utils_dryrun "Filters: none (global newest)"
+        fi
         utils_dryrun "Target directory: $home_dir"
         utils_dryrun "Bundle to download: $newest_bundle"
         echo ""
@@ -243,7 +312,10 @@ cmd_pull() {
         return 0
     fi
 
-    echo "Pulling newest bundle for user: $target_user, host: $target_host"
+    echo "Pulling newest bundle (applying to user: $target_user)"
+    if [[ ${#filter_args[@]} -gt 0 ]]; then
+        echo "Filters: ${filter_args[*]}"
+    fi
     echo ""
     echo "Found bundle: $newest_bundle"
 
@@ -375,54 +447,9 @@ cmd_pull_all() {
     echo "Success: $success, Failed: $failed, Total: ${#users_found[@]}"
 }
 
+# Silent alias: 'cac get' redirects to 'cac pull' for backward compatibility
 cmd_get() {
-    local bundle_id="${1:-}"
-
-    # Parse remaining args, validate user access, and resolve home directory (non-strict)
-    shift || true
-    if ! utils_init_command_context "$@"; then
-        return 1
-    fi
-    local target_user="$PARSED_TARGET_USER"
-    local dry_run="$PARSED_DRY_RUN"
-    local home_dir="$PARSED_HOME_DIR"
-
-    # If no bundle_id provided, show list and prompt
-    if [[ -z "$bundle_id" ]]; then
-        echo "Available bundles:"
-        echo ""
-        cmd_list
-        echo ""
-        echo "Enter bundle name (or partial match):"
-        read -r bundle_id
-
-        if [[ -z "$bundle_id" ]]; then
-            echo "No bundle selected" >&2
-            return 1
-        fi
-    fi
-
-    # Show what would happen (dry-run stops here)
-    if [[ "$dry_run" == "true" ]]; then
-        utils_dryrun "Would get bundle: $bundle_id"
-        utils_dryrun "Target user: $target_user"
-        utils_dryrun "Target directory: $home_dir"
-        echo ""
-        utils_preview_extraction "$bundle_id" "$home_dir"
-        utils_dryrun_footer
-        return 0
-    fi
-
-    echo "Getting bundle: $bundle_id"
-    echo "Target user: $target_user"
-
-    # Download and extract
-    if ! utils_download_and_extract "$bundle_id" "$home_dir" "$target_user"; then
-        return 1
-    fi
-
-    echo ""
-    echo "Get complete!"
+    cmd_pull "$@"
 }
 
 cmd_list() {

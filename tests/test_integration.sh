@@ -398,6 +398,93 @@ test_local_backend_filter_by_user() {
 }
 
 # ============================================================================
+# Issue #19: get_newest Global vs Filtered Behavior
+# ============================================================================
+
+# Helper: set up a clean storage with bundles from different hosts/users
+_setup_issue19_storage() {
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+    source "${PROJECT_ROOT}/lib/security.sh"
+    source "${PROJECT_ROOT}/lib/bundle.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Create a base bundle for content
+    local base_bundle="${TEST_TMPDIR}/issue19_base.zip"
+    bundle_create "$TEST_HOME" "$base_bundle" "all" >/dev/null 2>&1
+
+    # Place bundles from different hosts/users with known timestamps
+    # Oldest: rob@host-a (250101-100000)
+    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-a_rob_250101-100000.zip"
+    # Middle: tim@host-b (250102-100000)
+    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-b_tim_250102-100000.zip"
+    # Newest: rob@host-b (250103-100000)
+    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-b_rob_250103-100000.zip"
+}
+
+test_get_newest_no_filters_returns_global_newest() {
+    _setup_issue19_storage
+
+    # get_newest with NO filters should return the globally newest bundle
+    local newest
+    newest=$(backend_local_get_newest) || { echo "get_newest failed" >&2; unset CAC_CONFIG_DIR; return 1; }
+
+    # Newest is rob@host-b (250103-100000)
+    assert_contains "host-b_rob_250103" "$newest" "global newest bundle" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+test_get_newest_user_filter_only() {
+    _setup_issue19_storage
+
+    # --user tim should return tim's bundle regardless of host
+    local newest
+    newest=$(backend_local_get_newest --user "tim") || { echo "get_newest --user tim failed" >&2; unset CAC_CONFIG_DIR; return 1; }
+
+    assert_contains "tim" "$newest" "user-filtered bundle" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_contains "host-b" "$newest" "tim's bundle host" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+test_get_newest_host_filter_only() {
+    _setup_issue19_storage
+
+    # --host host-a should return bundles from host-a regardless of user
+    local newest
+    newest=$(backend_local_get_newest --host "host-a") || { echo "get_newest --host host-a failed" >&2; unset CAC_CONFIG_DIR; return 1; }
+
+    assert_contains "host-a" "$newest" "host-filtered bundle" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_contains "rob" "$newest" "host-a's bundle user" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+test_get_newest_both_filters() {
+    _setup_issue19_storage
+
+    # --host host-b --user rob should return rob's bundle from host-b
+    local newest
+    newest=$(backend_local_get_newest --host "host-b" --user "rob") || { echo "get_newest --host host-b --user rob failed" >&2; unset CAC_CONFIG_DIR; return 1; }
+
+    assert_contains "host-b_rob" "$newest" "both-filtered bundle" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+test_get_newest_filter_no_match() {
+    _setup_issue19_storage
+
+    # --user nonexistent should fail (no matching bundles)
+    if backend_local_get_newest --user "nonexistent" >/dev/null 2>&1; then
+        echo "Expected get_newest with non-matching user to fail" >&2
+        unset CAC_CONFIG_DIR
+        return 1
+    fi
+    unset CAC_CONFIG_DIR
+}
+
+# ============================================================================
 # Full Workflow Tests
 # ============================================================================
 
@@ -512,6 +599,14 @@ main() {
     run_test "get newest" test_local_backend_get_newest
     run_test "filter by host" test_local_backend_filter_by_host
     run_test "filter by user" test_local_backend_filter_by_user
+    echo ""
+
+    echo "--- Issue #19: Global vs Filtered get_newest ---"
+    run_test "get newest no filters (global)" test_get_newest_no_filters_returns_global_newest
+    run_test "get newest user filter only" test_get_newest_user_filter_only
+    run_test "get newest host filter only" test_get_newest_host_filter_only
+    run_test "get newest both filters" test_get_newest_both_filters
+    run_test "get newest filter no match" test_get_newest_filter_no_match
     echo ""
 
     echo "--- Full Workflow ---"

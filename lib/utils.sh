@@ -18,7 +18,7 @@ if [[ ! -v GOKAPI_FIELD_ID ]]; then
     export GOKAPI_FIELD_NAME
 
     # Download URL field
-    readonly GOKAPI_FIELD_URL="UrlDownload"
+    readonly GOKAPI_FIELD_URL="UrlHotlink"
     export GOKAPI_FIELD_URL
 
     # Error message field
@@ -837,9 +837,10 @@ utils_preview_extraction() {
 
     echo "Bundle contents that would be extracted:"
 
-    # Create temp download to show contents (auto-cleaned on return)
+    # Create temp download to show contents (cleaned on return)
     local temp_dir
     security_init_temp_dir temp_dir "cac-dryrun"
+    trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
 
     local download_path="${temp_dir}/bundle.zip"
 
@@ -887,9 +888,10 @@ utils_download_and_extract() {
     local home_dir="$2"
     local target_user="$3"
 
-    # Create temp directory for download (auto-cleaned on return)
+    # Create temp directory for download (cleaned on return)
     local temp_dir
     security_init_temp_dir temp_dir "cac-download"
+    trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
 
     local download_path="${temp_dir}/bundle.zip"
 

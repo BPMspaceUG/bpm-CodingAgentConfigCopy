@@ -21,9 +21,9 @@ chmod 600 ~/.config/cac/.env
 
 # Use
 cac push                    # Bundle and upload current user's config
-cac pull                    # Download and apply newest matching bundle
+cac pull                    # Download and apply globally newest bundle
+cac pull [BUNDLE_ID]        # Download and apply specific bundle
 cac list                    # List available bundles
-cac get [BUNDLE_ID]         # Download specific bundle
 cac test                    # Test AI tool API connectivity
 ```
 
@@ -60,9 +60,8 @@ bpm-CodingAgentConfigCopy/
 | Command | Description |
 |---------|-------------|
 | `cac push [--user USER] [--skip-check]` | Create ZIP bundle from user configs and upload to backend |
-| `cac pull [--user USER]` | Download and apply newest bundle matching current host/user |
+| `cac pull [BUNDLE_ID] [--host HOST] [--user USER]` | Download and apply bundle (globally newest, filtered, or specific) |
 | `cac list [--host HOST] [--user USER]` | List available bundles with optional filtering |
-| `cac get [BUNDLE_ID]` | Download and apply specific bundle (by ID or interactive) |
 | `cac check [TOOL] [--user USER]` | Verify AI tool credentials work (real API calls) |
 | `cac test [--user USER]` | Alias for check (backward compatibility) |
 

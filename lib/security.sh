@@ -321,17 +321,15 @@ security_setup_cleanup_trap() {
     trap "[[ -n \"\${${var_name}:-}\" ]] && rm -rf \"\$${var_name}\"" RETURN
 }
 
-# Create a secure temp directory and set up RETURN cleanup trap
+# Create a secure temp directory (caller must set up cleanup trap)
 # Usage: security_init_temp_dir <var_name> <prefix>
-# Example: security_init_temp_dir temp_dir "cac-push"
+# Example:
+#   security_init_temp_dir temp_dir "cac-push"
+#   trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
 #
-# This consolidates the common 3-line pattern:
-#   local temp_dir
-#   temp_dir=$(security_mktemp_dir "prefix")
-#   security_setup_cleanup_trap temp_dir
-#
-# After calling, the variable named by var_name contains the temp directory path.
-# The trap is set to clean up the directory on function RETURN.
+# IMPORTANT: The caller MUST set the RETURN trap itself. Setting the trap
+# inside a helper function causes it to fire when the helper returns,
+# deleting the temp directory before the caller can use it.
 #
 # Note: Uses nameref to set the caller's variable.
 security_init_temp_dir() {
@@ -339,5 +337,4 @@ security_init_temp_dir() {
     local prefix="$2"
 
     _temp_dir_ref=$(security_mktemp_dir "$prefix")
-    security_setup_cleanup_trap "$1"
 }

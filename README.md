@@ -156,8 +156,12 @@ sudo cac push --user ubuntu
 ### Pull (Download) Configuration
 
 ```bash
-# Download and apply newest bundle for current user/host
+# Download and apply the globally newest bundle
 cac pull
+
+# Filter by host or user
+cac pull --host prod-server-01
+cac pull --user bob
 
 # Apply to another user (requires root)
 sudo cac pull --user bob
@@ -165,6 +169,8 @@ sudo cac pull --user bob
 # Pull to ALL users with AI tool configs (requires root)
 sudo cac pull --all
 ```
+
+Without `--host` or `--user` flags, `cac pull` fetches the **globally newest** bundle across all hosts and users. Use `--host` and/or `--user` to narrow the search.
 
 The `--all` flag scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`) or files (`.claude.json`) and pulls the matching bundle for each.
 
@@ -180,15 +186,15 @@ cac list --user ubuntu
 cac list --host myhost --user deploy
 ```
 
-### Get Specific Bundle
+### Pull Specific Bundle
 
 ```bash
-# Interactive selection
-cac get
-
 # By name or partial match
-cac get CodingAgentConfig_myhost_user_250111-120000.zip
+cac pull CodingAgentConfig_myhost_user_250111-120000.zip
+cac pull mybundle
 ```
+
+**Note:** `cac get` is a silent alias for `cac pull` and works identically.
 
 ### Check/Test Credentials
 

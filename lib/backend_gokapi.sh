@@ -85,7 +85,7 @@ _gokapi_try_download() {
     local url="$1"
     local output_file="$2"
 
-    if curl -s -o "$output_file" "$url" && [[ -s "$output_file" ]]; then
+    if curl -sL -o "$output_file" "$url" && [[ -s "$output_file" ]]; then
         return 0
     fi
     return 1

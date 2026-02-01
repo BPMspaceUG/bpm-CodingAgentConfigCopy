@@ -229,9 +229,10 @@ bundle_extract() {
         return 1
     fi
 
-    # Create secure temp directory for extraction (auto-cleaned on return)
+    # Create secure temp directory for extraction (cleaned on return)
     local temp_dir
     security_init_temp_dir temp_dir "cac-extract"
+    trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
 
     # Extract to temp directory first
     if ! _bundle_extract_to_temp "$zip_file" "$temp_dir"; then
