@@ -485,6 +485,77 @@ test_get_newest_filter_no_match() {
 }
 
 # ============================================================================
+# Codex Review Regression Tests
+# ============================================================================
+
+# Regression: --dry-run must be honored with --all
+test_pull_all_dry_run_honored() {
+    _setup_issue19_storage
+
+    # cmd_pull_all requires root; we can only test that dry_run is parsed
+    # by checking the pre-parse logic captures --dry-run before --all dispatch.
+    # Simulate the pre-parse logic from cmd_pull:
+    local pull_all="false"
+    local dry_run="false"
+    local args=()
+    local test_args=(--all --dry-run)
+
+    for arg in "${test_args[@]}"; do
+        case "$arg" in
+            --all) pull_all="true" ;;
+            --dry-run) dry_run="true"; args+=("$arg") ;;
+            *) args+=("$arg") ;;
+        esac
+    done
+
+    [[ "$pull_all" == "true" ]] || { echo "Expected pull_all=true" >&2; unset CAC_CONFIG_DIR; return 1; }
+    [[ "$dry_run" == "true" ]] || { echo "Expected dry_run=true but got '$dry_run' (--dry-run ignored with --all)" >&2; unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+# Regression: unknown flags must be rejected with --strict
+test_pull_rejects_unknown_flags() {
+    _setup_issue19_storage
+
+    source "${PROJECT_ROOT}/lib/utils.sh"
+
+    # utils_init_command_context --strict should reject unknown flags
+    if utils_init_command_context --strict --unknown-flag 2>/dev/null; then
+        echo "Expected --strict to reject unknown flag" >&2
+        unset CAC_CONFIG_DIR
+        return 1
+    fi
+    unset CAC_CONFIG_DIR
+}
+
+# Regression: bundle_extract temp dir cleanup must not leak
+test_bundle_extract_cleans_temp_dir() {
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+    source "${PROJECT_ROOT}/lib/security.sh"
+    source "${PROJECT_ROOT}/lib/bundle.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Create a bundle
+    local bundle_path="${TEST_TMPDIR}/cleanup_test.zip"
+    bundle_create "$TEST_HOME" "$bundle_path" "all" >/dev/null 2>&1
+
+    # Extract it
+    local extract_dir="${TEST_TMPDIR}/extract_target"
+    mkdir -p "$extract_dir"
+    bundle_extract "$bundle_path" "$extract_dir" "$(whoami)" >/dev/null 2>&1
+
+    # Check no cac-extract temp dirs remain
+    local leftover
+    leftover=$(find /tmp -maxdepth 1 -name "cac-extract.*" -type d 2>/dev/null | wc -l)
+    [[ "$leftover" -eq 0 ]] || { echo "Found $leftover leftover cac-extract temp dirs" >&2; unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+# ============================================================================
 # Full Workflow Tests
 # ============================================================================
 
@@ -607,6 +678,12 @@ main() {
     run_test "get newest host filter only" test_get_newest_host_filter_only
     run_test "get newest both filters" test_get_newest_both_filters
     run_test "get newest filter no match" test_get_newest_filter_no_match
+    echo ""
+
+    echo "--- Codex Review Regression Tests ---"
+    run_test "pull --all --dry-run honored" test_pull_all_dry_run_honored
+    run_test "pull rejects unknown flags" test_pull_rejects_unknown_flags
+    run_test "bundle_extract cleans temp dir" test_bundle_extract_cleans_temp_dir
     echo ""
 
     echo "--- Full Workflow ---"

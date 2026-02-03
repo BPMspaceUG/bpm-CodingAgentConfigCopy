@@ -219,6 +219,11 @@ cmd_pull() {
                 host_provided="true"
                 shift 2
                 ;;
+            --dry-run)
+                dry_run="true"
+                args+=("$1")
+                shift
+                ;;
             --*)
                 # Pass other flags through for standard parsing
                 args+=("$1")
@@ -243,7 +248,7 @@ cmd_pull() {
     fi
 
     # Parse arguments, validate user access, and resolve home directory
-    if ! utils_init_command_context "${args[@]+"${args[@]}"}"; then
+    if ! utils_init_command_context --strict "${args[@]+"${args[@]}"}"; then
         return 1
     fi
     local target_user="$PARSED_TARGET_USER"
@@ -457,8 +462,6 @@ cmd_list() {
 }
 
 cmd_check() {
-    echo "cac v${VERSION}"
-    echo ""
     local tool_arg=""
     local args=()
 
@@ -600,6 +603,9 @@ main() {
             exit 0
             ;;
     esac
+
+    # Print version on every command invocation
+    echo "cac v${VERSION}"
 
     local command="$1"
     shift

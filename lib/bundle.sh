@@ -229,13 +229,15 @@ bundle_extract() {
         return 1
     fi
 
-    # Create secure temp directory for extraction (cleaned on return)
+    # Create secure temp directory for extraction
+    # NOTE: Uses explicit cleanup instead of RETURN trap to avoid overwriting
+    # caller's RETURN trap (e.g., utils_download_and_extract).
     local temp_dir
     security_init_temp_dir temp_dir "cac-extract"
-    trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
 
     # Extract to temp directory first
     if ! _bundle_extract_to_temp "$zip_file" "$temp_dir"; then
+        rm -rf "$temp_dir"
         return 1
     fi
 
@@ -244,6 +246,7 @@ bundle_extract() {
     timestamp=$(date +%y%m%d-%H%M%S)
 
     local entry
+    local extract_failed="false"
     while IFS= read -r entry; do
         [[ -z "$entry" ]] && continue
         [[ "$entry" == */ ]] && continue  # Skip directories
@@ -252,15 +255,19 @@ bundle_extract() {
         local dst_file="${home_dir}/${entry}"
 
         if ! _bundle_ensure_dir "$(dirname "$dst_file")" "$username"; then
-            return 1
+            extract_failed="true"
+            break
         fi
         _bundle_backup_file "$dst_file" "$entry" "$timestamp"
         if ! _bundle_install_file "$src_file" "$dst_file" "$username" "$entry"; then
-            return 1
+            extract_failed="true"
+            break
         fi
 
     done < <(security_list_zip_entries "$zip_file")
 
+    rm -rf "$temp_dir"
+    [[ "$extract_failed" == "true" ]] && return 1
     return 0
 }
 
