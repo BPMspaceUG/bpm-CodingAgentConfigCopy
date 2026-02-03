@@ -143,6 +143,8 @@ For security, all bundles uploaded to Gokapi have a maximum TTL of 7 days:
 
 ## Usage
 
+Every command prints a version banner (`cac v<VERSION>`) as the first line of output. Use `cac --version` for version-only output.
+
 ### Push (Upload) Configuration
 
 ```bash
