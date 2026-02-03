@@ -607,27 +607,27 @@ test_print_bundle_list_footer() {
 
 # Sample Gokapi JSON response for testing
 _GOKAPI_TEST_RESPONSE='[
-  {"Id":"abc123","Name":"CodingAgentConfig_host1_alice_250111-120000.zip","UrlDownload":"http://example.com/d/abc123"},
-  {"Id":"def456","Name":"CodingAgentConfig_host2_bob_250111-130000.zip","UrlDownload":"http://example.com/d/def456"},
-  {"Id":"ghi789","Name":"other_bundle.zip","UrlDownload":"http://example.com/d/ghi789"}
+  {"Id":"abc123","Name":"CodingAgentConfig_host1_alice_250111-120000.zip","UrlDownload":"http://example.com/d/abc123","UrlHotlink":"http://example.com/dl/abc123"},
+  {"Id":"def456","Name":"CodingAgentConfig_host2_bob_250111-130000.zip","UrlDownload":"http://example.com/d/def456","UrlHotlink":"http://example.com/dl/def456"},
+  {"Id":"ghi789","Name":"other_bundle.zip","UrlDownload":"http://example.com/d/ghi789","UrlHotlink":"http://example.com/dl/ghi789"}
 ]'
 
 test_gokapi_find_file_by_id() {
     local result
     result=$(utils_gokapi_find_file "$_GOKAPI_TEST_RESPONSE" "abc123")
-    assert_equals "http://example.com/d/abc123|CodingAgentConfig_host1_alice_250111-120000.zip" "$result" "find by ID"
+    assert_equals "http://example.com/dl/abc123|CodingAgentConfig_host1_alice_250111-120000.zip" "$result" "find by ID"
 }
 
 test_gokapi_find_file_by_exact_name() {
     local result
     result=$(utils_gokapi_find_file "$_GOKAPI_TEST_RESPONSE" "other_bundle.zip")
-    assert_equals "http://example.com/d/ghi789|other_bundle.zip" "$result" "find by exact name"
+    assert_equals "http://example.com/dl/ghi789|other_bundle.zip" "$result" "find by exact name"
 }
 
 test_gokapi_find_file_by_partial_name() {
     local result
     result=$(utils_gokapi_find_file "$_GOKAPI_TEST_RESPONSE" "host1_alice")
-    assert_equals "http://example.com/d/abc123|CodingAgentConfig_host1_alice_250111-120000.zip" "$result" "find by partial name"
+    assert_equals "http://example.com/dl/abc123|CodingAgentConfig_host1_alice_250111-120000.zip" "$result" "find by partial name"
 }
 
 test_gokapi_find_file_not_found() {

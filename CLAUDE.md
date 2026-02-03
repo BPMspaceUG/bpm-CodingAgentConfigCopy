@@ -39,8 +39,11 @@ bpm-CodingAgentConfigCopy/
 │   ├── bundle.sh                # ZIP creation/extraction logic
 │   ├── check.sh                 # Credential verification with caching
 │   ├── config.sh                # Configuration loading (.env)
+│   ├── env.sh                   # AI tool environment management (install/update/status)
+│   ├── logging.sh               # Logging utilities (info, warn, error, verbose)
 │   ├── security.sh              # Permission checks, zip-slip protection
-│   └── tools.sh                 # Tool-specific file mappings
+│   ├── tools.sh                 # Tool-specific file mappings
+│   └── utils.sh                 # Shared utilities (JSON parsing, retry, filters)
 ├── tests/
 │   ├── run_tests.sh             # Test runner
 │   ├── test_bundle.sh           # Bundle tests
@@ -61,9 +64,13 @@ bpm-CodingAgentConfigCopy/
 |---------|-------------|
 | `cac push [--user USER] [--skip-check]` | Create ZIP bundle from user configs and upload to backend |
 | `cac pull [BUNDLE_ID] [--host HOST] [--user USER]` | Download and apply bundle (globally newest, filtered, or specific) |
+| `cac get` | Silent alias for `cac pull` (backward compatibility) |
 | `cac list [--host HOST] [--user USER]` | List available bundles with optional filtering |
 | `cac check [TOOL] [--user USER]` | Verify AI tool credentials work (real API calls) |
 | `cac test [--user USER]` | Alias for check (backward compatibility) |
+| `cac env status [--parseable]` | Show AI tool installation status |
+| `cac env install [TOOL] [--global] [--yes]` | Install AI tool environments |
+| `cac env update [TOOL]` | Update installed AI tools |
 
 ### Library Modules
 
@@ -74,6 +81,9 @@ bpm-CodingAgentConfigCopy/
 - **backend_local.sh**: Local filesystem storage operations (upload, download, list, get_newest)
 - **backend_gokapi.sh**: Gokapi REST API operations (upload, download, list, get_newest, delete); enforces 7-day max TTL
 - **check.sh**: Credential verification via real API calls; 5-minute cache, 10-second timeout per provider
+- **env.sh**: AI tool environment management; install/update/status for Claude, Codex, Gemini, continuous-claude
+- **logging.sh**: Structured logging (info, warn, error, verbose, spinner)
+- **utils.sh**: Shared utilities (JSON field extraction, retry with backoff, filter parsing, command context)
 
 ### Bundle Naming Convention
 
