@@ -489,27 +489,26 @@ test_get_newest_filter_no_match() {
 # ============================================================================
 
 # Regression: --dry-run must be honored with --all
+# Exercises the REAL cmd_pull function with a stubbed cmd_pull_all.
 test_pull_all_dry_run_honored() {
     _setup_issue19_storage
 
-    # cmd_pull_all requires root; we can only test that dry_run is parsed
-    # by checking the pre-parse logic captures --dry-run before --all dispatch.
-    # Simulate the pre-parse logic from cmd_pull:
-    local pull_all="false"
-    local dry_run="false"
-    local args=()
-    local test_args=(--all --dry-run)
+    # Source bin/cac as library to get the real cmd_pull function.
+    # The sourcing guard at the end of bin/cac prevents main() from executing.
+    source "${PROJECT_ROOT}/bin/cac"
 
-    for arg in "${test_args[@]}"; do
-        case "$arg" in
-            --all) pull_all="true" ;;
-            --dry-run) dry_run="true"; args+=("$arg") ;;
-            *) args+=("$arg") ;;
-        esac
-    done
+    # Spy: override cmd_pull_all to capture its dry_run argument
+    local _spy_dry_run=""
+    cmd_pull_all() { _spy_dry_run="$1"; }
 
-    [[ "$pull_all" == "true" ]] || { echo "Expected pull_all=true" >&2; unset CAC_CONFIG_DIR; return 1; }
-    [[ "$dry_run" == "true" ]] || { echo "Expected dry_run=true but got '$dry_run' (--dry-run ignored with --all)" >&2; unset CAC_CONFIG_DIR; return 1; }
+    # Call the real cmd_pull with --all --dry-run
+    cmd_pull --all --dry-run 2>/dev/null
+
+    [[ "$_spy_dry_run" == "true" ]] || {
+        echo "Expected cmd_pull_all to receive dry_run='true', got '$_spy_dry_run'" >&2
+        unset CAC_CONFIG_DIR
+        return 1
+    }
     unset CAC_CONFIG_DIR
 }
 
@@ -526,6 +525,21 @@ test_pull_rejects_unknown_flags() {
         return 1
     fi
     unset CAC_CONFIG_DIR
+}
+
+# Issue #21: version line printed on every command invocation
+test_version_printed_on_command() {
+    # Run the real cac binary; 'env status' needs no backend config
+    local output
+    output=$("${PROJECT_ROOT}/bin/cac" env status 2>&1) || true
+
+    # First line must be the version banner
+    local first_line
+    first_line=$(echo "$output" | head -1)
+    [[ "$first_line" == "cac v"* ]] || {
+        echo "Expected first line 'cac v...', got: '$first_line'" >&2
+        return 1
+    }
 }
 
 # Regression: bundle_extract temp dir cleanup must not leak
@@ -683,6 +697,7 @@ main() {
     echo "--- Codex Review Regression Tests ---"
     run_test "pull --all --dry-run honored" test_pull_all_dry_run_honored
     run_test "pull rejects unknown flags" test_pull_rejects_unknown_flags
+    run_test "version printed on command (Issue #21)" test_version_printed_on_command
     run_test "bundle_extract cleans temp dir" test_bundle_extract_cleans_temp_dir
     echo ""
 

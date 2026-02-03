@@ -15,18 +15,21 @@ source "${SCRIPT_DIR}/tools.sh"
 # Constants
 # ============================================================================
 
-# Timeout for each check (seconds) - CLI responses can take up to 30s
-readonly CHECK_TIMEOUT=30
+# Guard with -v check to allow sourcing from multiple files.
+if [[ ! -v CHECK_TIMEOUT ]]; then
+    # Timeout for each check (seconds) - CLI responses can take up to 30s
+    readonly CHECK_TIMEOUT=30
 
-# Cache TTL (seconds) - 5 minutes
-readonly CHECK_CACHE_TTL=300
+    # Cache TTL (seconds) - 5 minutes
+    readonly CHECK_CACHE_TTL=300
 
-# Exit codes (per approved plan v4)
-readonly CHECK_EXIT_SUCCESS=0
-readonly CHECK_EXIT_AUTH_FAIL=1
-readonly CHECK_EXIT_UNKNOWN_TOOL=2
-readonly CHECK_EXIT_TIMEOUT=3
-readonly CHECK_EXIT_MISSING_DEP=4
+    # Exit codes (per approved plan v4)
+    readonly CHECK_EXIT_SUCCESS=0
+    readonly CHECK_EXIT_AUTH_FAIL=1
+    readonly CHECK_EXIT_UNKNOWN_TOOL=2
+    readonly CHECK_EXIT_TIMEOUT=3
+    readonly CHECK_EXIT_MISSING_DEP=4
+fi
 
 # ============================================================================
 # Cache Utilities

@@ -654,4 +654,6 @@ main() {
     esac
 }
 
-main "$@"
+# When sourced as a library (e.g., tests), skip main execution.
+# Standard bash idiom: 'return' is valid only when sourced.
+(return 0 2>/dev/null) || main "$@"

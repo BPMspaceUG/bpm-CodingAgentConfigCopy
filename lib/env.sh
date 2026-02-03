@@ -14,40 +14,43 @@ source "${SCRIPT_DIR}/logging.sh"
 # ============================================================================
 
 # Exit codes
-readonly ENV_EXIT_SUCCESS=0
-readonly ENV_EXIT_PARTIAL=1
-readonly ENV_EXIT_ALL_FAILED=2
-readonly ENV_EXIT_INVALID_ARG=3
-readonly ENV_EXIT_MISSING_DEP=4
+# Guard with -v check to allow sourcing from multiple files.
+if [[ ! -v ENV_EXIT_SUCCESS ]]; then
+    readonly ENV_EXIT_SUCCESS=0
+    readonly ENV_EXIT_PARTIAL=1
+    readonly ENV_EXIT_ALL_FAILED=2
+    readonly ENV_EXIT_INVALID_ARG=3
+    readonly ENV_EXIT_MISSING_DEP=4
 
-# Tool registry: tool|display_name|detect_cmd|version_cmd|install_type|optional
-# - tool: Internal name (lowercase, used in commands)
-# - display_name: Human-readable name for display
-# - detect_cmd: Command to detect if tool is installed
-# - version_cmd: Command to get version (output parsed with head -1)
-# - install_type: "curl" or "npm"
-# - optional: "yes" if not installed with --all, "no" otherwise
-readonly -a _ENV_REGISTRY=(
-    "claude|Claude Code|command -v claude|claude --version|curl|no"
-    "codex|Codex CLI|command -v codex|codex --version|npm|no"
-    "gemini|Gemini CLI|command -v gemini|gemini --version|npm|no"
-    "continuous-claude|continuous-claude|command -v continuous-claude|continuous-claude --version|curl|yes"
-)
+    # Tool registry: tool|display_name|detect_cmd|version_cmd|install_type|optional
+    # - tool: Internal name (lowercase, used in commands)
+    # - display_name: Human-readable name for display
+    # - detect_cmd: Command to detect if tool is installed
+    # - version_cmd: Command to get version (output parsed with head -1)
+    # - install_type: "curl" or "npm"
+    # - optional: "yes" if not installed with --all, "no" otherwise
+    readonly -a _ENV_REGISTRY=(
+        "claude|Claude Code|command -v claude|claude --version|curl|no"
+        "codex|Codex CLI|command -v codex|codex --version|npm|no"
+        "gemini|Gemini CLI|command -v gemini|gemini --version|npm|no"
+        "continuous-claude|continuous-claude|command -v continuous-claude|continuous-claude --version|curl|yes"
+    )
 
-# Install URLs for curl-based tools
-declare -A _ENV_INSTALL_URLS=(
-    [claude]="https://claude.ai/install.sh"
-    [continuous-claude]="https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/main/install.sh"
-)
+    # Install URLs for curl-based tools
+    declare -A _ENV_INSTALL_URLS=(
+        [claude]="https://claude.ai/install.sh"
+        [continuous-claude]="https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/main/install.sh"
+    )
 
-# npm package names
-declare -A _ENV_NPM_PACKAGES=(
-    [codex]="@openai/codex"
-    [gemini]="@google/gemini-cli"
-)
+    # npm package names
+    declare -A _ENV_NPM_PACKAGES=(
+        [codex]="@openai/codex"
+        [gemini]="@google/gemini-cli"
+    )
 
-# Minimum Node.js version required for npm tools
-readonly ENV_MIN_NODE_VERSION="18"
+    # Minimum Node.js version required for npm tools
+    readonly ENV_MIN_NODE_VERSION="18"
+fi
 
 # ============================================================================
 # Registry Access Functions
