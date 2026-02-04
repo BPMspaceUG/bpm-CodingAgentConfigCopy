@@ -494,7 +494,13 @@ setup_config() {
         fi
     } > "$env_file"
 
-    chmod 600 "$env_file"
+    # System config (/etc/cac/.env) needs 644 so all users can read it
+    # User config (~/.config/cac/.env) stays 600 (private)
+    if [[ "$env_file" == "/etc/cac/.env" ]]; then
+        chmod 644 "$env_file"
+    else
+        chmod 600 "$env_file"
+    fi
     success "Created configuration: ${env_file}"
 }
 
