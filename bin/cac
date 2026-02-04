@@ -83,6 +83,11 @@ EXAMPLES:
     cac check                   Verify all AI tool credentials work
     cac check claude            Verify only Claude credentials
     cac check --user bob        Verify credentials for user bob (requires root)
+    cac env status              Show AI tool installation status
+    cac env install claude      Install Claude Code CLI
+    cac env install --global    Install all AI tools system-wide (requires root)
+    cac env update codex        Update Codex CLI
+    cac env --help              Show full env subcommand help
 
 CONFIGURATION:
     Config file locations (in order of precedence):
