@@ -313,7 +313,13 @@ install_files() {
     fi
 
     # Set permissions for config directory
-    chmod 700 "$CONFIG_DIR"
+    # System config (/etc/cac) needs 755 so all users can access it
+    # User config (~/.config/cac) stays 700 (private)
+    if [[ "$CONFIG_DIR" == "/etc/cac" ]]; then
+        chmod 755 "$CONFIG_DIR"
+    else
+        chmod 700 "$CONFIG_DIR"
+    fi
 
     # Copy main CLI
     cp "${temp_dir}/bin/cac" "${BIN_DIR}/cac"
