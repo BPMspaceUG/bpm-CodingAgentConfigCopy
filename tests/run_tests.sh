@@ -36,10 +36,10 @@ run_test_suite() {
     echo ""
 
     if "$script_path"; then
-        ((TOTAL_PASSED++))
+        ((TOTAL_PASSED++)) || true
         return 0
     else
-        ((TOTAL_FAILED++))
+        ((TOTAL_FAILED++)) || true
         return 1
     fi
 }

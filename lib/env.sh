@@ -404,9 +404,17 @@ env_install_tool() {
 
     local exit_code=$?
 
-    if [[ $exit_code -eq 0 ]] && env_is_installed "$tool"; then
+    # Rehash to find newly installed binaries
+    hash -r
+
+    # Extend PATH for post-install check (installers may place binaries here)
+    local check_path="$PATH"
+    [[ -d "$HOME/.local/bin" ]] && check_path="$HOME/.local/bin:$check_path"
+    [[ -d "/usr/local/bin" ]] && check_path="/usr/local/bin:$check_path"
+
+    if [[ $exit_code -eq 0 ]] && PATH="$check_path" env_is_installed "$tool"; then
         local version
-        version=$(env_get_version "$tool")
+        version=$(PATH="$check_path" env_get_version "$tool")
         utils_success "$display_name installed successfully (version: $version)"
         return $ENV_EXIT_SUCCESS
     else
@@ -521,14 +529,14 @@ env_install_all() {
             display_name=$(env_get_display_name "$tool")
             version=$(env_get_version "$tool")
             echo "Skipping $display_name (already installed: $version)"
-            ((skipped++))
+            ((skipped++)) || true
             continue
         fi
 
         if env_install_tool "$tool" "$scope" "$auto_yes"; then
-            ((success++))
+            ((success++)) || true
         else
-            ((failed++))
+            ((failed++)) || true
         fi
         echo ""
     done < <(env_get_core_tools)
@@ -561,14 +569,14 @@ env_update_all() {
 
     while IFS= read -r tool; do
         if ! env_is_installed "$tool"; then
-            ((skipped++))
+            ((skipped++)) || true
             continue
         fi
 
         if env_update_tool "$tool" "$scope"; then
-            ((success++))
+            ((success++)) || true
         else
-            ((failed++))
+            ((failed++)) || true
         fi
         echo ""
     done < <(env_get_all_tools)
@@ -672,7 +680,7 @@ env_interactive_install() {
             echo "  [$i] $display_name"
         fi
         tools+=("$tool")
-        ((i++))
+        ((i++)) || true
     done < <(env_get_all_tools)
 
     echo "  [A] All core tools"
@@ -715,9 +723,9 @@ env_interactive_install() {
 
             for tool in "${selected_tools[@]}"; do
                 if env_install_tool "$tool" "$scope" "--yes"; then
-                    ((success++))
+                    ((success++)) || true
                 else
-                    ((failed++))
+                    ((failed++)) || true
                 fi
                 echo ""
             done
@@ -836,9 +844,9 @@ env_cmd_install() {
 
     for tool in "${ENV_PARSED_TOOLS[@]}"; do
         if env_install_tool "$tool" "$scope" "$auto_yes"; then
-            ((success++))
+            ((success++)) || true
         else
-            ((failed++))
+            ((failed++)) || true
         fi
         [[ ${#ENV_PARSED_TOOLS[@]} -gt 1 ]] && echo ""
     done
@@ -873,9 +881,9 @@ env_cmd_update() {
 
     for tool in "${ENV_PARSED_TOOLS[@]}"; do
         if env_update_tool "$tool" "$scope"; then
-            ((success++))
+            ((success++)) || true
         else
-            ((failed++))
+            ((failed++)) || true
         fi
         [[ ${#ENV_PARSED_TOOLS[@]} -gt 1 ]] && echo ""
     done

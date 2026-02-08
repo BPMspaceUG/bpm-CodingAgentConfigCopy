@@ -60,11 +60,11 @@ remove_file() {
 uninstall_system() {
     local removed=0
 
-    remove_file "${SYS_BIN_DIR}/cac" && ((removed++))
-    remove_dir "$SYS_LIB_DIR" && ((removed++))
+    remove_file "${SYS_BIN_DIR}/cac" && { ((removed++)) || true; }
+    remove_dir "$SYS_LIB_DIR" && { ((removed++)) || true; }
 
     if $PURGE; then
-        remove_dir "$SYS_CONFIG_DIR" && ((removed++))
+        remove_dir "$SYS_CONFIG_DIR" && { ((removed++)) || true; }
     elif [[ -d "$SYS_CONFIG_DIR" ]]; then
         warn "Configuration preserved: ${SYS_CONFIG_DIR}"
         info "Use --purge to remove, or: rm -rf ${SYS_CONFIG_DIR}"
@@ -77,11 +77,11 @@ uninstall_system() {
 uninstall_user() {
     local removed=0
 
-    remove_file "${USER_BIN_DIR}/cac" && ((removed++))
-    remove_dir "$USER_LIB_DIR" && ((removed++))
+    remove_file "${USER_BIN_DIR}/cac" && { ((removed++)) || true; }
+    remove_dir "$USER_LIB_DIR" && { ((removed++)) || true; }
 
     if $PURGE; then
-        remove_dir "$USER_CONFIG_DIR" && ((removed++))
+        remove_dir "$USER_CONFIG_DIR" && { ((removed++)) || true; }
     elif [[ -d "$USER_CONFIG_DIR" ]]; then
         warn "Configuration preserved: ${USER_CONFIG_DIR}"
         info "Use --purge to remove, or: rm -rf ${USER_CONFIG_DIR}"
@@ -109,7 +109,7 @@ do_uninstall() {
             local sys_removed
             sys_removed=$(uninstall_system)
             total_removed=$((total_removed + sys_removed))
-            ((locations_checked++))
+            ((locations_checked++)) || true
         elif [[ -f "${SYS_BIN_DIR}/cac" ]] || [[ -d "$SYS_LIB_DIR" ]]; then
             warn "System-wide installation found but running as non-root"
             info "Run as root to remove: sudo ./uninstall.sh"
@@ -122,7 +122,7 @@ do_uninstall() {
         local user_removed
         user_removed=$(uninstall_user)
         total_removed=$((total_removed + user_removed))
-        ((locations_checked++))
+        ((locations_checked++)) || true
     fi
 
     echo ""

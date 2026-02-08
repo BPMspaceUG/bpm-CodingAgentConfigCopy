@@ -224,7 +224,7 @@ security_validate_zip() {
         [[ -z "$entry" ]] && continue
         [[ "$entry" == */ ]] && continue
 
-        ((entry_count++))
+        ((entry_count++)) || true
 
         if [[ "$entry_count" -gt "$SECURITY_MAX_ZIP_FILES" ]]; then
             utils_error "ZIP contains too many files (> $SECURITY_MAX_ZIP_FILES)"

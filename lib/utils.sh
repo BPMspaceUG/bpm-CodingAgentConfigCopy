@@ -1026,7 +1026,7 @@ utils_retry() {
             return 0
         fi
 
-        ((attempt++))
+        ((attempt++)) || true
 
         # Log and sleep if not exhausted
         if [[ $attempt -lt $max_attempts ]]; then

@@ -540,26 +540,26 @@ do_uninstall() {
     if [[ -f "${BIN_DIR}/cac" ]]; then
         rm -f "${BIN_DIR}/cac"
         success "Removed ${BIN_DIR}/cac"
-        ((removed++))
+        ((removed++)) || true
     fi
 
     # Remove library directory
     if [[ -d "$LIB_DIR" ]]; then
         rm -rf "$LIB_DIR"
         success "Removed ${LIB_DIR}"
-        ((removed++))
+        ((removed++)) || true
     fi
 
     # Remove shell completions
     if [[ -f "${BASH_COMPLETION_DIR}/cac" ]]; then
         rm -f "${BASH_COMPLETION_DIR}/cac"
         success "Removed bash completion"
-        ((removed++))
+        ((removed++)) || true
     fi
     if [[ -f "${ZSH_COMPLETION_DIR}/_cac" ]]; then
         rm -f "${ZSH_COMPLETION_DIR}/_cac"
         success "Removed zsh completion"
-        ((removed++))
+        ((removed++)) || true
     fi
 
     # Ask about config directory
@@ -569,7 +569,7 @@ do_uninstall() {
             if [[ "${remove_config,,}" == "y" ]]; then
                 rm -rf "$CONFIG_DIR"
                 success "Removed ${CONFIG_DIR}"
-                ((removed++))
+                ((removed++)) || true
             else
                 info "Kept configuration directory"
             fi

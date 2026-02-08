@@ -444,10 +444,10 @@ cmd_pull_all() {
             echo "  Bundle: $newest_bundle"
             if utils_download_and_extract "$newest_bundle" "$home_dir" "$username"; then
                 echo "  OK"
-                ((success++))
+                ((success++)) || true
             else
                 echo "  FAILED"
-                ((failed++))
+                ((failed++)) || true
             fi
         fi
         echo ""
