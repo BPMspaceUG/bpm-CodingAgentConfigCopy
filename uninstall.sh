@@ -34,6 +34,25 @@ is_root() {
     [[ "${EUID:-$(id -u)}" -eq 0 ]]
 }
 
+# Marker for PATH lines added by cac installer (2-line block)
+CAC_PATH_MARKER="# Added by cac installer — do not edit"
+
+# Remove cac PATH marker block from all RC files
+_cleanup_path_entry() {
+    local rc_file
+    for rc_file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        if [[ -f "$rc_file" ]] && grep -qF "$CAC_PATH_MARKER" "$rc_file"; then
+            # Use temp file + cat to preserve file permissions/metadata
+            local tmp_file
+            tmp_file=$(mktemp)
+            sed "/${CAC_PATH_MARKER//\//\\/}/,+1d" "$rc_file" > "$tmp_file" && \
+                cat "$tmp_file" > "$rc_file"
+            rm -f "$tmp_file" 2>/dev/null || true
+            info "Removed PATH entry from ${rc_file}"
+        fi
+    done
+}
+
 # Remove directory if it exists
 remove_dir() {
     local dir="$1"
@@ -123,6 +142,11 @@ do_uninstall() {
         user_removed=$(uninstall_user)
         total_removed=$((total_removed + user_removed))
         ((locations_checked++)) || true
+    fi
+
+    # Remove PATH entry from shell RC files
+    if ! is_root; then
+        _cleanup_path_entry
     fi
 
     echo ""

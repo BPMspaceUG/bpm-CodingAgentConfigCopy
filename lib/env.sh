@@ -50,6 +50,15 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
 
     # Minimum Node.js version required for npm tools
     readonly ENV_MIN_NODE_VERSION="18"
+
+    # Global install paths for bun-based tools (Issue #28)
+    readonly _ENV_CLAUDE_GLOBAL_DIR="/opt/claude-code"
+    readonly _ENV_CLAUDE_GLOBAL_BIN="/usr/local/bin/claude"
+    readonly _ENV_CLAUDE_GLOBAL_PKG="@anthropic-ai/claude-code"
+
+    readonly _ENV_CC_GLOBAL_DIR="/opt/continuous-claude"
+    readonly _ENV_CC_GLOBAL_BIN="/usr/local/bin/continuous-claude"
+    readonly _ENV_CC_GLOBAL_PKG="continuous-claude"
 fi
 
 # ============================================================================
@@ -267,6 +276,241 @@ env_get_version() {
 }
 
 # ============================================================================
+# Global (bun-based) Install Helpers (Issue #28)
+# ============================================================================
+
+# Check if bun is installed
+# Usage: _env_check_bun
+# Returns: 0 if OK, 1 if missing
+_env_check_bun() {
+    if ! command -v bun &>/dev/null; then
+        utils_error "bun not found. Required for global (bun-based) tool installation."
+        utils_error "Install bun: curl -fsSL https://bun.sh/install | bash"
+        return 1
+    fi
+    return 0
+}
+
+# Check if a global bun-based install exists for a tool
+# Usage: _env_global_install_exists <tool>
+# Returns: 0 if global install found, 1 otherwise
+_env_global_install_exists() {
+    local tool="$1"
+
+    case "$tool" in
+        claude)
+            [[ -x "$_ENV_CLAUDE_GLOBAL_BIN" ]] && [[ -d "$_ENV_CLAUDE_GLOBAL_DIR" ]]
+            ;;
+        continuous-claude)
+            [[ -x "$_ENV_CC_GLOBAL_BIN" ]] && [[ -d "$_ENV_CC_GLOBAL_DIR" ]]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Get the global binary path for a tool
+# Usage: _env_get_global_bin <tool>
+# Returns: 0 with path on stdout, 1 if tool has no global support
+_env_get_global_bin() {
+    local tool="$1"
+    case "$tool" in
+        claude)           echo "$_ENV_CLAUDE_GLOBAL_BIN" ;;
+        continuous-claude) echo "$_ENV_CC_GLOBAL_BIN" ;;
+        *)                return 1 ;;
+    esac
+}
+
+# Check if a local (non-symlinked-to-global) install exists for a tool
+# Usage: _env_local_install_exists <tool> [home_dir]
+# Returns: 0 if a standalone local binary exists, 1 otherwise
+_env_local_install_exists() {
+    local tool="$1"
+    local home_dir="${2:-$HOME}"
+    local local_bin="${home_dir}/.local/bin/${tool}"
+    local global_bin
+    global_bin=$(_env_get_global_bin "$tool" 2>/dev/null) || return 1
+
+    # Exists AND is not a symlink pointing to the global binary
+    [[ -x "$local_bin" ]] && [[ "$(readlink -f "$local_bin" 2>/dev/null)" != "$global_bin" ]]
+}
+
+# Enforce exclusive scope: block local install if global exists (Issue #29)
+# Usage: _env_enforce_scope <tool> <scope>
+# Returns: 0 if OK to proceed, 1 if scope conflict (hard error)
+_env_enforce_scope() {
+    local tool="$1"
+    local scope="${2:-user}"
+
+    # Only enforce for user scope on tools that support global installs
+    [[ "$scope" == "user" ]] || return 0
+    _env_get_global_bin "$tool" &>/dev/null || return 0
+
+    if _env_global_install_exists "$tool"; then
+        local global_bin
+        global_bin=$(_env_get_global_bin "$tool")
+        utils_error "SCOPE CONFLICT: Global install exists at $global_bin"
+        utils_error "Cannot install locally when a global install is present."
+        utils_error "Use 'cac env update $tool --global' to update the global install."
+        return 1
+    fi
+    return 0
+}
+
+# Scan all user home directories that have a writable .local/bin/
+# Usage: _env_scan_all_users
+# Output: One home directory path per line
+# Guardrails: skips dirs without .local/bin, skips unwritable dirs
+_env_scan_all_users() {
+    local dir
+    for dir in /home/*/; do
+        [[ -d "${dir}.local/bin" ]] && [[ -w "${dir}.local/bin" ]] && echo "${dir%/}"
+    done
+    [[ -d "/root/.local/bin" ]] && [[ -w "/root/.local/bin" ]] && echo "/root"
+}
+
+# Remove local binaries for ALL users and create symlinks to global (Issue #29)
+# Usage: _env_cleanup_local_installs <tool>
+# Requires: global binary must exist
+_env_cleanup_local_installs() {
+    local tool="$1"
+    local global_bin
+    global_bin=$(_env_get_global_bin "$tool") || return 1
+    [[ -x "$global_bin" ]] || { utils_error "Global binary not found: $global_bin"; return 1; }
+
+    local home_dir
+    while IFS= read -r home_dir; do
+        local local_bin="${home_dir}/.local/bin/${tool}"
+        # Skip if .local/bin is not writable (guardrail)
+        if [[ ! -w "${home_dir}/.local/bin" ]]; then
+            utils_verbose "Skipping unwritable dir: ${home_dir}/.local/bin"
+            continue
+        fi
+        # Remove if exists and is NOT already a correct symlink
+        if [[ -e "$local_bin" ]] && [[ "$(readlink -f "$local_bin" 2>/dev/null)" != "$global_bin" ]]; then
+            rm -f "$local_bin"
+            echo "Removed local binary: $local_bin"
+        fi
+        # Create symlink
+        ln -sf "$global_bin" "$local_bin"
+        echo "Created symlink: $local_bin -> $global_bin"
+    done < <(_env_scan_all_users)
+}
+
+# Install claude globally via bun
+# Usage: _env_install_claude_global
+# Requires: root, bun
+_env_install_claude_global() {
+    if ! _env_check_bun; then
+        return $ENV_EXIT_MISSING_DEP
+    fi
+
+    echo "Installing Claude Code globally via bun to ${_ENV_CLAUDE_GLOBAL_DIR}..."
+
+    # Create install directory
+    mkdir -p "$_ENV_CLAUDE_GLOBAL_DIR"
+
+    # Install package
+    if ! (cd "$_ENV_CLAUDE_GLOBAL_DIR" && bun add "$_ENV_CLAUDE_GLOBAL_PKG"); then
+        utils_error "bun add failed for $_ENV_CLAUDE_GLOBAL_PKG"
+        return 1
+    fi
+
+    # Create wrapper script at /usr/local/bin/claude
+    cat > "$_ENV_CLAUDE_GLOBAL_BIN" <<'WRAPPER'
+#!/usr/bin/env bash
+exec /opt/claude-code/node_modules/.bin/claude "$@"
+WRAPPER
+    chown root:root "$_ENV_CLAUDE_GLOBAL_BIN"
+    chmod 755 "$_ENV_CLAUDE_GLOBAL_BIN"
+
+    # Issue #29: Clean up local installs and create symlinks for ALL users
+    _env_cleanup_local_installs "claude" 2>/dev/null || true
+
+    return 0
+}
+
+# Update claude globally via bun
+# Usage: _env_update_claude_global
+# Requires: root, bun
+_env_update_claude_global() {
+    if ! _env_check_bun; then
+        return $ENV_EXIT_MISSING_DEP
+    fi
+
+    if [[ ! -d "$_ENV_CLAUDE_GLOBAL_DIR" ]]; then
+        utils_error "Global install directory not found: $_ENV_CLAUDE_GLOBAL_DIR"
+        utils_error "Use 'cac env install claude --global' first."
+        return 1
+    fi
+
+    echo "Updating Claude Code globally via bun in ${_ENV_CLAUDE_GLOBAL_DIR}..."
+
+    if ! (cd "$_ENV_CLAUDE_GLOBAL_DIR" && bun update "$_ENV_CLAUDE_GLOBAL_PKG"); then
+        utils_error "bun update failed for $_ENV_CLAUDE_GLOBAL_PKG"
+        return 1
+    fi
+
+    return 0
+}
+
+# Install continuous-claude globally via bun
+# Usage: _env_install_cc_global
+# Requires: root, bun
+_env_install_cc_global() {
+    if ! _env_check_bun; then
+        return $ENV_EXIT_MISSING_DEP
+    fi
+
+    echo "Installing continuous-claude globally via bun to ${_ENV_CC_GLOBAL_DIR}..."
+
+    mkdir -p "$_ENV_CC_GLOBAL_DIR"
+
+    if ! (cd "$_ENV_CC_GLOBAL_DIR" && bun add "$_ENV_CC_GLOBAL_PKG"); then
+        utils_error "bun add failed for $_ENV_CC_GLOBAL_PKG"
+        return 1
+    fi
+
+    # Create wrapper script at /usr/local/bin/continuous-claude
+    cat > "$_ENV_CC_GLOBAL_BIN" <<'WRAPPER'
+#!/usr/bin/env bash
+exec /opt/continuous-claude/node_modules/.bin/continuous-claude "$@"
+WRAPPER
+    chown root:root "$_ENV_CC_GLOBAL_BIN"
+    chmod 755 "$_ENV_CC_GLOBAL_BIN"
+
+    # Issue #29: Clean up local installs and create symlinks for ALL users
+    _env_cleanup_local_installs "continuous-claude" 2>/dev/null || true
+
+    return 0
+}
+
+# Update continuous-claude globally via bun
+# Usage: _env_update_cc_global
+# Requires: root, bun
+_env_update_cc_global() {
+    if ! _env_check_bun; then
+        return $ENV_EXIT_MISSING_DEP
+    fi
+
+    if [[ ! -d "$_ENV_CC_GLOBAL_DIR" ]]; then
+        utils_error "Global install directory not found: $_ENV_CC_GLOBAL_DIR"
+        utils_error "Use 'cac env install continuous-claude --global' first."
+        return 1
+    fi
+
+    echo "Updating continuous-claude globally via bun in ${_ENV_CC_GLOBAL_DIR}..."
+
+    if ! (cd "$_ENV_CC_GLOBAL_DIR" && bun update "$_ENV_CC_GLOBAL_PKG"); then
+        utils_error "bun update failed for $_ENV_CC_GLOBAL_PKG"
+        return 1
+    fi
+
+    return 0
+}
+
+# ============================================================================
 # Installation Functions
 # ============================================================================
 
@@ -339,11 +583,6 @@ env_install_tool() {
         return $ENV_EXIT_SUCCESS
     fi
 
-    # Check dependencies
-    if ! env_check_dependencies "$tool"; then
-        return $ENV_EXIT_MISSING_DEP
-    fi
-
     local install_type
     install_type=$(env_get_install_type "$tool")
 
@@ -357,29 +596,53 @@ env_install_tool() {
                 return 1
             fi
 
-            # Security: Confirm before running remote script
-            echo "This will download and execute: $url"
-            if [[ "$auto_yes" != "true" && -t 0 ]]; then
-                read -rp "Continue? [y/N]: " confirm
-                if [[ "${confirm,,}" != "y" ]]; then
-                    echo "Installation cancelled."
-                    return 1
-                fi
-            fi
-
-            # Execute installer
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
+                # Global scope: use bun-based install (Issue #28)
+                # Bun dependency checked inside helper functions
                 if [[ "$EUID" -ne 0 ]]; then
                     utils_error "Global installation requires root. Run with sudo."
                     return 1
                 fi
-                curl -fsSL "$url" | bash
+                # Issue #29: Clean up local installs for ALL users before global install
+                _env_cleanup_local_installs "$tool" 2>/dev/null || true
+                case "$tool" in
+                    claude)           _env_install_claude_global ;;
+                    continuous-claude) _env_install_cc_global ;;
+                    *)
+                        if ! env_check_curl; then
+                            return $ENV_EXIT_MISSING_DEP
+                        fi
+                        curl -fsSL "$url" | bash
+                        ;;
+                esac
             else
+                # User scope: enforce exclusive scope (Issue #29)
+                if ! _env_enforce_scope "$tool" "$scope"; then
+                    return 1
+                fi
+                if ! env_check_curl; then
+                    return $ENV_EXIT_MISSING_DEP
+                fi
+
+                # Security: Confirm before running remote script
+                echo "This will download and execute: $url"
+                if [[ "$auto_yes" != "true" && -t 0 ]]; then
+                    read -rp "Continue? [y/N]: " confirm
+                    if [[ "${confirm,,}" != "y" ]]; then
+                        echo "Installation cancelled."
+                        return 1
+                    fi
+                fi
+
                 curl -fsSL "$url" | bash
             fi
             ;;
 
         npm)
+            # Check npm/node dependencies for all npm scopes
+            if ! env_check_dependencies "$tool"; then
+                return $ENV_EXIT_MISSING_DEP
+            fi
             local package="${_ENV_NPM_PACKAGES[$tool]}"
             if [[ -z "$package" ]]; then
                 utils_error "No npm package configured for $tool"
@@ -445,13 +708,39 @@ env_update_tool() {
         return 1
     fi
 
+    # Issue #29: Auto-migrate to global if both exist — redirect to global update
+    if _env_global_install_exists "$tool"; then
+        _env_cleanup_local_installs "$tool" 2>/dev/null || true
+        # Force global update path regardless of requested scope
+        local old_version
+        old_version=$(env_get_version "$tool")
+        echo "Updating $display_name (redirecting to global)..."
+        if [[ "$EUID" -ne 0 ]]; then
+            utils_error "Global update requires root. Run with sudo."
+            return 1
+        fi
+        case "$tool" in
+            claude)           _env_update_claude_global ;;
+            continuous-claude) _env_update_cc_global ;;
+        esac
+        local exit_code=$?
+        local new_version
+        new_version=$(env_get_version "$tool")
+        if [[ $exit_code -eq 0 ]]; then
+            if [[ "$old_version" != "$new_version" ]]; then
+                utils_success "$display_name updated: $old_version -> $new_version"
+            else
+                echo "$display_name is already at latest version ($new_version)"
+            fi
+            return $ENV_EXIT_SUCCESS
+        else
+            utils_error "Failed to update $display_name"
+            return 1
+        fi
+    fi
+
     local old_version
     old_version=$(env_get_version "$tool")
-
-    # Check dependencies
-    if ! env_check_dependencies "$tool"; then
-        return $ENV_EXIT_MISSING_DEP
-    fi
 
     local install_type
     install_type=$(env_get_install_type "$tool")
@@ -460,23 +749,40 @@ env_update_tool() {
 
     case "$install_type" in
         curl)
-            # Re-run installer for curl-based tools
             local url="${_ENV_INSTALL_URLS[$tool]}"
 
-            echo "Re-running installer from: $url"
-
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
+                # Global scope: use bun-based update (Issue #28)
+                # Bun dependency checked inside helper functions
                 if [[ "$EUID" -ne 0 ]]; then
                     utils_error "Global update requires root. Run with sudo."
                     return 1
                 fi
-                curl -fsSL "$url" | bash
+                case "$tool" in
+                    claude)           _env_update_claude_global ;;
+                    continuous-claude) _env_update_cc_global ;;
+                    *)
+                        if ! env_check_curl; then
+                            return $ENV_EXIT_MISSING_DEP
+                        fi
+                        echo "Re-running installer from: $url"
+                        curl -fsSL "$url" | bash
+                        ;;
+                esac
             else
+                if ! env_check_curl; then
+                    return $ENV_EXIT_MISSING_DEP
+                fi
+                echo "Re-running installer from: $url"
                 curl -fsSL "$url" | bash
             fi
             ;;
 
         npm)
+            # Check npm/node dependencies for all npm scopes
+            if ! env_check_dependencies "$tool"; then
+                return $ENV_EXIT_MISSING_DEP
+            fi
             local package="${_ENV_NPM_PACKAGES[$tool]}"
             local cmd
             cmd=$(_env_npm_update_cmd "$package" "$scope")
@@ -690,11 +996,11 @@ env_interactive_install() {
     read -rp "Enter selection (comma-separated for multiple, e.g., 1,2): " selection
 
     case "${selection^^}" in
-        Q)
+        Q|QUIT)
             echo "Installation cancelled."
             return 0
             ;;
-        A)
+        A|ALL)
             env_install_all "$scope" "--yes"
             return $?
             ;;
@@ -826,14 +1132,18 @@ env_cmd_install() {
 
     # No tools specified
     if [[ ${#ENV_PARSED_TOOLS[@]} -eq 0 ]]; then
-        # Interactive mode
-        if [[ -t 0 ]]; then
+        if [[ -n "$auto_yes" ]]; then
+            # --yes flag: skip interactive menu, install all core tools
+            env_install_all "$scope" "$auto_yes"
+            return $?
+        elif [[ -t 0 ]]; then
+            # Interactive terminal: show selection menu
             env_interactive_install "$scope"
             return $?
         else
-            # Non-interactive: install all core tools
+            # Non-interactive (piped): install all core tools
             echo "Non-interactive mode: installing all core tools"
-            env_install_all "$scope" "$auto_yes"
+            env_install_all "$scope"
             return $?
         fi
     fi

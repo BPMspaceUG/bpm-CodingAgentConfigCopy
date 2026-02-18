@@ -160,19 +160,69 @@ install_completions() {
     fi
 }
 
+# Marker for PATH lines added by cac installer (2-line block)
+CAC_PATH_MARKER="# Added by cac installer — do not edit"
+
+# Detect the user's shell RC file
+_detect_shell_rc() {
+    local shell_name
+    shell_name="$(basename "${SHELL:-}")"
+
+    case "$shell_name" in
+        bash) echo "${HOME}/.bashrc"; return 0 ;;
+        zsh)  echo "${HOME}/.zshrc"; return 0 ;;
+    esac
+
+    if [[ -f "${HOME}/.bashrc" ]]; then
+        echo "${HOME}/.bashrc"
+    elif [[ -f "${HOME}/.zshrc" ]]; then
+        echo "${HOME}/.zshrc"
+    else
+        echo "${HOME}/.profile"
+    fi
+}
+
+# Remove cac PATH marker block from all RC files
+_cleanup_path_entry() {
+    local rc_file
+    for rc_file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        if [[ -f "$rc_file" ]] && grep -qF "$CAC_PATH_MARKER" "$rc_file"; then
+            local tmp_file
+            tmp_file=$(mktemp)
+            sed "/${CAC_PATH_MARKER//\//\\/}/,+1d" "$rc_file" > "$tmp_file" && \
+                cat "$tmp_file" > "$rc_file"
+            rm -f "$tmp_file" 2>/dev/null || true
+            info "Removed PATH entry from ${rc_file}"
+        fi
+    done
+}
+
 setup_path() {
     if is_root; then
         return 0
     fi
 
-    if [[ ":$PATH:" != *":${USER_BIN_DIR}:"* ]]; then
-        warn "${USER_BIN_DIR} is not in your PATH"
-        echo ""
-        echo "Add the following to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-        echo ""
-        echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-        echo ""
+    local target_rc
+    target_rc="$(_detect_shell_rc)"
+
+    if [[ -f "$target_rc" ]] && grep -qF "$CAC_PATH_MARKER" "$target_rc"; then
+        return 0
     fi
+
+    if [[ ":$PATH:" == *":${USER_BIN_DIR}:"* ]]; then
+        return 0
+    fi
+
+    touch "$target_rc"
+
+    {
+        echo ""
+        echo "$CAC_PATH_MARKER"
+        echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
+    } >> "$target_rc"
+
+    success "Added PATH to ${target_rc}"
+    echo "  Run 'source ${target_rc}' or open a new terminal to use cac."
 }
 
 # ============================================================================
@@ -429,61 +479,140 @@ test_install_completions_with_bash() {
 # Tests for setup_path()
 # ============================================================================
 
-test_setup_path_root_no_warning() {
+test_setup_path_root_no_modification() {
     _TEST_EUID=0
-    set_install_paths
-    _TEST_EUID=""
 
-    # Root installation should not warn about PATH
+    local saved_home="$HOME"
+    HOME=$(mktemp -d)
+    touch "${HOME}/.bashrc"
+
     local output
     output=$(setup_path 2>&1)
 
-    # Should be empty (no warning for root)
-    [[ -z "$output" || "$output" != *"not in your PATH"* ]]
+    # Root should not modify any RC file
+    local result=0
+    if grep -qF "$CAC_PATH_MARKER" "${HOME}/.bashrc" 2>/dev/null; then
+        result=1  # Should not have been modified
+    fi
+
+    rm -rf "$HOME"
+    HOME="$saved_home"
+    _TEST_EUID=""
+    return $result
 }
 
 test_setup_path_user_in_path() {
     _TEST_EUID=1000
-    HOME="/home/testuser"
-    USER_BIN_DIR="${HOME}/.local/bin"
-    USER_LIB_DIR="${HOME}/.local/lib/cac"
-    USER_CONFIG_DIR="${HOME}/.config/cac"
-    set_install_paths
-    _TEST_EUID=""
 
-    # Add user bin to PATH
+    local saved_home="$HOME"
+    HOME=$(mktemp -d)
+    USER_BIN_DIR="${HOME}/.local/bin"
+    touch "${HOME}/.bashrc"
+
     local saved_path="$PATH"
     PATH="${USER_BIN_DIR}:$PATH"
 
-    local output
-    output=$(setup_path 2>&1)
+    setup_path >/dev/null 2>&1
+
+    # Should not modify RC file when already in PATH
+    local result=0
+    if grep -qF "$CAC_PATH_MARKER" "${HOME}/.bashrc" 2>/dev/null; then
+        result=1
+    fi
 
     PATH="$saved_path"
-
-    # Should not warn when already in PATH
-    [[ "$output" != *"not in your PATH"* ]]
+    rm -rf "$HOME"
+    HOME="$saved_home"
+    _TEST_EUID=""
+    return $result
 }
 
-test_setup_path_user_not_in_path() {
+test_setup_path_adds_to_rc() {
     _TEST_EUID=1000
-    HOME="/home/testuser"
-    USER_BIN_DIR="${HOME}/.local/bin"
-    USER_LIB_DIR="${HOME}/.local/lib/cac"
-    USER_CONFIG_DIR="${HOME}/.config/cac"
-    set_install_paths
-    _TEST_EUID=""
 
-    # Ensure user bin is NOT in PATH
+    local saved_home="$HOME"
+    local saved_shell="$SHELL"
+    HOME=$(mktemp -d)
+    SHELL="/bin/bash"
+    USER_BIN_DIR="${HOME}/.local/bin"
+    touch "${HOME}/.bashrc"
+
     local saved_path="$PATH"
     PATH="/usr/bin:/bin"
 
-    local output
-    output=$(setup_path 2>&1)
+    setup_path >/dev/null 2>&1
+
+    # Should have added marker block to .bashrc
+    local result=0
+    grep -qF "$CAC_PATH_MARKER" "${HOME}/.bashrc" || result=1
+    grep -qF 'export PATH="$HOME/.local/bin:$PATH"' "${HOME}/.bashrc" || result=1
 
     PATH="$saved_path"
+    rm -rf "$HOME"
+    HOME="$saved_home"
+    SHELL="$saved_shell"
+    _TEST_EUID=""
+    return $result
+}
 
-    # Should warn about PATH
-    assert_contains "not in your PATH" "$output" "PATH warning"
+test_setup_path_idempotent() {
+    _TEST_EUID=1000
+
+    local saved_home="$HOME"
+    local saved_shell="$SHELL"
+    HOME=$(mktemp -d)
+    SHELL="/bin/bash"
+    USER_BIN_DIR="${HOME}/.local/bin"
+    touch "${HOME}/.bashrc"
+
+    local saved_path="$PATH"
+    PATH="/usr/bin:/bin"
+
+    # Run setup_path twice
+    setup_path >/dev/null 2>&1
+    setup_path >/dev/null 2>&1
+
+    # Marker should appear exactly once
+    local count
+    count=$(grep -cF "$CAC_PATH_MARKER" "${HOME}/.bashrc")
+
+    PATH="$saved_path"
+    rm -rf "$HOME"
+    HOME="$saved_home"
+    SHELL="$saved_shell"
+    _TEST_EUID=""
+
+    [[ "$count" -eq 1 ]]
+}
+
+test_setup_path_skips_if_marker_exists() {
+    _TEST_EUID=1000
+
+    local saved_home="$HOME"
+    HOME=$(mktemp -d)
+    USER_BIN_DIR="${HOME}/.local/bin"
+
+    # Pre-populate .bashrc with marker but PATH not set
+    {
+        echo "$CAC_PATH_MARKER"
+        echo 'export PATH="$HOME/.local/bin:$PATH"'
+    } > "${HOME}/.bashrc"
+
+    local saved_path="$PATH"
+    PATH="/usr/bin:/bin"
+
+    setup_path >/dev/null 2>&1
+
+    # Should not have added a second copy
+    local count
+    count=$(grep -cF "$CAC_PATH_MARKER" "${HOME}/.bashrc")
+
+    PATH="$saved_path"
+    rm -rf "$HOME"
+    HOME="$saved_home"
+    _TEST_EUID=""
+
+    [[ "$count" -eq 1 ]]
 }
 
 # ============================================================================
@@ -1219,6 +1348,249 @@ test_all_requires_root() {
 }
 
 # ============================================================================
+# Issue #24: _detect_shell_rc() tests
+# ============================================================================
+
+test_detect_shell_rc_bash() {
+    local saved_shell="$SHELL"
+    local saved_home="$HOME"
+    SHELL="/bin/bash"
+    HOME="/tmp/test_detect_rc_bash"
+
+    local result
+    result=$(_detect_shell_rc)
+
+    SHELL="$saved_shell"
+    HOME="$saved_home"
+
+    assert_equals "/tmp/test_detect_rc_bash/.bashrc" "$result" "bash shell returns .bashrc"
+}
+
+test_detect_shell_rc_zsh() {
+    local saved_shell="$SHELL"
+    local saved_home="$HOME"
+    SHELL="/bin/zsh"
+    HOME="/tmp/test_detect_rc_zsh"
+
+    local result
+    result=$(_detect_shell_rc)
+
+    SHELL="$saved_shell"
+    HOME="$saved_home"
+
+    assert_equals "/tmp/test_detect_rc_zsh/.zshrc" "$result" "zsh shell returns .zshrc"
+}
+
+test_detect_shell_rc_fallback_bashrc() {
+    local saved_shell="$SHELL"
+    local saved_home="$HOME"
+    SHELL="/bin/fish"
+    HOME=$(mktemp -d)
+    touch "${HOME}/.bashrc"
+
+    local result
+    result=$(_detect_shell_rc)
+
+    rm -rf "$HOME"
+    SHELL="$saved_shell"
+    HOME="$saved_home"
+
+    assert_contains ".bashrc" "$result" "fish fallback to existing .bashrc"
+}
+
+test_detect_shell_rc_fallback_profile() {
+    local saved_shell="$SHELL"
+    local saved_home="$HOME"
+    SHELL="/bin/fish"
+    HOME=$(mktemp -d)
+    # No .bashrc or .zshrc exists
+
+    local result
+    result=$(_detect_shell_rc)
+
+    rm -rf "$HOME"
+    SHELL="$saved_shell"
+    HOME="$saved_home"
+
+    assert_contains ".profile" "$result" "fish fallback to .profile"
+}
+
+# ============================================================================
+# Issue #24: _cleanup_path_entry() tests
+# ============================================================================
+
+test_cleanup_path_removes_marker() {
+    local saved_home="$HOME"
+    HOME=$(mktemp -d)
+
+    # Create .bashrc with marker block and other content
+    cat > "${HOME}/.bashrc" << 'RCEOF'
+# Existing content
+alias ll='ls -la'
+
+# Added by cac installer — do not edit
+export PATH="$HOME/.local/bin:$PATH"
+
+# Other content
+export EDITOR=vim
+RCEOF
+
+    _cleanup_path_entry >/dev/null 2>&1
+
+    # Marker should be gone
+    local result=0
+    if grep -qF "$CAC_PATH_MARKER" "${HOME}/.bashrc"; then
+        result=1
+    fi
+    # Other content should remain
+    grep -qF "alias ll" "${HOME}/.bashrc" || result=1
+    grep -qF "EDITOR=vim" "${HOME}/.bashrc" || result=1
+
+    rm -rf "$HOME"
+    HOME="$saved_home"
+    return $result
+}
+
+test_cleanup_path_multiple_files() {
+    local saved_home="$HOME"
+    HOME=$(mktemp -d)
+
+    # Add marker to both .bashrc and .zshrc
+    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
+        {
+            echo "# existing"
+            echo "$CAC_PATH_MARKER"
+            echo 'export PATH="$HOME/.local/bin:$PATH"'
+        } > "$rc"
+    done
+
+    _cleanup_path_entry >/dev/null 2>&1
+
+    # Both should be cleaned
+    local result=0
+    if grep -qF "$CAC_PATH_MARKER" "${HOME}/.bashrc" 2>/dev/null; then
+        result=1
+    fi
+    if grep -qF "$CAC_PATH_MARKER" "${HOME}/.zshrc" 2>/dev/null; then
+        result=1
+    fi
+    # Existing content should remain
+    grep -qF "# existing" "${HOME}/.bashrc" || result=1
+    grep -qF "# existing" "${HOME}/.zshrc" || result=1
+
+    rm -rf "$HOME"
+    HOME="$saved_home"
+    return $result
+}
+
+test_cleanup_path_preserves_permissions() {
+    local saved_home="$HOME"
+    HOME=$(mktemp -d)
+
+    # Create .bashrc with marker and set permissions to 644
+    {
+        echo "# existing"
+        echo "$CAC_PATH_MARKER"
+        echo 'export PATH="$HOME/.local/bin:$PATH"'
+        echo "# more content"
+    } > "${HOME}/.bashrc"
+    chmod 644 "${HOME}/.bashrc"
+
+    _cleanup_path_entry >/dev/null 2>&1
+
+    # Permissions should still be 644
+    local perms
+    perms=$(stat -c '%a' "${HOME}/.bashrc")
+
+    rm -rf "$HOME"
+    HOME="$saved_home"
+
+    assert_equals "644" "$perms" "RC file permissions preserved"
+}
+
+test_cleanup_path_no_marker_noop() {
+    local saved_home="$HOME"
+    HOME=$(mktemp -d)
+
+    echo "# just some content" > "${HOME}/.bashrc"
+    local before
+    before=$(cat "${HOME}/.bashrc")
+
+    _cleanup_path_entry >/dev/null 2>&1
+
+    local after
+    after=$(cat "${HOME}/.bashrc")
+
+    rm -rf "$HOME"
+    HOME="$saved_home"
+
+    [[ "$before" == "$after" ]]
+}
+
+test_setup_path_cross_shell() {
+    _TEST_EUID=1000
+
+    local saved_home="$HOME"
+    local saved_shell="$SHELL"
+    HOME=$(mktemp -d)
+    USER_BIN_DIR="${HOME}/.local/bin"
+
+    local saved_path="$PATH"
+    PATH="/usr/bin:/bin"
+
+    # First install with bash — adds marker to .bashrc
+    SHELL="/bin/bash"
+    touch "${HOME}/.bashrc"
+    setup_path >/dev/null 2>&1
+
+    # Switch shell to zsh — should still add to .zshrc
+    SHELL="/bin/zsh"
+    touch "${HOME}/.zshrc"
+    setup_path >/dev/null 2>&1
+
+    # Both files should have the marker
+    local result=0
+    grep -qF "$CAC_PATH_MARKER" "${HOME}/.bashrc" || result=1
+    grep -qF "$CAC_PATH_MARKER" "${HOME}/.zshrc" || result=1
+
+    PATH="$saved_path"
+    rm -rf "$HOME"
+    HOME="$saved_home"
+    SHELL="$saved_shell"
+    _TEST_EUID=""
+    return $result
+}
+
+test_setup_path_profile_creation() {
+    _TEST_EUID=1000
+
+    local saved_home="$HOME"
+    local saved_shell="$SHELL"
+    HOME=$(mktemp -d)
+    SHELL="/bin/fish"
+    USER_BIN_DIR="${HOME}/.local/bin"
+    # No .bashrc, .zshrc exist — should fall back to .profile and create it
+
+    local saved_path="$PATH"
+    PATH="/usr/bin:/bin"
+
+    setup_path >/dev/null 2>&1
+
+    local result=0
+    if [[ ! -f "${HOME}/.profile" ]]; then
+        result=1
+    fi
+    grep -qF "$CAC_PATH_MARKER" "${HOME}/.profile" 2>/dev/null || result=1
+
+    PATH="$saved_path"
+    rm -rf "$HOME"
+    HOME="$saved_home"
+    SHELL="$saved_shell"
+    _TEST_EUID=""
+    return $result
+}
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 
@@ -1260,9 +1632,11 @@ run_test "installs bash completion" test_install_completions_with_bash
 
 echo ""
 echo "--- setup_path() ---"
-run_test "no warning for root install" test_setup_path_root_no_warning
-run_test "no warning when bin in PATH" test_setup_path_user_in_path
-run_test "warns when bin not in PATH" test_setup_path_user_not_in_path
+run_test "no modification for root install" test_setup_path_root_no_modification
+run_test "no modification when bin in PATH" test_setup_path_user_in_path
+run_test "adds marker block to RC file" test_setup_path_adds_to_rc
+run_test "idempotent — marker appears once" test_setup_path_idempotent
+run_test "skips if marker already exists" test_setup_path_skips_if_marker_exists
 
 echo ""
 echo "--- Output functions ---"
@@ -1332,6 +1706,25 @@ run_test "parses --all flag" test_parse_all_flag
 run_test "conflicting flags error" test_conflicting_flags_error
 run_test "--global requires root" test_global_requires_root
 run_test "--all requires root" test_all_requires_root
+
+echo ""
+echo "--- Issue #24: _detect_shell_rc() ---"
+run_test "bash shell returns .bashrc" test_detect_shell_rc_bash
+run_test "zsh shell returns .zshrc" test_detect_shell_rc_zsh
+run_test "fish fallback to existing .bashrc" test_detect_shell_rc_fallback_bashrc
+run_test "fish fallback to .profile" test_detect_shell_rc_fallback_profile
+
+echo ""
+echo "--- Issue #24: _cleanup_path_entry() ---"
+run_test "removes marker block from RC file" test_cleanup_path_removes_marker
+run_test "cleans multiple RC files" test_cleanup_path_multiple_files
+run_test "preserves RC file permissions" test_cleanup_path_preserves_permissions
+run_test "no-op when no marker exists" test_cleanup_path_no_marker_noop
+
+echo ""
+echo "--- Issue #24: setup_path() persistence ---"
+run_test "cross-shell adds to both RC files" test_setup_path_cross_shell
+run_test ".profile created as fallback" test_setup_path_profile_creation
 
 echo ""
 framework_report

@@ -67,10 +67,14 @@ _gokapi_try_request() {
     local endpoint="$2"
     shift 2
 
-    local response
-    response=$(_gokapi_request "$method" "$endpoint" "$@")
+    local response curl_exit=0
+    response=$(_gokapi_request "$method" "$endpoint" "$@") || curl_exit=$?
 
-    if [[ $? -eq 0 && -n "$response" ]]; then
+    utils_verbose "API $method $endpoint: exit=$curl_exit, response_length=${#response}"
+    local _preview="${response:0:200}"
+    utils_verbose "Response preview: ${_preview//$'\n'/ }"
+
+    if [[ $curl_exit -eq 0 && -n "$response" ]]; then
         # shellcheck disable=SC2034  # GOKAPI_RESPONSE is used by callers
         GOKAPI_RESPONSE="$response"
         return 0

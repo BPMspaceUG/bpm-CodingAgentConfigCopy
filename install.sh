@@ -510,22 +510,79 @@ setup_config() {
     success "Created configuration: ${env_file}"
 }
 
-# Add user bin to PATH if needed
+# Marker for PATH lines added by cac installer (2-line block)
+CAC_PATH_MARKER="# Added by cac installer — do not edit"
+
+# Detect the user's shell RC file
+# Returns: path to RC file (always a single file)
+_detect_shell_rc() {
+    local shell_name
+    shell_name="$(basename "${SHELL:-}")"
+
+    case "$shell_name" in
+        bash) echo "${HOME}/.bashrc"; return 0 ;;
+        zsh)  echo "${HOME}/.zshrc"; return 0 ;;
+    esac
+
+    # Fallback: check for existing RC files
+    if [[ -f "${HOME}/.bashrc" ]]; then
+        echo "${HOME}/.bashrc"
+    elif [[ -f "${HOME}/.zshrc" ]]; then
+        echo "${HOME}/.zshrc"
+    else
+        echo "${HOME}/.profile"
+    fi
+}
+
+# Remove cac PATH marker block from all RC files
+_cleanup_path_entry() {
+    local rc_file
+    for rc_file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        if [[ -f "$rc_file" ]] && grep -qF "$CAC_PATH_MARKER" "$rc_file"; then
+            # Remove the marker line and the immediately following export PATH line
+            # Use temp file + cat to preserve file permissions/metadata
+            local tmp_file
+            tmp_file=$(mktemp)
+            sed "/${CAC_PATH_MARKER//\//\\/}/,+1d" "$rc_file" > "$tmp_file" && \
+                cat "$tmp_file" > "$rc_file"
+            rm -f "$tmp_file" 2>/dev/null || true
+            info "Removed PATH entry from ${rc_file}"
+        fi
+    done
+}
+
+# Add user bin to PATH if needed (persisted to shell RC file)
 setup_path() {
     if is_root; then
         # System-wide installation, /usr/local/bin is usually in PATH
         return 0
     fi
 
-    # Check if user bin is in PATH
-    if [[ ":$PATH:" != *":${USER_BIN_DIR}:"* ]]; then
-        warn "${USER_BIN_DIR} is not in your PATH"
-        echo ""
-        echo "Add the following to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-        echo ""
-        echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-        echo ""
+    # Detect target RC file for the user's current shell
+    local target_rc
+    target_rc="$(_detect_shell_rc)"
+
+    # If marker already exists in the target RC file, do nothing (idempotent)
+    if [[ -f "$target_rc" ]] && grep -qF "$CAC_PATH_MARKER" "$target_rc"; then
+        return 0
     fi
+
+    # If USER_BIN_DIR is already in PATH (e.g. set by distro), skip
+    if [[ ":$PATH:" == *":${USER_BIN_DIR}:"* ]]; then
+        return 0
+    fi
+
+    # Create the RC file if it doesn't exist (e.g. .profile fallback)
+    touch "$target_rc"
+
+    {
+        echo ""
+        echo "$CAC_PATH_MARKER"
+        echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
+    } >> "$target_rc"
+
+    success "Added PATH to ${target_rc}"
+    echo "  Run 'source ${target_rc}' or open a new terminal to use cac."
 }
 
 # Perform uninstallation
@@ -577,6 +634,11 @@ do_uninstall() {
             warn "Configuration directory preserved: ${CONFIG_DIR}"
             info "Remove manually if desired: rm -rf ${CONFIG_DIR}"
         fi
+    fi
+
+    # Remove PATH entry from shell RC files
+    if ! is_root; then
+        _cleanup_path_entry
     fi
 
     if [[ "$removed" -eq 0 ]]; then
