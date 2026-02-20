@@ -1182,6 +1182,429 @@ test_env_install_global_requires_root_error() {
 }
 
 # ============================================================================
+# Issue #31/#32: Update Error Isolation Tests
+# ============================================================================
+
+test_env_update_all_continues_after_failure() {
+    # Mock all dependencies for determinism
+    env_get_all_tools() { printf "toolA\ntoolB\ntoolC\n"; }
+    env_is_installed() { return 0; }
+    env_get_version() { echo "mock-version"; }
+    env_get_display_name() {
+        case "$1" in
+            toolA) echo "Tool A" ;; toolB) echo "Tool B" ;; toolC) echo "Tool C" ;;
+        esac
+    }
+
+    # Track calls via temp file (avoids subshell scoping issues)
+    local call_marker="${TEST_TMPDIR}/update_calls_$$"
+    : > "$call_marker"
+    env_update_tool() {
+        echo "$1" >> "$call_marker"
+        # Fail for the first tool, succeed for the rest
+        if [[ "$1" == "toolA" ]]; then
+            return 1
+        fi
+        return 0
+    }
+
+    env_update_all "user" >/dev/null 2>&1 || true
+
+    local call_count
+    call_count=$(wc -l < "$call_marker")
+
+    # Should have been called for all 3 tools, not just the first
+    if [[ $call_count -eq 3 ]]; then
+        pass "update_all continues after first tool fails (called $call_count tools)"
+    else
+        fail "update_all continues after first tool fails" "only called $call_count tools"
+    fi
+
+    rm -f "$call_marker"
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+test_env_update_all_shows_failed_tools() {
+    # Mock all dependencies for determinism
+    env_get_all_tools() { printf "toolA\ntoolB\n"; }
+    env_is_installed() { return 0; }
+    env_get_version() { echo "mock-version"; }
+    env_get_display_name() {
+        case "$1" in
+            toolA) echo "Tool A" ;; toolB) echo "Tool B" ;;
+        esac
+    }
+
+    # Fail for toolB specifically
+    env_update_tool() {
+        if [[ "$1" == "toolB" ]]; then
+            return 1
+        fi
+        return 0
+    }
+
+    local output
+    output=$(env_update_all "user" 2>&1) || true
+
+    assert_contains "Failed tools:" "$output" "summary lists failed tools"
+    assert_contains "Tool B" "$output" "summary names the failed tool"
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+test_env_update_all_shows_correct_failed_count() {
+    # Mock all dependencies for determinism
+    env_get_all_tools() { printf "toolA\ntoolB\ntoolC\n"; }
+    env_is_installed() { return 0; }
+    env_get_version() { echo "mock-version"; }
+    env_get_display_name() {
+        case "$1" in
+            toolA) echo "Tool A" ;; toolB) echo "Tool B" ;; toolC) echo "Tool C" ;;
+        esac
+    }
+
+    # Fail for toolA and toolC (2 failures)
+    env_update_tool() {
+        if [[ "$1" == "toolA" || "$1" == "toolC" ]]; then
+            return 1
+        fi
+        return 0
+    }
+
+    local output
+    output=$(env_update_all "user" 2>&1) || true
+
+    assert_contains "Failed: 2" "$output" "failed count is 2"
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+test_env_check_node_handles_empty_version() {
+    # Mock node to exist but return empty version
+    node() { echo ""; }
+    export -f node
+
+    local err_output=""
+    utils_error() { err_output+="$* "; }
+
+    local rc=0
+    env_check_node || rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        pass "check_node returns non-zero for empty version"
+    else
+        fail "check_node returns non-zero for empty version"
+    fi
+
+    if [[ "$err_output" == *"could not be determined"* ]]; then
+        pass "check_node error message says 'could not be determined'"
+    else
+        fail "check_node error message says 'could not be determined'" "got: $err_output"
+    fi
+
+    # Should NOT contain double-space version error
+    if [[ "$err_output" != *"version  is too old"* ]]; then
+        pass "check_node does not show empty version in error"
+    else
+        fail "check_node does not show empty version in error" "got: $err_output"
+    fi
+
+    unset -f node
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+test_env_check_node_handles_nonnumeric_version() {
+    # Mock node to return non-numeric version string
+    node() { echo "vNaN.beta.1"; }
+    export -f node
+
+    local err_output=""
+    utils_error() { err_output+="$* "; }
+
+    local rc=0
+    env_check_node || rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        pass "check_node returns non-zero for non-numeric version"
+    else
+        fail "check_node returns non-zero for non-numeric version"
+    fi
+
+    if [[ "$err_output" == *"could not be determined"* ]]; then
+        pass "check_node error says 'could not be determined' for non-numeric"
+    else
+        fail "check_node error says 'could not be determined' for non-numeric" "got: $err_output"
+    fi
+
+    unset -f node
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+# ============================================================================
+# Issue #30: Latest Version Check Tests
+# ============================================================================
+
+test_env_get_latest_version_with_mock_npm() {
+    export XDG_CACHE_HOME="$TEST_TMPDIR"
+    # Mock npm to return a known version
+    npm() { echo "9.9.9"; }
+    export -f npm
+    # Mock timeout to just run the command
+    timeout() { shift; "$@"; }
+    export -f timeout
+
+    # Clear cache to force fresh lookup
+    local cache_file
+    cache_file=$(_env_cache_file)
+    rm -f "$cache_file"
+
+    local latest
+    latest=$(env_get_latest_version "claude")
+
+    local rc=0
+    assert_equals "9.9.9" "$latest" "latest version from mocked npm" || rc=$?
+
+    unset -f npm timeout
+    rm -f "$cache_file"
+    unset XDG_CACHE_HOME
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+    return $rc
+}
+
+test_env_get_latest_version_fallback() {
+    export XDG_CACHE_HOME="$TEST_TMPDIR"
+    # Override npm to simulate it being unavailable
+    # (hiding from PATH is unreliable since npm may be in /usr/bin)
+    npm() { return 127; }
+    export -f npm
+    # Also override command to hide npm
+    local orig_command
+    orig_command=$(type -t command)
+    command() {
+        if [[ "$1" == "-v" && "$2" == "npm" ]]; then
+            return 1
+        fi
+        builtin command "$@"
+    }
+
+    # Clear cache
+    local cache_file
+    cache_file=$(_env_cache_file)
+    rm -f "$cache_file"
+
+    local latest
+    latest=$(env_get_latest_version "claude")
+
+    unset -f npm command
+
+    local rc=0
+    assert_equals "?" "$latest" "fallback when npm unavailable" || rc=$?
+
+    rm -f "$cache_file"
+    unset XDG_CACHE_HOME
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+    return $rc
+}
+
+test_env_cache_write_and_read() {
+    export XDG_CACHE_HOME="$TEST_TMPDIR"
+    local cache_file
+    cache_file=$(_env_cache_file)
+    rm -f "$cache_file"
+
+    # Write a cache entry
+    _env_cache_set_latest "testool" "1.2.3"
+
+    # Read it back
+    local cached
+    cached=$(_env_cache_get_latest "testool")
+
+    local rc=0
+    assert_equals "1.2.3" "$cached" "cached version read back" || rc=$?
+
+    rm -f "$cache_file"
+    unset XDG_CACHE_HOME
+    return $rc
+}
+
+test_env_cache_expiry() {
+    export XDG_CACHE_HOME="$TEST_TMPDIR"
+    local cache_file
+    cache_file=$(_env_cache_file)
+    rm -f "$cache_file"
+
+    # Write a cache entry with an old timestamp (10 minutes ago)
+    local old_ts=$(( $(date +%s) - 600 ))
+    echo "testool:1.0.0:${old_ts}" > "$cache_file"
+    chmod 600 "$cache_file"
+
+    # Should return empty (expired)
+    local cached
+    cached=$(_env_cache_get_latest "testool")
+
+    if [[ -z "$cached" ]]; then
+        pass "expired cache returns empty"
+    else
+        fail "expired cache returns empty" "got: $cached"
+    fi
+
+    rm -f "$cache_file"
+    unset XDG_CACHE_HOME
+}
+
+test_env_check_updates_flag_parsing() {
+    _env_parse_scope_args --check-updates 2>/dev/null || true
+    assert_equals "true" "$ENV_PARSED_CHECK_UPDATES" "check-updates flag parsed"
+}
+
+test_env_status_with_latest_column() {
+    # Mock env_is_installed and env_get_version for predictable output
+    env_is_installed() { return 0; }
+    env_get_version() { echo "1.0.0"; }
+    env_get_latest_version() { echo "2.0.0"; }
+
+    local output
+    output=$(env_show_status "true" 2>&1)
+
+    local rc=0
+    assert_contains "Latest" "$output" "status output has Latest header" || rc=$?
+    assert_contains "2.0.0" "$output" "status output shows latest version" || rc=$?
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+    return $rc
+}
+
+test_env_status_parseable_with_latest() {
+    env_is_installed() { return 0; }
+    env_get_version() { echo "1.0.0"; }
+    env_get_latest_version() { echo "2.0.0"; }
+
+    local output
+    output=$(env_show_status_parseable "true" 2>&1)
+
+    # Should have 4 tab-separated fields per line
+    local first_line
+    first_line=$(echo "$output" | head -1)
+    local field_count
+    field_count=$(echo "$first_line" | awk -F'\t' '{print NF}')
+
+    local rc=0
+    assert_equals "4" "$field_count" "parseable output has 4 fields with check-updates" || rc=$?
+    assert_contains "2.0.0" "$output" "parseable output contains latest version" || rc=$?
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+    return $rc
+}
+
+test_env_normalize_version() {
+    # Raw formats from various tools
+    assert_equals "0.94.0" "$(_env_normalize_version "codex-cli 0.94.0")" "codex raw version"
+    assert_equals "2.1.49" "$(_env_normalize_version "2.1.49")" "clean semver"
+    assert_equals "2.1.49" "$(_env_normalize_version "2.1.49 (Claude Code)")" "claude raw version with suffix"
+    assert_equals "0.26.0" "$(_env_normalize_version "0.26.0")" "gemini raw version"
+    assert_equals "1.2.3" "$(_env_normalize_version "tool 1.2.3 (extra info)")" "version with suffix"
+    assert_equals "unknown" "$(_env_normalize_version "unknown")" "unknown passes through"
+}
+
+test_env_status_check_updates_matches_normalized() {
+    # Simulate claude: env_get_version returns "2.1.49 (Claude Code)", latest is "2.1.49"
+    env_is_installed() { return 0; }
+    env_get_version() { echo "2.1.49 (Claude Code)"; }
+    env_get_latest_version() { echo "2.1.49"; }
+
+    local output
+    output=$(env_show_status "true" 2>&1)
+
+    local rc=0
+
+    # Should show ✓ (up-to-date), NOT ⬆ (update available)
+    if [[ "$output" == *"✓"* ]]; then
+        pass "normalized comparison shows ✓ when versions match"
+    else
+        fail "normalized comparison shows ✓ when versions match" "output: $output"
+        rc=1
+    fi
+
+    # Should NOT show ⬆
+    if [[ "$output" != *"⬆"* ]]; then
+        pass "normalized comparison does not show ⬆ when up-to-date"
+    else
+        fail "normalized comparison does not show ⬆ when up-to-date" "output: $output"
+        rc=1
+    fi
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+    return $rc
+}
+
+test_env_status_without_check_updates() {
+    local output
+    output=$(env_show_status 2>&1)
+
+    # Should NOT have Latest header
+    if [[ "$output" != *"Latest"* ]]; then
+        pass "default status has no Latest column"
+    else
+        fail "default status has no Latest column" "Found Latest in output"
+    fi
+}
+
+test_env_status_parseable_without_check_updates() {
+    env_is_installed() { return 0; }
+    env_get_version() { echo "1.0.0"; }
+
+    local output
+    output=$(env_show_status_parseable 2>&1)
+
+    # Should have 3 tab-separated fields per line (backward compat)
+    local first_line
+    first_line=$(echo "$output" | head -1)
+    local field_count
+    field_count=$(echo "$first_line" | awk -F'\t' '{print NF}')
+
+    local rc=0
+    assert_equals "3" "$field_count" "parseable output has 3 fields without check-updates" || rc=$?
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+    return $rc
+}
+
+test_env_parseable_normalizes_versions() {
+    # Mock with raw CLI output that includes suffixes
+    env_is_installed() { return 0; }
+    env_get_version() { echo "2.1.49 (Claude Code)"; }
+    env_get_latest_version() { echo "2.1.49"; }
+
+    local output
+    output=$(env_show_status_parseable "true" 2>&1)
+
+    # Parseable output should contain normalized "2.1.49", not raw "2.1.49 (Claude Code)"
+    local first_line version_field latest_field
+    first_line=$(echo "$output" | head -1)
+    version_field=$(echo "$first_line" | cut -f3)
+    latest_field=$(echo "$first_line" | cut -f4)
+
+    local rc=0
+    assert_equals "2.1.49" "$version_field" "parseable version normalized" || rc=$?
+    assert_equals "2.1.49" "$latest_field" "parseable latest normalized" || rc=$?
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+    return $rc
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -1267,6 +1690,29 @@ run_test "scan skips unwritable dirs" test_env_scan_all_users_skips_unwritable
 run_test "scan skips missing .local/bin" test_env_scan_all_users_skips_missing_local_bin
 run_test "cleanup skips unwritable dirs" test_env_cleanup_skips_unwritable_dirs
 run_test "global install requires root error" test_env_install_global_requires_root_error
+
+echo ""
+echo "--- Issue #31/#32: Update Error Isolation Tests ---"
+run_test "update_all continues after failure" test_env_update_all_continues_after_failure
+run_test "update_all shows failed tools" test_env_update_all_shows_failed_tools
+run_test "update_all shows correct failed count" test_env_update_all_shows_correct_failed_count
+run_test "check_node handles empty version" test_env_check_node_handles_empty_version
+run_test "check_node handles non-numeric version" test_env_check_node_handles_nonnumeric_version
+
+echo ""
+echo "--- Issue #30: Latest Version Check Tests ---"
+run_test "get latest version with mock npm" test_env_get_latest_version_with_mock_npm
+run_test "get latest version fallback" test_env_get_latest_version_fallback
+run_test "cache write and read" test_env_cache_write_and_read
+run_test "cache expiry" test_env_cache_expiry
+run_test "parse --check-updates flag" test_env_check_updates_flag_parsing
+run_test "status with latest column" test_env_status_with_latest_column
+run_test "parseable with latest column" test_env_status_parseable_with_latest
+run_test "normalize version extracts semver" test_env_normalize_version
+run_test "check-updates matches normalized versions" test_env_status_check_updates_matches_normalized
+run_test "status without check-updates" test_env_status_without_check_updates
+run_test "parseable without check-updates" test_env_status_parseable_without_check_updates
+run_test "parseable normalizes versions" test_env_parseable_normalizes_versions
 
 echo ""
 framework_report

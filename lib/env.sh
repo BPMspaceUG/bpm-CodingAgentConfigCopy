@@ -59,6 +59,17 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
     readonly _ENV_CC_GLOBAL_DIR="/opt/continuous-claude"
     readonly _ENV_CC_GLOBAL_BIN="/usr/local/bin/continuous-claude"
     readonly _ENV_CC_GLOBAL_PKG="continuous-claude"
+
+    # npm package names for latest version lookup (Issue #30)
+    declare -A _ENV_NPM_LOOKUP=(
+        [claude]="@anthropic-ai/claude-code"
+        [codex]="@openai/codex"
+        [gemini]="@google/gemini-cli"
+        [continuous-claude]="continuous-claude"
+    )
+
+    # Cache TTL for latest version lookups (seconds) - 5 minutes
+    readonly _ENV_LATEST_CACHE_TTL=300
 fi
 
 # ============================================================================
@@ -184,9 +195,20 @@ env_check_node() {
     fi
 
     local version
-    version=$(node --version 2>/dev/null | sed 's/^v//')
+    version=$(node --version 2>/dev/null | sed 's/^v//') || version=""
+    # Issue #32: Handle empty or undetermined version gracefully
+    if [[ -z "$version" ]]; then
+        utils_error "Node.js version could not be determined"
+        return 1
+    fi
     local major
     major="${version%%.*}"
+
+    # Issue #32: Guard against non-numeric major version
+    if [[ -z "$major" ]] || [[ ! "$major" =~ ^[0-9]+$ ]]; then
+        utils_error "Node.js version could not be determined"
+        return 1
+    fi
 
     if [[ "$major" -lt "$ENV_MIN_NODE_VERSION" ]]; then
         utils_error "Node.js version $version is too old. Minimum required: v${ENV_MIN_NODE_VERSION}"
@@ -719,11 +741,12 @@ env_update_tool() {
             utils_error "Global update requires root. Run with sudo."
             return 1
         fi
+        # Issue #31: Capture exit code safely to avoid set -e killing the script
+        local exit_code=0
         case "$tool" in
-            claude)           _env_update_claude_global ;;
-            continuous-claude) _env_update_cc_global ;;
+            claude)           _env_update_claude_global || exit_code=$? ;;
+            continuous-claude) _env_update_cc_global || exit_code=$? ;;
         esac
-        local exit_code=$?
         local new_version
         new_version=$(env_get_version "$tool")
         if [[ $exit_code -eq 0 ]]; then
@@ -747,6 +770,10 @@ env_update_tool() {
 
     echo "Updating $display_name..."
 
+    # Issue #31: Declare exit_code before case block so update command
+    # failures are captured instead of killing the script under set -e.
+    local exit_code=0
+
     case "$install_type" in
         curl)
             local url="${_ENV_INSTALL_URLS[$tool]}"
@@ -759,14 +786,14 @@ env_update_tool() {
                     return 1
                 fi
                 case "$tool" in
-                    claude)           _env_update_claude_global ;;
-                    continuous-claude) _env_update_cc_global ;;
+                    claude)           _env_update_claude_global || exit_code=$? ;;
+                    continuous-claude) _env_update_cc_global || exit_code=$? ;;
                     *)
                         if ! env_check_curl; then
                             return $ENV_EXIT_MISSING_DEP
                         fi
                         echo "Re-running installer from: $url"
-                        curl -fsSL "$url" | bash
+                        curl -fsSL "$url" | bash || exit_code=$?
                         ;;
                 esac
             else
@@ -774,7 +801,7 @@ env_update_tool() {
                     return $ENV_EXIT_MISSING_DEP
                 fi
                 echo "Re-running installer from: $url"
-                curl -fsSL "$url" | bash
+                curl -fsSL "$url" | bash || exit_code=$?
             fi
             ;;
 
@@ -795,11 +822,9 @@ env_update_tool() {
             fi
 
             utils_verbose "Running: $cmd"
-            eval "$cmd"
+            eval "$cmd" || exit_code=$?
             ;;
     esac
-
-    local exit_code=$?
     local new_version
     new_version=$(env_get_version "$tool")
 
@@ -869,6 +894,8 @@ env_update_all() {
     local success=0
     local failed=0
     local skipped=0
+    # Issue #32: Track failed tool names for error reporting
+    local -a failed_tools=()
 
     echo "Updating all installed AI tools..."
     echo ""
@@ -883,6 +910,9 @@ env_update_all() {
             ((success++)) || true
         else
             ((failed++)) || true
+            local display_name
+            display_name=$(env_get_display_name "$tool")
+            failed_tools+=("$display_name")
         fi
         echo ""
     done < <(env_get_all_tools)
@@ -891,6 +921,9 @@ env_update_all() {
     echo "Updated: $success"
     echo "Skipped (not installed): $skipped"
     echo "Failed: $failed"
+    if [[ ${#failed_tools[@]} -gt 0 ]]; then
+        echo "Failed tools: ${failed_tools[*]}"
+    fi
 
     if [[ $failed -eq 0 ]]; then
         return $ENV_EXIT_SUCCESS
@@ -902,14 +935,145 @@ env_update_all() {
 }
 
 # ============================================================================
+# Latest Version Cache (Issue #30)
+# ============================================================================
+
+# Extract semver (X.Y.Z) from raw version string
+# Handles formats like "codex-cli 0.94.0", "2.1.49 (Claude Code)", "0.26.0"
+# Usage: _env_normalize_version <raw_version_string>
+# Returns: First semver pattern found, or the input unchanged
+_env_normalize_version() {
+    local raw="$1"
+    local semver
+    semver=$(echo "$raw" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    echo "${semver:-$raw}"
+}
+
+# Get cache file path for latest version lookups
+# Uses XDG cache dir (same pattern as check.sh) to avoid symlink attacks in /tmp
+# Usage: _env_cache_file
+_env_cache_file() {
+    echo "${XDG_CACHE_HOME:-$HOME/.cache}/cac/latest_versions"
+}
+
+# Read a cached latest version for a tool
+# Usage: _env_cache_get_latest <tool>
+# Returns: Version string if cache is fresh, empty if expired/missing
+_env_cache_get_latest() {
+    local tool="$1"
+    local cache_file
+    cache_file=$(_env_cache_file)
+
+    [[ -f "$cache_file" ]] || return 0
+
+    local now
+    now=$(date +%s)
+
+    local line_tool line_version line_timestamp
+    while IFS=: read -r line_tool line_version line_timestamp; do
+        if [[ "$line_tool" == "$tool" ]]; then
+            local age=$(( now - line_timestamp ))
+            if [[ $age -lt $_ENV_LATEST_CACHE_TTL ]]; then
+                echo "$line_version"
+                return 0
+            fi
+        fi
+    done < "$cache_file"
+
+    return 0
+}
+
+# Store a latest version in the cache
+# Usage: _env_cache_set_latest <tool> <version>
+_env_cache_set_latest() {
+    local tool="$1"
+    local version="$2"
+    local cache_file cache_dir timestamp
+    cache_file=$(_env_cache_file)
+    cache_dir=$(dirname "$cache_file")
+    timestamp=$(date +%s)
+
+    # Create cache directory if needed (secure permissions)
+    if [[ ! -d "$cache_dir" ]]; then
+        mkdir -p "$cache_dir"
+        chmod 700 "$cache_dir"
+    fi
+
+    if [[ -f "$cache_file" ]]; then
+        local temp_file
+        temp_file=$(mktemp "${cache_dir}/latest_versions.XXXXXX")
+        chmod 600 "$temp_file"
+        grep -v "^${tool}:" "$cache_file" > "$temp_file" 2>/dev/null || true
+        echo "${tool}:${version}:${timestamp}" >> "$temp_file"
+        mv "$temp_file" "$cache_file"
+    else
+        echo "${tool}:${version}:${timestamp}" > "$cache_file"
+        chmod 600 "$cache_file"
+    fi
+}
+
+# Get the latest published version for a tool from npm registry
+# Usage: env_get_latest_version <tool>
+# Returns: Version string or "?" if unavailable
+env_get_latest_version() {
+    local tool="$1"
+
+    # Check cache first
+    local cached
+    cached=$(_env_cache_get_latest "$tool")
+    if [[ -n "$cached" ]]; then
+        echo "$cached"
+        return 0
+    fi
+
+    # Look up npm package name
+    local package="${_ENV_NPM_LOOKUP[$tool]:-}"
+    if [[ -z "$package" ]]; then
+        echo "?"
+        return 0
+    fi
+
+    # Require npm
+    if ! command -v npm &>/dev/null; then
+        echo "?"
+        return 0
+    fi
+
+    # Query npm registry with timeout
+    local latest
+    if command -v timeout &>/dev/null; then
+        latest=$(timeout 10 npm view "$package" version 2>/dev/null) || latest=""
+    elif command -v gtimeout &>/dev/null; then
+        latest=$(gtimeout 10 npm view "$package" version 2>/dev/null) || latest=""
+    else
+        latest=$(npm view "$package" version 2>/dev/null) || latest=""
+    fi
+
+    if [[ -n "$latest" ]]; then
+        _env_cache_set_latest "$tool" "$latest"
+        echo "$latest"
+    else
+        echo "?"
+    fi
+}
+
+# ============================================================================
 # Status Display Functions
 # ============================================================================
 
 # Show status of all tools (human-readable table)
-# Usage: env_show_status
+# Usage: env_show_status [check_updates]
+# Args: check_updates - if "true", fetch and display latest available versions
 env_show_status() {
-    printf "%-20s %-12s %-20s %-10s\n" "Tool" "Status" "Version" "Optional"
-    printf "%-20s %-12s %-20s %-10s\n" "----" "------" "-------" "--------"
+    local check_updates="${1:-false}"
+
+    if [[ "$check_updates" == "true" ]]; then
+        printf "%-20s %-12s %-20s %-20s %-10s\n" "Tool" "Status" "Version" "Latest" "Optional"
+        printf "%-20s %-12s %-20s %-20s %-10s\n" "----" "------" "-------" "------" "--------"
+    else
+        printf "%-20s %-12s %-20s %-10s\n" "Tool" "Status" "Version" "Optional"
+        printf "%-20s %-12s %-20s %-10s\n" "----" "------" "-------" "--------"
+    fi
 
     for entry in "${_ENV_REGISTRY[@]}"; do
         IFS='|' read -ra fields <<< "$entry"
@@ -932,14 +1096,36 @@ env_show_status() {
             opt_str="No"
         fi
 
-        printf "%-20s %-12s %-20s %-10s\n" "$display_name" "$status" "$version" "$opt_str"
+        if [[ "$check_updates" == "true" ]]; then
+            local latest indicator
+            if [[ "$status" == "Installed" ]]; then
+                latest=$(env_get_latest_version "$tool")
+                local norm_version norm_latest
+                norm_version=$(_env_normalize_version "$version")
+                norm_latest=$(_env_normalize_version "$latest")
+                if [[ "$latest" == "?" ]]; then
+                    indicator=""
+                elif [[ "$norm_latest" == "$norm_version" ]]; then
+                    indicator=" ✓"
+                else
+                    indicator=" ⬆"
+                fi
+                printf "%-20s %-12s %-20s %-20s %-10s\n" "$display_name" "$status" "$version" "${latest}${indicator}" "$opt_str"
+            else
+                printf "%-20s %-12s %-20s %-20s %-10s\n" "$display_name" "$status" "$version" "-" "$opt_str"
+            fi
+        else
+            printf "%-20s %-12s %-20s %-10s\n" "$display_name" "$status" "$version" "$opt_str"
+        fi
     done
 }
 
 # Show status in parseable format (tab-separated)
-# Usage: env_show_status_parseable
-# Output: TOOL\tSTATUS\tVERSION per line
+# Usage: env_show_status_parseable [check_updates]
+# Output: TOOL\tSTATUS\tVERSION[\tLATEST] per line
 env_show_status_parseable() {
+    local check_updates="${1:-false}"
+
     for entry in "${_ENV_REGISTRY[@]}"; do
         local tool="${entry%%|*}"
         local status version
@@ -947,12 +1133,24 @@ env_show_status_parseable() {
         if env_is_installed "$tool"; then
             status="installed"
             version=$(env_get_version "$tool")
+            version=$(_env_normalize_version "$version")
         else
             status="not_found"
             version="-"
         fi
 
-        printf "%s\t%s\t%s\n" "$tool" "$status" "$version"
+        if [[ "$check_updates" == "true" ]]; then
+            local latest
+            if [[ "$status" == "installed" ]]; then
+                latest=$(env_get_latest_version "$tool")
+                latest=$(_env_normalize_version "$latest")
+            else
+                latest="-"
+            fi
+            printf "%s\t%s\t%s\t%s\n" "$tool" "$status" "$version" "$latest"
+        else
+            printf "%s\t%s\t%s\n" "$tool" "$status" "$version"
+        fi
     done
 }
 
@@ -1059,6 +1257,7 @@ _env_parse_scope_args() {
     ENV_PARSED_TOOLS=()
     ENV_PARSED_YES="false"
     ENV_PARSED_PARSEABLE="false"
+    ENV_PARSED_CHECK_UPDATES="false"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1092,6 +1291,10 @@ _env_parse_scope_args() {
                 ;;
             --parseable)
                 ENV_PARSED_PARSEABLE="true"
+                shift
+                ;;
+            --check-updates)
+                ENV_PARSED_CHECK_UPDATES="true"
                 shift
                 ;;
             -*)
@@ -1215,9 +1418,9 @@ env_cmd_status() {
     fi
 
     if [[ "$ENV_PARSED_PARSEABLE" == "true" ]]; then
-        env_show_status_parseable
+        env_show_status_parseable "$ENV_PARSED_CHECK_UPDATES"
     else
-        env_show_status
+        env_show_status "$ENV_PARSED_CHECK_UPDATES"
     fi
 
     return $ENV_EXIT_SUCCESS
