@@ -2,13 +2,16 @@
 # install.sh - Bootstrap installer for cac (Coding Agent Config)
 # Installs cac CLI for managing AI coding assistant configurations
 #
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/BPMspaceUG/bpm-CodingAgentConfigCopy/main/install.sh | bash
-#   curl -fsSL ... | bash -s -- --uninstall
+# TWO MODES:
+#   LOCAL mode:  sudo bash install.sh
+#     - Auto-detects files alongside install.sh (USB stick)
+#     - Requires root
+#     - Auto-installs deps, copies files, runs full 6-step pipeline
 #
-# Installation modes:
-#   Root:     /usr/local/bin/cac + /etc/cac/
-#   Non-root: ~/.local/bin/cac + ~/.config/cac/
+#   PIPE mode:   curl -fsSL URL | bash -s -- [OPTIONS]
+#     - Downloads from GitHub
+#     - Supports --user/--global/--all, --backend, --url, --api-key, --storage
+#     - Root/non-root auto-detected based on privileges
 
 set -euo pipefail
 
@@ -33,7 +36,7 @@ SYS_ZSH_COMPLETION_DIR="/usr/local/share/zsh/site-functions"
 USER_BASH_COMPLETION_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/bash-completion/completions"
 USER_ZSH_COMPLETION_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/zsh/site-functions"
 
-# Determine installation mode based on privileges
+# Determine if running as root
 is_root() {
     [[ "${EUID:-$(id -u)}" -eq 0 ]]
 }
@@ -71,8 +74,7 @@ set_system_wide_paths() {
     INSTALL_MODE="system-wide"
 }
 
-# Prompt user for install type (interactive mode only)
-# Returns: Sets install paths based on user choice
+# Prompt user for install type (interactive pipe mode only)
 prompt_install_type() {
     while true; do
         echo ""
@@ -96,7 +98,6 @@ prompt_install_type() {
                     error "System-wide installation requires root privileges."
                     echo "Please run with sudo, or choose option 1 for user-local install."
                     echo ""
-                    # Re-prompt
                 fi
                 ;;
             *)
@@ -107,15 +108,13 @@ prompt_install_type() {
     done
 }
 
-# Set installation directories based on privilege level (auto-detect for non-interactive)
+# Set installation directories based on privilege level (pipe mode auto-detect)
 set_install_paths() {
-    # Interactive mode: prompt user for install type
     if [[ -t 0 ]]; then
         prompt_install_type
         return 0
     fi
 
-    # Non-interactive mode: auto-detect based on privileges (backward compatible)
     if is_root; then
         set_system_wide_paths
     else
@@ -123,19 +122,100 @@ set_install_paths() {
     fi
 }
 
-# Check for required dependencies
+# Check for required dependencies and auto-install if missing (local mode)
+# In local mode we have root and can apt-get install.
+# In pipe mode we just check and die if missing.
 check_dependencies() {
+    local auto_install="$1"  # "true" for local mode, "false" for pipe mode
     local missing=()
 
-    for cmd in curl unzip zip; do
+    for cmd in curl unzip zip git; do
         if ! command -v "$cmd" &>/dev/null; then
             missing+=("$cmd")
         fi
     done
 
-    if [[ ${#missing[@]} -gt 0 ]]; then
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    if [[ "$auto_install" == "true" ]]; then
+        info "Installing missing dependencies: ${missing[*]}"
+        if apt-get update -qq &>/dev/null && apt-get install -y "${missing[@]}" &>/dev/null; then
+            success "Installed: ${missing[*]}"
+        else
+            die "Failed to install dependencies: ${missing[*]}. Install them manually with: apt-get install -y ${missing[*]}"
+        fi
+    else
         die "Missing required dependencies: ${missing[*]}"
     fi
+}
+
+# Resolve the directory where install.sh lives
+# Handles symlinks. Returns empty string if resolution fails (e.g. piped input).
+get_script_dir() {
+    local source="${BASH_SOURCE[0]:-}"
+
+    # If BASH_SOURCE is empty or "-" (piped), we cannot resolve
+    if [[ -z "$source" || "$source" == "-" || "$source" == "bash" ]]; then
+        echo ""
+        return 0
+    fi
+
+    # Resolve symlinks
+    while [[ -L "$source" ]]; do
+        local dir
+        dir="$(cd -P "$(dirname "$source")" && pwd)"
+        source="$(readlink "$source")"
+        [[ "$source" != /* ]] && source="$dir/$source"
+    done
+
+    cd -P "$(dirname "$source")" && pwd
+}
+
+# Check if local project files exist alongside install.sh
+# Strict: BOTH bin/cac AND core lib/*.sh must exist
+detect_local_files() {
+    local script_dir="$1"
+    [[ -n "$script_dir" ]] && \
+    [[ -f "${script_dir}/bin/cac" ]] && \
+    [[ -f "${script_dir}/lib/config.sh" ]] && \
+    [[ -f "${script_dir}/lib/security.sh" ]] && \
+    [[ -f "${script_dir}/lib/bundle.sh" ]] && \
+    [[ -f "${script_dir}/lib/tools.sh" ]] && \
+    [[ -f "${script_dir}/lib/utils.sh" ]] && \
+    [[ -f "${script_dir}/lib/logging.sh" ]]
+}
+
+# Copy local files to temp directory (mirrors download_project structure)
+copy_local_files() {
+    local script_dir="$1"
+    local temp_dir="$2"
+
+    info "Local files detected -- using local installation"
+
+    if ! mkdir -p "${temp_dir}/bin" "${temp_dir}/lib" "${temp_dir}/completions"; then
+        die "Failed to create temporary directories"
+    fi
+
+    # Copy main CLI
+    cp "${script_dir}/bin/cac" "${temp_dir}/bin/cac"
+    chmod +x "${temp_dir}/bin/cac"
+
+    # Copy library files
+    cp "${script_dir}/lib/"*.sh "${temp_dir}/lib/"
+
+    # Copy example config (optional)
+    if [[ -f "${script_dir}/.env.example" ]]; then
+        cp "${script_dir}/.env.example" "${temp_dir}/.env.example"
+    fi
+
+    # Copy completions (optional)
+    if [[ -d "${script_dir}/completions" ]]; then
+        cp "${script_dir}/completions/"* "${temp_dir}/completions/" 2>/dev/null || true
+    fi
+
+    success "Copied local files"
 }
 
 # Fetch the latest release tag from GitHub
@@ -144,7 +224,6 @@ get_latest_version() {
     version=$(curl -fsSL "${GITHUB_API_BASE}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)
 
     if [[ -z "$version" ]]; then
-        # Fallback to main branch if no releases yet
         echo "main"
     else
         echo "$version"
@@ -161,7 +240,7 @@ download_file() {
     fi
 }
 
-# Download all project files
+# Download all project files from GitHub
 download_project() {
     local version="$1"
     local temp_dir="$2"
@@ -170,7 +249,6 @@ download_project() {
 
     info "Downloading cac v${version}..."
 
-    # Create directory structure
     if ! mkdir -p "${temp_dir}/bin" "${temp_dir}/lib" "${temp_dir}/completions"; then
         die "Failed to create temporary directories"
     fi
@@ -215,11 +293,8 @@ verify_checksums() {
     local checksum_url="${GITHUB_RAW_BASE}/${version}/checksums.sha256"
     local checksum_file="${temp_dir}/checksums.sha256"
 
-    # Try to download checksums file (optional, may not exist)
     if curl -fsSL -o "$checksum_file" "$checksum_url" 2>/dev/null; then
         info "Verifying file checksums..."
-
-        # Change to temp_dir and verify
         if (cd "$temp_dir" && sha256sum -c checksums.sha256 --quiet 2>/dev/null); then
             success "Checksums verified"
         else
@@ -231,7 +306,6 @@ verify_checksums() {
 }
 
 # Update the CLI binary to use the correct library path
-# Cross-platform: works on Linux (GNU sed) and macOS (BSD sed)
 # Args: $1 = path to cac binary, $2 = library directory path
 update_cli_lib_path() {
     local cac_file="$1"
@@ -239,27 +313,23 @@ update_cli_lib_path() {
     local pattern='LIB_DIR="${SCRIPT_DIR}/../lib"'
     local replacement="LIB_DIR=\"${lib_path}\""
 
-    # Try GNU sed first (Linux)
     if sed -i "s|${pattern}|${replacement}|" "$cac_file" 2>/dev/null; then
-        : # Success
-    # Try BSD sed (macOS) - requires empty extension for in-place edit
+        : # GNU sed success
     elif sed -i '' "s|${pattern}|${replacement}|" "$cac_file" 2>/dev/null; then
-        : # Success
+        : # BSD sed success
     else
-        # Fallback: use temp file approach (works everywhere)
         local temp_file
         temp_file=$(mktemp)
         if sed "s|${pattern}|${replacement}|" "$cac_file" > "$temp_file" && \
            mv "$temp_file" "$cac_file" && \
            chmod 755 "$cac_file"; then
-            : # Success
+            : # Fallback success
         else
             rm -f "$temp_file" 2>/dev/null || true
             warn "Failed to update library path using sed"
         fi
     fi
 
-    # Verify the replacement worked
     if grep -qF 'LIB_DIR="${SCRIPT_DIR}/../lib"' "$cac_file" 2>/dev/null; then
         warn "Library path was not updated in CLI binary"
         warn "Manual fix required: Edit ${cac_file} line 11"
@@ -274,13 +344,11 @@ install_completions() {
     local bash_comp="${temp_dir}/completions/cac.bash"
     local zsh_comp="${temp_dir}/completions/_cac"
 
-    # Skip if completion files weren't downloaded
     if [[ ! -f "$bash_comp" ]]; then
         info "Shell completions not available (optional)"
         return 0
     fi
 
-    # Install bash completion
     if [[ -d "$BASH_COMPLETION_DIR" ]] || mkdir -p "$BASH_COMPLETION_DIR" 2>/dev/null; then
         cp "$bash_comp" "${BASH_COMPLETION_DIR}/cac"
         chmod 644 "${BASH_COMPLETION_DIR}/cac"
@@ -289,7 +357,6 @@ install_completions() {
         info "Skipping bash completion (directory not writable)"
     fi
 
-    # Install zsh completion
     if [[ -f "$zsh_comp" ]]; then
         if [[ -d "$ZSH_COMPLETION_DIR" ]] || mkdir -p "$ZSH_COMPLETION_DIR" 2>/dev/null; then
             cp "$zsh_comp" "${ZSH_COMPLETION_DIR}/_cac"
@@ -307,12 +374,10 @@ install_files() {
 
     info "Installing to ${BIN_DIR} (${INSTALL_MODE})..."
 
-    # Create directories with error checking
     if ! mkdir -p "$BIN_DIR" "$LIB_DIR" "$CONFIG_DIR"; then
         die "Failed to create installation directories"
     fi
 
-    # Set permissions for config directory
     # System config (/etc/cac) needs 755 so all users can access it
     # User config (~/.config/cac) stays 700 (private)
     if [[ "$CONFIG_DIR" == "/etc/cac" ]]; then
@@ -321,29 +386,23 @@ install_files() {
         chmod 700 "$CONFIG_DIR"
     fi
 
-    # Copy main CLI
     cp "${temp_dir}/bin/cac" "${BIN_DIR}/cac"
     chmod 755 "${BIN_DIR}/cac"
 
-    # Copy library files
     for lib_file in "${temp_dir}/lib/"*; do
         cp "$lib_file" "${LIB_DIR}/"
     done
     chmod 644 "${LIB_DIR}/"*
 
-    # Update CLI to use correct library path
-    # The CLI auto-detects lib path relative to its location, but for installed version
-    # we need to use the absolute path where libraries are installed
     update_cli_lib_path "${BIN_DIR}/cac" "${LIB_DIR}"
 
     success "Installed cac to ${BIN_DIR}/cac"
     success "Installed libraries to ${LIB_DIR}/"
 
-    # Install shell completions (optional)
     install_completions "$temp_dir"
 }
 
-# Show error message for missing config in non-interactive mode
+# Show error message for missing config in non-interactive pipe mode
 show_noninteractive_config_error() {
     error "Non-interactive mode requires configuration values."
     echo ""
@@ -365,7 +424,6 @@ show_noninteractive_config_error() {
 }
 
 # Resolve config value from CLI arg, env var, or default
-# Usage: resolve_config_value "ARG_VALUE" "ENV_VAR_NAME" "DEFAULT"
 resolve_config_value() {
     local arg_value="$1"
     local env_var_name="$2"
@@ -380,9 +438,38 @@ resolve_config_value() {
     fi
 }
 
-# Setup or prompt for configuration
-setup_config() {
-    local temp_dir="$1"
+# Setup configuration for LOCAL mode — auto-detect .env from script directory
+setup_config_local() {
+    local script_dir="$1"
+    local env_file="${CONFIG_DIR}/.env"
+
+    if [[ -f "$env_file" ]]; then
+        info "Existing configuration found at: $env_file"
+        return 0
+    fi
+
+    if [[ -n "$script_dir" && -f "${script_dir}/.env" ]]; then
+        cp "${script_dir}/.env" "$env_file"
+        # 644: non-root users must read /etc/cac/.env to run cac commands.
+        # API keys are acceptable here because the Gokapi key is a shared
+        # upload/download token, not a user-private secret.
+        # See lib/config.sh:config_check_permissions() for validation.
+        chmod 644 "$env_file"
+        success "Copied configuration from ${script_dir}/.env to ${env_file}"
+        return 0
+    fi
+
+    # No .env on USB — prompt interactively if possible
+    if [[ -t 0 ]]; then
+        setup_config_interactive "$env_file"
+    else
+        warn "No .env file found alongside install.sh."
+        warn "Create ${env_file} manually before using cac."
+    fi
+}
+
+# Setup configuration for PIPE mode — use CLI args, env vars, or prompt
+setup_config_pipe() {
     local env_file="${CONFIG_DIR}/.env"
 
     if [[ -f "$env_file" ]]; then
@@ -394,41 +481,11 @@ setup_config() {
     info "Setting up cac configuration..."
     echo ""
 
-    # Interactive or default setup
-    local backend=""
-    local gokapi_url=""
-    local gokapi_key=""
-    local local_storage=""
-
-    # Check if running interactively
     if [[ -t 0 ]]; then
-        echo "Select storage backend:"
-        echo "  1) local  - Store bundles on local filesystem"
-        echo "  2) gokapi - Store bundles on Gokapi server"
-        echo ""
-        read -rp "Choice [1]: " backend_choice
-
-        case "${backend_choice:-1}" in
-            2|gokapi)
-                backend="gokapi"
-                read -rp "Gokapi URL (e.g., https://gokapi.example.com): " gokapi_url
-                read -rsp "Gokapi API Key: " gokapi_key
-                echo ""
-                ;;
-            *)
-                backend="local"
-                local default_storage
-                if is_root; then
-                    default_storage="/var/lib/cac/bundles"
-                else
-                    default_storage="${HOME}/.local/share/cac/bundles"
-                fi
-                read -rp "Storage directory [${default_storage}]: " local_storage
-                local_storage="${local_storage:-$default_storage}"
-                ;;
-        esac
+        setup_config_interactive "$env_file"
     else
-        # Non-interactive mode: use CLI args or environment variables
+        # Non-interactive: use CLI args or env vars
+        local backend
         backend=$(resolve_config_value "$ARG_BACKEND" "CAC_BACKEND" "")
 
         if [[ -z "$backend" ]]; then
@@ -439,6 +496,10 @@ setup_config() {
             error "Invalid backend: '$backend'. Must be 'gokapi' or 'local'."
             exit 2
         fi
+
+        local gokapi_url=""
+        local gokapi_key=""
+        local local_storage=""
 
         if [[ "$backend" == "gokapi" ]]; then
             gokapi_url=$(resolve_config_value "$ARG_URL" "CAC_GOKAPI_URL" "")
@@ -452,13 +513,11 @@ setup_config() {
                 exit 2
             fi
 
-            # Validate URL format
             if [[ ! "$gokapi_url" =~ ^https?:// ]]; then
                 error "Invalid URL format: must start with http:// or https://"
                 exit 2
             fi
         else
-            # Local backend
             local default_storage
             if is_root; then
                 default_storage="/var/lib/cac/bundles"
@@ -469,9 +528,55 @@ setup_config() {
         fi
 
         info "Non-interactive mode: using provided configuration"
+        write_config_file "$env_file" "$backend" "$gokapi_url" "$gokapi_key" "$local_storage"
     fi
+}
 
-    # Generate config file
+# Interactive config prompts (shared by local and pipe modes)
+setup_config_interactive() {
+    local env_file="$1"
+    local backend=""
+    local gokapi_url=""
+    local gokapi_key=""
+    local local_storage=""
+
+    echo "Select storage backend:"
+    echo "  1) local  - Store bundles on local filesystem"
+    echo "  2) gokapi - Store bundles on Gokapi server"
+    echo ""
+    read -rp "Choice [1]: " backend_choice
+
+    case "${backend_choice:-1}" in
+        2|gokapi)
+            backend="gokapi"
+            read -rp "Gokapi URL (e.g., https://gokapi.example.com): " gokapi_url
+            read -rsp "Gokapi API Key: " gokapi_key
+            echo ""
+            ;;
+        *)
+            backend="local"
+            local default_storage
+            if is_root; then
+                default_storage="/var/lib/cac/bundles"
+            else
+                default_storage="${HOME}/.local/share/cac/bundles"
+            fi
+            read -rp "Storage directory [${default_storage}]: " local_storage
+            local_storage="${local_storage:-$default_storage}"
+            ;;
+    esac
+
+    write_config_file "$env_file" "$backend" "$gokapi_url" "$gokapi_key" "$local_storage"
+}
+
+# Write the .env config file
+write_config_file() {
+    local env_file="$1"
+    local backend="$2"
+    local gokapi_url="$3"
+    local gokapi_key="$4"
+    local local_storage="$5"
+
     {
         echo "# cac configuration"
         echo "# Generated by installer on $(date)"
@@ -488,8 +593,7 @@ setup_config() {
         else
             echo "CAC_LOCAL_STORAGE=${local_storage}"
 
-            # Create local storage directory if it doesn't exist
-            if [[ ! -d "$local_storage" ]]; then
+            if [[ -n "$local_storage" && ! -d "$local_storage" ]]; then
                 if mkdir -p "$local_storage" && chmod 700 "$local_storage"; then
                     success "Created storage directory: ${local_storage}"
                 else
@@ -500,8 +604,10 @@ setup_config() {
         fi
     } > "$env_file"
 
-    # System config (/etc/cac/.env) needs 644 so all users can read it
-    # User config (~/.config/cac/.env) stays 600 (private)
+    # System config (/etc/cac/.env) needs 644 so non-root users can read it
+    # to run cac commands. The Gokapi API key is a shared upload/download
+    # token, not a user-private secret. See lib/config.sh:config_check_permissions().
+    # User config (~/.config/cac/.env) stays 600 (private).
     if [[ "$env_file" == "/etc/cac/.env" ]]; then
         chmod 644 "$env_file"
     else
@@ -514,7 +620,6 @@ setup_config() {
 CAC_PATH_MARKER="# Added by cac installer — do not edit"
 
 # Detect the user's shell RC file
-# Returns: path to RC file (always a single file)
 _detect_shell_rc() {
     local shell_name
     shell_name="$(basename "${SHELL:-}")"
@@ -524,7 +629,6 @@ _detect_shell_rc() {
         zsh)  echo "${HOME}/.zshrc"; return 0 ;;
     esac
 
-    # Fallback: check for existing RC files
     if [[ -f "${HOME}/.bashrc" ]]; then
         echo "${HOME}/.bashrc"
     elif [[ -f "${HOME}/.zshrc" ]]; then
@@ -539,8 +643,6 @@ _cleanup_path_entry() {
     local rc_file
     for rc_file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
         if [[ -f "$rc_file" ]] && grep -qF "$CAC_PATH_MARKER" "$rc_file"; then
-            # Remove the marker line and the immediately following export PATH line
-            # Use temp file + cat to preserve file permissions/metadata
             local tmp_file
             tmp_file=$(mktemp)
             sed "/${CAC_PATH_MARKER//\//\\/}/,+1d" "$rc_file" > "$tmp_file" && \
@@ -551,28 +653,23 @@ _cleanup_path_entry() {
     done
 }
 
-# Add user bin to PATH if needed (persisted to shell RC file)
+# Add user bin to PATH if needed (pipe mode user-local installs only)
 setup_path() {
     if is_root; then
-        # System-wide installation, /usr/local/bin is usually in PATH
         return 0
     fi
 
-    # Detect target RC file for the user's current shell
     local target_rc
     target_rc="$(_detect_shell_rc)"
 
-    # If marker already exists in the target RC file, do nothing (idempotent)
     if [[ -f "$target_rc" ]] && grep -qF "$CAC_PATH_MARKER" "$target_rc"; then
         return 0
     fi
 
-    # If USER_BIN_DIR is already in PATH (e.g. set by distro), skip
     if [[ ":$PATH:" == *":${USER_BIN_DIR}:"* ]]; then
         return 0
     fi
 
-    # Create the RC file if it doesn't exist (e.g. .profile fallback)
     touch "$target_rc"
 
     {
@@ -585,6 +682,91 @@ setup_path() {
     echo "  Run 'source ${target_rc}' or open a new terminal to use cac."
 }
 
+# Run the full post-install pipeline (steps 2-6, local mode only)
+# Each step is non-fatal — warn and continue on failure.
+# Returns: 0 if all passed, 1 if any failed.
+run_full_pipeline() {
+    local cac_bin="${BIN_DIR}/cac"
+    local passed=0
+    local failed=0
+
+    # Step 2/6: Install AI tool environments
+    echo ""
+    echo "-----------------------------------"
+    info "[Step 2/6] Installing AI tool environments..."
+    echo "-----------------------------------"
+    if "$cac_bin" env install --global --yes; then
+        success "[Step 2/6] AI tool environments installed"
+        ((passed++)) || true
+    else
+        warn "[Step 2/6] AI tool environment installation had issues (continuing)"
+        ((failed++)) || true
+    fi
+
+    # Step 3/6: Pull latest config bundle
+    echo ""
+    echo "-----------------------------------"
+    info "[Step 3/6] Pulling latest configuration bundle..."
+    echo "-----------------------------------"
+    if "$cac_bin" pull; then
+        success "[Step 3/6] Configuration pulled"
+        ((passed++)) || true
+    else
+        warn "[Step 3/6] Pull failed (may not have bundles yet)"
+        ((failed++)) || true
+    fi
+
+    # Step 4/6: Test AI tool connectivity
+    echo ""
+    echo "-----------------------------------"
+    info "[Step 4/6] Testing AI tool connectivity..."
+    echo "-----------------------------------"
+    if "$cac_bin" test; then
+        success "[Step 4/6] AI tool tests passed"
+        ((passed++)) || true
+    else
+        warn "[Step 4/6] Some AI tool tests failed (non-critical)"
+        ((failed++)) || true
+    fi
+
+    # Step 5/6: Install BPM skill library
+    echo ""
+    echo "-----------------------------------"
+    info "[Step 5/6] Installing BPM skill library..."
+    echo "-----------------------------------"
+    if "$cac_bin" skill install https://github.com/BPMspaceUG/bpm-claude-global-agent-skill-library.git --global --yes; then
+        success "[Step 5/6] BPM skill library installed"
+        ((passed++)) || true
+    else
+        warn "[Step 5/6] BPM skill library installation failed (continuing)"
+        ((failed++)) || true
+    fi
+
+    # Step 6/6: Install ICO skill library
+    echo ""
+    echo "-----------------------------------"
+    info "[Step 6/6] Installing ICO skill library..."
+    echo "-----------------------------------"
+    if "$cac_bin" skill install https://github.com/International-Certification-Org/ico-claude-global-agent-skill-library.git --global --yes; then
+        success "[Step 6/6] ICO skill library installed"
+        ((passed++)) || true
+    else
+        warn "[Step 6/6] ICO skill library installation failed (continuing)"
+        ((failed++)) || true
+    fi
+
+    echo ""
+    echo "-----------------------------------"
+    if [[ "$failed" -eq 0 ]]; then
+        success "Pipeline complete: ${passed}/5 steps passed"
+    else
+        warn "Pipeline complete: ${passed} passed, ${failed} failed"
+    fi
+    echo "-----------------------------------"
+
+    [[ "$failed" -eq 0 ]]
+}
+
 # Perform uninstallation
 do_uninstall() {
     set_install_paths
@@ -593,21 +775,18 @@ do_uninstall() {
 
     local removed=0
 
-    # Remove CLI binary
     if [[ -f "${BIN_DIR}/cac" ]]; then
         rm -f "${BIN_DIR}/cac"
         success "Removed ${BIN_DIR}/cac"
         ((removed++)) || true
     fi
 
-    # Remove library directory
     if [[ -d "$LIB_DIR" ]]; then
         rm -rf "$LIB_DIR"
         success "Removed ${LIB_DIR}"
         ((removed++)) || true
     fi
 
-    # Remove shell completions
     if [[ -f "${BASH_COMPLETION_DIR}/cac" ]]; then
         rm -f "${BASH_COMPLETION_DIR}/cac"
         success "Removed bash completion"
@@ -619,7 +798,6 @@ do_uninstall() {
         ((removed++)) || true
     fi
 
-    # Ask about config directory
     if [[ -d "$CONFIG_DIR" ]]; then
         if [[ -t 0 ]]; then
             read -rp "Remove configuration directory ${CONFIG_DIR}? [y/N]: " remove_config
@@ -636,7 +814,6 @@ do_uninstall() {
         fi
     fi
 
-    # Remove PATH entry from shell RC files
     if ! is_root; then
         _cleanup_path_entry
     fi
@@ -648,23 +825,71 @@ do_uninstall() {
     fi
 }
 
-# Perform single installation to current paths
+# Perform single installation to current paths (pipe mode helper)
 do_single_install() {
     local temp_dir="$1"
 
-    # Install files
     install_files "$temp_dir"
-
-    # Setup configuration
-    setup_config "$temp_dir"
+    setup_config_pipe
 }
 
-# Perform installation
-do_install() {
-    # Validate mode first (checks root requirements)
+# LOCAL mode installation: auto-detect everything, run full pipeline
+do_install_local() {
+    local script_dir="$1"
+
+    set_system_wide_paths
+
+    check_dependencies "true"
+
+    echo ""
+    echo "==================================="
+    echo "   cac - Coding Agent Config"
+    echo "   Local Installation (USB)"
+    echo "==================================="
+    echo ""
+
+    # Create temp directory with safe trap
+    local temp_dir=""
+    trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' EXIT
+    temp_dir=$(mktemp -d -t cac-install.XXXXXXXXXX)
+
+    # Copy local files from USB to temp dir
+    copy_local_files "$script_dir" "$temp_dir"
+
+    # Install files to /usr/local/
+    install_files "$temp_dir"
+
+    # Setup config (auto-detect .env from script dir)
+    setup_config_local "$script_dir"
+
+    echo ""
+    success "[Step 1/6] cac installed to ${BIN_DIR}/cac"
+
+    # Run full 6-step pipeline
+    local pipeline_exit=0
+    run_full_pipeline || pipeline_exit=$?
+
+    echo ""
+    echo "==================================="
+    if [[ "$pipeline_exit" -eq 0 ]]; then
+        success "Installation complete! All steps passed."
+    else
+        warn "Installation complete with some failures."
+    fi
+    echo "==================================="
+    echo ""
+    echo "Configuration: ${CONFIG_DIR}/.env"
+    echo ""
+
+    return "$pipeline_exit"
+}
+
+# PIPE mode installation: download from GitHub, existing behavior
+do_install_pipe() {
+    # Validate mode first (checks root requirements for --global/--all)
     validate_install_mode
 
-    check_dependencies
+    check_dependencies "false"
 
     echo ""
     echo "==================================="
@@ -673,23 +898,18 @@ do_install() {
     echo "==================================="
     echo ""
 
-    # Get version to install
     local version
     version=$(get_latest_version)
     info "Latest version: ${version}"
 
-    # Create temp directory with safe trap
     local temp_dir=""
     trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' EXIT
     temp_dir=$(mktemp -d -t cac-install.XXXXXXXXXX)
 
-    # Download project files
     download_project "$version" "$temp_dir"
-
-    # Verify checksums
     verify_checksums "$version" "$temp_dir"
 
-    # Install based on mode
+    # Install based on mode flag
     case "$INSTALL_MODE_FLAG" in
         user)
             set_user_local_paths
@@ -706,18 +926,15 @@ do_install() {
         all)
             info "Installation mode: both locations (--all)"
             echo ""
-            # Install to user-local first
             set_user_local_paths
             info "Installing to user-local location..."
             do_single_install "$temp_dir"
             echo ""
-            # Then install to system-wide
             set_system_wide_paths
             info "Installing to system-wide location..."
             do_single_install "$temp_dir"
             ;;
         "")
-            # Auto-detect: use existing behavior (prompt or EUID-based)
             set_install_paths
             info "Installation mode: ${INSTALL_MODE}"
             echo ""
@@ -747,7 +964,7 @@ do_install() {
     fi
     echo ""
 
-    # Check for CAC_ENV_INSTALL environment variable for AI tool installation
+    # Check for CAC_ENV_INSTALL env var (pipe mode AI tool install)
     if [[ -n "${CAC_ENV_INSTALL:-}" ]]; then
         echo ""
         echo "==================================="
@@ -776,16 +993,16 @@ do_install() {
     fi
 }
 
-# Global config variables for CLI args (used by setup_config)
+# Global config variables for CLI args (used by pipe mode setup_config)
 ARG_BACKEND=""
 ARG_URL=""
 ARG_API_KEY=""
 ARG_STORAGE=""
 
-# Installation mode: "" (auto), "user", "global", "all"
+# Installation mode: "" (auto), "user", "global", "all" (pipe mode only)
 INSTALL_MODE_FLAG=""
 
-# Validate URL format (must start with http:// or https://)
+# Validate URL format
 validate_url() {
     local url="$1"
     if [[ ! "$url" =~ ^https?:// ]]; then
@@ -794,7 +1011,7 @@ validate_url() {
     fi
 }
 
-# Validate installation mode flag (check for conflicts and root requirements)
+# Validate installation mode flag (pipe mode only)
 validate_install_mode() {
     case "$INSTALL_MODE_FLAG" in
         global)
@@ -808,12 +1025,11 @@ validate_install_mode() {
             fi
             ;;
         user|"")
-            # No root required
             ;;
     esac
 }
 
-# Set install mode flag with conflict detection
+# Set install mode flag with conflict detection (pipe mode only)
 set_install_mode_flag() {
     local new_mode="$1"
     if [[ -n "$INSTALL_MODE_FLAG" && "$INSTALL_MODE_FLAG" != "$new_mode" ]]; then
@@ -831,56 +1047,52 @@ Options:
   --uninstall, -u        Remove cac installation
   --help, -h             Show this help message
 
-Installation location options:
-  --user                 Install to ~/.local/bin only (user-local)
-  --global               Install to /usr/local/bin only (requires root)
-  --all                  Install to both locations (requires root)
-  (no flag)              Auto-detect: root→global, non-root→user
+LOCAL MODE (USB stick — auto-detects everything):
+  sudo bash install.sh
 
-Configuration options (for non-interactive installation):
-  --backend, -b TYPE     Backend type: 'gokapi' or 'local'
-  --url, -U URL          Gokapi server URL (required for gokapi backend)
-  --api-key, -k KEY      Gokapi API key (required for gokapi backend)
-  --storage, -s PATH     Local storage path (optional for local backend)
+  Auto-detects files alongside install.sh:
+    bin/cac, lib/*.sh    Copied to /usr/local/bin and /usr/local/lib/cac/
+    .env                 Copied to /etc/cac/.env
+    completions/         Copied to system completion dirs
+
+  After installation, automatically runs:
+    1. cac env install --global --yes   (install AI tool environments)
+    2. cac pull                         (download newest config bundle)
+    3. cac test                         (verify all credentials)
+    4. cac skill install <BPM-URL>      (install BPM skill library)
+    5. cac skill install <ICO-URL>      (install ICO skill library)
+
+PIPE MODE (GitHub — backward compatible):
+  curl -fsSL URL | bash -s -- [OPTIONS]
+
+  Installation location options (pipe mode only):
+    --user                 Install to ~/.local/bin only
+    --global               Install to /usr/local/bin only (requires root)
+    --all                  Install to both locations (requires root)
+    (no flag)              Auto-detect: root→global, non-root→user
+
+  Configuration options (pipe mode only):
+    --backend, -b TYPE     Backend type: 'gokapi' or 'local'
+    --url, -U URL          Gokapi server URL
+    --api-key, -k KEY      Gokapi API key
+    --storage, -s PATH     Local storage path
+
+  Environment Variables:
+    CAC_BACKEND          Backend type ('gokapi' or 'local')
+    CAC_GOKAPI_URL       Gokapi server URL
+    CAC_GOKAPI_API_KEY   Gokapi API key
+    CAC_LOCAL_STORAGE    Local storage path
+    CAC_ENV_INSTALL      Install AI tools after cac ('user' or 'global')
 
 Examples:
-  # Interactive installation (prompts for install type)
-  ./install.sh
+  # Local install from USB stick (auto-detects everything)
+  sudo bash /mnt/usb/install.sh
 
-  # User-local installation (even as root)
-  sudo ./install.sh --user
-
-  # System-wide installation
-  sudo ./install.sh --global
-
-  # Install to both locations
-  sudo ./install.sh --all
-
-  # Non-interactive with Gokapi backend
+  # Remote install with Gokapi backend
   curl -fsSL URL | bash -s -- --backend gokapi --url https://gokapi.example.com --api-key SECRET
 
-  # Non-interactive user-local with local backend
+  # Remote user-local install
   curl -fsSL URL | bash -s -- --user --backend local --storage /path/to/bundles
-
-  # Using environment variables
-  export CAC_BACKEND=gokapi CAC_GOKAPI_URL=https://... CAC_GOKAPI_API_KEY=...
-  curl -fsSL URL | bash
-
-Environment Variables:
-  CAC_BACKEND          Backend type ('gokapi' or 'local')
-  CAC_GOKAPI_URL       Gokapi server URL
-  CAC_GOKAPI_API_KEY   Gokapi API key
-  CAC_LOCAL_STORAGE    Local storage path
-  CAC_ENV_INSTALL      Install AI tools after cac ('user' or 'global')
-
-AI Tool Installation:
-  Set CAC_ENV_INSTALL to automatically install AI tools after cac:
-
-  # Install cac + AI tools for current user
-  curl -fsSL URL | CAC_ENV_INSTALL=user bash
-
-  # Install cac + AI tools system-wide (requires root)
-  curl -fsSL URL | CAC_ENV_INSTALL=global sudo bash
 EOF
 }
 
@@ -888,7 +1100,7 @@ EOF
 main() {
     local uninstall=false
 
-    # Parse arguments
+    # Parse arguments first (allow --help without root)
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --uninstall|-u)
@@ -899,6 +1111,7 @@ main() {
                 show_help
                 exit 0
                 ;;
+            # Pipe mode backward compat flags
             --user)
                 set_install_mode_flag "user"
                 shift
@@ -951,8 +1164,22 @@ main() {
 
     if $uninstall; then
         do_uninstall
+        return
+    fi
+
+    # Detect mode: LOCAL (files alongside install.sh) vs PIPE (download from GitHub)
+    local script_dir=""
+    script_dir="$(get_script_dir 2>/dev/null || echo "")"
+
+    if detect_local_files "$script_dir"; then
+        # LOCAL mode: requires root
+        if ! is_root; then
+            die "Root privileges required. Run with: sudo bash install.sh"
+        fi
+        do_install_local "$script_dir"
     else
-        do_install
+        # PIPE mode: existing behavior (root optional depending on --global/--all)
+        do_install_pipe
     fi
 }
 

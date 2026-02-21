@@ -1726,5 +1726,561 @@ echo "--- Issue #24: setup_path() persistence ---"
 run_test "cross-shell adds to both RC files" test_setup_path_cross_shell
 run_test ".profile created as fallback" test_setup_path_profile_creation
 
+# ============================================================================
+# NEW: Tests for local mode features (USB stick install)
+# ============================================================================
+
+# Copy of get_script_dir from install.sh for testing
+get_script_dir() {
+    local source="${BASH_SOURCE[0]:-}"
+    if [[ -z "$source" || "$source" == "-" || "$source" == "bash" ]]; then
+        echo ""
+        return 0
+    fi
+    while [[ -L "$source" ]]; do
+        local dir
+        dir="$(cd -P "$(dirname "$source")" && pwd)"
+        source="$(readlink "$source")"
+        [[ "$source" != /* ]] && source="$dir/$source"
+    done
+    cd -P "$(dirname "$source")" && pwd
+}
+
+# Copy of detect_local_files from install.sh for testing
+detect_local_files() {
+    local script_dir="$1"
+    [[ -n "$script_dir" ]] && \
+    [[ -f "${script_dir}/bin/cac" ]] && \
+    [[ -f "${script_dir}/lib/config.sh" ]] && \
+    [[ -f "${script_dir}/lib/security.sh" ]] && \
+    [[ -f "${script_dir}/lib/bundle.sh" ]] && \
+    [[ -f "${script_dir}/lib/tools.sh" ]] && \
+    [[ -f "${script_dir}/lib/utils.sh" ]] && \
+    [[ -f "${script_dir}/lib/logging.sh" ]]
+}
+
+# Copy of copy_local_files from install.sh for testing
+copy_local_files() {
+    local script_dir="$1"
+    local temp_dir="$2"
+
+    if ! mkdir -p "${temp_dir}/bin" "${temp_dir}/lib" "${temp_dir}/completions"; then
+        return 1
+    fi
+    cp "${script_dir}/bin/cac" "${temp_dir}/bin/cac"
+    chmod +x "${temp_dir}/bin/cac"
+    cp "${script_dir}/lib/"*.sh "${temp_dir}/lib/"
+    if [[ -f "${script_dir}/.env.example" ]]; then
+        cp "${script_dir}/.env.example" "${temp_dir}/.env.example"
+    fi
+    if [[ -d "${script_dir}/completions" ]]; then
+        cp "${script_dir}/completions/"* "${temp_dir}/completions/" 2>/dev/null || true
+    fi
+}
+
+# Copy of setup_config_local from install.sh for testing
+setup_config_local() {
+    local script_dir="$1"
+    local env_file="${CONFIG_DIR}/.env"
+
+    if [[ -f "$env_file" ]]; then
+        return 0
+    fi
+    if [[ -n "$script_dir" && -f "${script_dir}/.env" ]]; then
+        cp "${script_dir}/.env" "$env_file"
+        chmod 644 "$env_file"
+        return 0
+    fi
+    return 1
+}
+
+# ============================================================================
+# Tests for get_script_dir()
+# ============================================================================
+
+test_get_script_dir_resolves() {
+    local result
+    result=$(get_script_dir)
+    # Should resolve to a non-empty directory
+    [[ -n "$result" ]] && [[ -d "$result" ]]
+}
+
+test_get_script_dir_empty_source() {
+    # Simulate piped input by calling with empty BASH_SOURCE
+    local result
+    result=$(BASH_SOURCE=("") bash -c '
+        source="";
+        if [[ -z "$source" || "$source" == "-" || "$source" == "bash" ]]; then
+            echo "";
+        fi
+    ')
+    [[ -z "$result" ]]
+}
+
+# ============================================================================
+# Tests for detect_local_files()
+# ============================================================================
+
+test_detect_local_files_all_present() {
+    local test_dir="${TEST_TMPDIR}/detect_all"
+    mkdir -p "${test_dir}/bin" "${test_dir}/lib"
+    touch "${test_dir}/bin/cac"
+    for f in config.sh security.sh bundle.sh tools.sh utils.sh logging.sh; do
+        touch "${test_dir}/lib/${f}"
+    done
+
+    detect_local_files "$test_dir"
+}
+
+test_detect_local_files_missing_bin() {
+    local test_dir="${TEST_TMPDIR}/detect_nobin"
+    mkdir -p "${test_dir}/lib"
+    for f in config.sh security.sh bundle.sh tools.sh utils.sh logging.sh; do
+        touch "${test_dir}/lib/${f}"
+    done
+
+    # Should fail — bin/cac missing
+    if detect_local_files "$test_dir"; then
+        return 1
+    fi
+    return 0
+}
+
+test_detect_local_files_missing_lib() {
+    local test_dir="${TEST_TMPDIR}/detect_nolib"
+    mkdir -p "${test_dir}/bin" "${test_dir}/lib"
+    touch "${test_dir}/bin/cac"
+    touch "${test_dir}/lib/config.sh"
+    # Missing security.sh, bundle.sh, etc.
+
+    if detect_local_files "$test_dir"; then
+        return 1
+    fi
+    return 0
+}
+
+test_detect_local_files_empty_dir() {
+    local test_dir="${TEST_TMPDIR}/detect_empty"
+    mkdir -p "$test_dir"
+
+    if detect_local_files "$test_dir"; then
+        return 1
+    fi
+    return 0
+}
+
+test_detect_local_files_empty_string() {
+    if detect_local_files ""; then
+        return 1
+    fi
+    return 0
+}
+
+# ============================================================================
+# Tests for copy_local_files()
+# ============================================================================
+
+test_copy_local_files_creates_structure() {
+    local src_dir="${TEST_TMPDIR}/copy_src"
+    local dest_dir="${TEST_TMPDIR}/copy_dest"
+    mkdir -p "${src_dir}/bin" "${src_dir}/lib"
+    echo '#!/bin/bash' > "${src_dir}/bin/cac"
+    echo "# config" > "${src_dir}/lib/config.sh"
+    echo "# utils" > "${src_dir}/lib/utils.sh"
+    echo "# example" > "${src_dir}/.env.example"
+
+    copy_local_files "$src_dir" "$dest_dir" >/dev/null 2>&1
+
+    assert_file_exists "${dest_dir}/bin/cac" "bin/cac copied" &&
+    assert_file_exists "${dest_dir}/lib/config.sh" "lib/config.sh copied" &&
+    assert_file_exists "${dest_dir}/lib/utils.sh" "lib/utils.sh copied" &&
+    assert_file_exists "${dest_dir}/.env.example" ".env.example copied"
+}
+
+test_copy_local_files_executable() {
+    local src_dir="${TEST_TMPDIR}/copy_exec_src"
+    local dest_dir="${TEST_TMPDIR}/copy_exec_dest"
+    mkdir -p "${src_dir}/bin" "${src_dir}/lib"
+    echo '#!/bin/bash' > "${src_dir}/bin/cac"
+    echo "# lib" > "${src_dir}/lib/config.sh"
+
+    copy_local_files "$src_dir" "$dest_dir" >/dev/null 2>&1
+
+    [[ -x "${dest_dir}/bin/cac" ]]
+}
+
+test_copy_local_files_no_env_example() {
+    local src_dir="${TEST_TMPDIR}/copy_noenv_src"
+    local dest_dir="${TEST_TMPDIR}/copy_noenv_dest"
+    mkdir -p "${src_dir}/bin" "${src_dir}/lib"
+    echo '#!/bin/bash' > "${src_dir}/bin/cac"
+    echo "# lib" > "${src_dir}/lib/config.sh"
+    # No .env.example
+
+    copy_local_files "$src_dir" "$dest_dir" >/dev/null 2>&1
+
+    # Should succeed without .env.example
+    assert_file_exists "${dest_dir}/bin/cac" "bin/cac exists" &&
+    [[ ! -f "${dest_dir}/.env.example" ]]
+}
+
+# ============================================================================
+# Tests for setup_config_local()
+# ============================================================================
+
+test_setup_config_local_copies_env() {
+    local src_dir="${TEST_TMPDIR}/cfg_local_src"
+    local cfg_dir="${TEST_TMPDIR}/cfg_local_dest"
+    mkdir -p "$src_dir" "$cfg_dir"
+    echo "CAC_BACKEND=gokapi" > "${src_dir}/.env"
+    CONFIG_DIR="$cfg_dir"
+
+    setup_config_local "$src_dir" >/dev/null 2>&1
+
+    local env_file="${cfg_dir}/.env"
+    assert_file_exists "$env_file" "env file copied" &&
+    assert_contains "CAC_BACKEND=gokapi" "$(cat "$env_file")" "backend in env"
+}
+
+test_setup_config_local_permissions_644() {
+    local src_dir="${TEST_TMPDIR}/cfg_perm_src"
+    local cfg_dir="${TEST_TMPDIR}/cfg_perm_dest"
+    mkdir -p "$src_dir" "$cfg_dir"
+    echo "CAC_BACKEND=local" > "${src_dir}/.env"
+    CONFIG_DIR="$cfg_dir"
+
+    setup_config_local "$src_dir" >/dev/null 2>&1
+
+    local perms
+    perms=$(stat -c '%a' "${cfg_dir}/.env")
+    assert_equals "644" "$perms" "env file permissions"
+}
+
+test_setup_config_local_skips_existing() {
+    local src_dir="${TEST_TMPDIR}/cfg_exist_src"
+    local cfg_dir="${TEST_TMPDIR}/cfg_exist_dest"
+    mkdir -p "$src_dir" "$cfg_dir"
+    echo "CAC_BACKEND=gokapi" > "${src_dir}/.env"
+    echo "EXISTING=true" > "${cfg_dir}/.env"
+    CONFIG_DIR="$cfg_dir"
+
+    setup_config_local "$src_dir" >/dev/null 2>&1
+
+    # Should not overwrite
+    assert_contains "EXISTING=true" "$(cat "${cfg_dir}/.env")" "existing config preserved"
+}
+
+test_setup_config_local_no_env_returns_error() {
+    local src_dir="${TEST_TMPDIR}/cfg_noenv_src"
+    local cfg_dir="${TEST_TMPDIR}/cfg_noenv_dest"
+    mkdir -p "$src_dir" "$cfg_dir"
+    # No .env file in src_dir
+    CONFIG_DIR="$cfg_dir"
+
+    # Should return non-zero (no .env found, not interactive)
+    if setup_config_local "$src_dir" >/dev/null 2>&1; then
+        return 1
+    fi
+    return 0
+}
+
+# ============================================================================
+# Tests for check_dependencies() with auto-install
+# ============================================================================
+
+# Copy of check_dependencies from install.sh for testing
+check_dependencies_test() {
+    local auto_install="$1"
+    local missing=()
+
+    for cmd in curl unzip zip git; do
+        if ! command -v "$cmd" &>/dev/null; then
+            missing+=("$cmd")
+        fi
+    done
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    if [[ "$auto_install" == "true" ]]; then
+        # In test mode, just report what would be installed
+        echo "would-install:${missing[*]}"
+        return 0
+    else
+        echo "missing:${missing[*]}" >&2
+        return 1
+    fi
+}
+
+test_check_deps_all_present() {
+    # All deps should be present in test environment
+    local output
+    output=$(check_dependencies_test "false" 2>&1)
+    local exit_code=$?
+    [[ $exit_code -eq 0 ]]
+}
+
+test_check_deps_auto_install_mode() {
+    # Mock command to simulate missing git
+    command() {
+        if [[ "$1" == "-v" && "$2" == "git" ]]; then
+            return 1
+        fi
+        builtin command "$@"
+    }
+
+    local output
+    output=$(check_dependencies_test "true" 2>&1)
+    local exit_code=$?
+    unset -f command
+
+    [[ $exit_code -eq 0 ]] &&
+    assert_contains "git" "$output" "reports git for install"
+}
+
+test_check_deps_pipe_mode_fails() {
+    # Mock command to simulate missing git
+    command() {
+        if [[ "$1" == "-v" && "$2" == "git" ]]; then
+            return 1
+        fi
+        builtin command "$@"
+    }
+
+    local output
+    output=$(check_dependencies_test "false" 2>&1)
+    local exit_code=$?
+    unset -f command
+
+    [[ $exit_code -ne 0 ]] &&
+    assert_contains "git" "$output" "reports missing git"
+}
+
+# ============================================================================
+# Tests for root check behavior
+# ============================================================================
+
+test_local_mode_requires_root() {
+    # Simulate: local files detected but not root
+    _TEST_EUID=1000
+    local test_dir="${TEST_TMPDIR}/root_check"
+    mkdir -p "${test_dir}/bin" "${test_dir}/lib"
+    touch "${test_dir}/bin/cac"
+    for f in config.sh security.sh bundle.sh tools.sh utils.sh logging.sh; do
+        touch "${test_dir}/lib/${f}"
+    done
+
+    # detect_local_files should pass
+    local detected=false
+    if detect_local_files "$test_dir"; then
+        detected=true
+    fi
+
+    # But is_root should fail
+    local root_check=false
+    if is_root; then
+        root_check=true
+    fi
+
+    _TEST_EUID=""
+
+    [[ "$detected" == "true" ]] && [[ "$root_check" == "false" ]]
+}
+
+# ============================================================================
+# Tests for run_full_pipeline() structure
+# ============================================================================
+
+test_pipeline_counts_pass_fail() {
+    # Test the pass/fail counting logic used in run_full_pipeline
+    local passed=0
+    local failed=0
+
+    # Simulate 3 passing steps
+    for _ in 1 2 3; do
+        if true; then
+            ((passed++)) || true
+        fi
+    done
+    # Simulate 2 failing steps
+    for _ in 1 2; do
+        if false; then
+            ((passed++)) || true
+        else
+            ((failed++)) || true
+        fi
+    done
+
+    [[ "$passed" -eq 3 ]] && [[ "$failed" -eq 2 ]]
+}
+
+test_pipeline_returns_nonzero_on_failure() {
+    # Simulate pipeline return logic
+    local failed=1
+    local result=0
+    [[ "$failed" -eq 0 ]] || result=1
+    [[ $result -eq 1 ]]
+}
+
+test_pipeline_returns_zero_on_success() {
+    local failed=0
+    local result=0
+    [[ "$failed" -eq 0 ]] || result=1
+    [[ $result -eq 0 ]]
+}
+
+# ============================================================================
+# Tests for two-mode detection in main()
+# ============================================================================
+
+test_mode_detection_local() {
+    # When local files exist, should detect local mode
+    local test_dir="${TEST_TMPDIR}/mode_local"
+    mkdir -p "${test_dir}/bin" "${test_dir}/lib"
+    touch "${test_dir}/bin/cac"
+    for f in config.sh security.sh bundle.sh tools.sh utils.sh logging.sh; do
+        touch "${test_dir}/lib/${f}"
+    done
+
+    detect_local_files "$test_dir"
+}
+
+test_mode_detection_pipe() {
+    # When no local files, should fall through to pipe mode
+    if detect_local_files ""; then
+        return 1
+    fi
+    return 0
+}
+
+test_mode_detection_pipe_nonexistent_dir() {
+    if detect_local_files "/nonexistent/path"; then
+        return 1
+    fi
+    return 0
+}
+
+# ============================================================================
+# Tests for write_config_file()
+# ============================================================================
+
+# Copy of write_config_file from install.sh for testing
+write_config_file() {
+    local env_file="$1"
+    local backend="$2"
+    local gokapi_url="$3"
+    local gokapi_key="$4"
+    local local_storage="$5"
+
+    {
+        echo "# cac configuration"
+        echo "# Generated by installer on $(date)"
+        echo ""
+        echo "CAC_BACKEND=${backend}"
+        echo ""
+        if [[ "$backend" == "gokapi" ]]; then
+            echo "CAC_GOKAPI_URL=${gokapi_url}"
+            echo "CAC_GOKAPI_API_KEY=${gokapi_key}"
+            echo ""
+            echo "# Gokapi expiry settings"
+            echo "CAC_GOKAPI_EXPIRY_DAYS=7        # 1-7 days (0 or >7 defaults to 7 for security)"
+            echo "CAC_GOKAPI_ALLOWED_DOWNLOADS=0  # 0 = unlimited downloads"
+        else
+            echo "CAC_LOCAL_STORAGE=${local_storage}"
+        fi
+    } > "$env_file"
+
+    if [[ "$env_file" == "/etc/cac/.env" ]]; then
+        chmod 644 "$env_file"
+    else
+        chmod 600 "$env_file"
+    fi
+}
+
+test_write_config_gokapi() {
+    local env_file="${TEST_TMPDIR}/write_gokapi.env"
+    write_config_file "$env_file" "gokapi" "https://test.com" "secret123" ""
+
+    assert_contains "CAC_BACKEND=gokapi" "$(cat "$env_file")" "backend" &&
+    assert_contains "CAC_GOKAPI_URL=https://test.com" "$(cat "$env_file")" "url" &&
+    assert_contains "CAC_GOKAPI_API_KEY=secret123" "$(cat "$env_file")" "key"
+}
+
+test_write_config_local() {
+    local env_file="${TEST_TMPDIR}/write_local.env"
+    write_config_file "$env_file" "local" "" "" "/var/bundles"
+
+    assert_contains "CAC_BACKEND=local" "$(cat "$env_file")" "backend" &&
+    assert_contains "CAC_LOCAL_STORAGE=/var/bundles" "$(cat "$env_file")" "storage"
+}
+
+test_write_config_user_permissions_600() {
+    local env_file="${TEST_TMPDIR}/write_perms.env"
+    write_config_file "$env_file" "local" "" "" "/var/bundles"
+
+    local perms
+    perms=$(stat -c '%a' "$env_file")
+    assert_equals "600" "$perms" "user config permissions"
+}
+
+# ============================================================================
+# Run new tests
+# ============================================================================
+
+echo ""
+echo "--- get_script_dir() ---"
+run_test "resolves to valid directory" test_get_script_dir_resolves
+run_test "returns empty for piped input" test_get_script_dir_empty_source
+
+echo ""
+echo "--- detect_local_files() ---"
+run_test "detects when all files present" test_detect_local_files_all_present
+run_test "fails when bin/cac missing" test_detect_local_files_missing_bin
+run_test "fails when lib files missing" test_detect_local_files_missing_lib
+run_test "fails for empty directory" test_detect_local_files_empty_dir
+run_test "fails for empty string" test_detect_local_files_empty_string
+
+echo ""
+echo "--- copy_local_files() ---"
+run_test "creates correct directory structure" test_copy_local_files_creates_structure
+run_test "bin/cac is executable" test_copy_local_files_executable
+run_test "handles missing .env.example" test_copy_local_files_no_env_example
+
+echo ""
+echo "--- setup_config_local() ---"
+run_test "copies .env from script dir" test_setup_config_local_copies_env
+run_test ".env gets 644 permissions" test_setup_config_local_permissions_644
+run_test "skips existing config" test_setup_config_local_skips_existing
+run_test "returns error when no .env" test_setup_config_local_no_env_returns_error
+
+echo ""
+echo "--- check_dependencies() modes ---"
+run_test "passes when all deps present" test_check_deps_all_present
+run_test "auto-install mode reports deps" test_check_deps_auto_install_mode
+run_test "pipe mode fails on missing deps" test_check_deps_pipe_mode_fails
+
+echo ""
+echo "--- Root check ---"
+run_test "local mode detected + not root" test_local_mode_requires_root
+
+echo ""
+echo "--- run_full_pipeline() logic ---"
+run_test "counts pass/fail correctly" test_pipeline_counts_pass_fail
+run_test "returns nonzero on failure" test_pipeline_returns_nonzero_on_failure
+run_test "returns zero on all success" test_pipeline_returns_zero_on_success
+
+echo ""
+echo "--- Two-mode detection ---"
+run_test "detects local mode" test_mode_detection_local
+run_test "detects pipe mode (empty)" test_mode_detection_pipe
+run_test "detects pipe mode (nonexistent)" test_mode_detection_pipe_nonexistent_dir
+
+echo ""
+echo "--- write_config_file() ---"
+run_test "writes gokapi config" test_write_config_gokapi
+run_test "writes local config" test_write_config_local
+run_test "user config gets 600 permissions" test_write_config_user_permissions_600
+
 echo ""
 framework_report

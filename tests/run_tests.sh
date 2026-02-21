@@ -129,6 +129,14 @@ main() {
         echo ""
     fi
 
+    # Run uninstall tests
+    if $run_all || [[ "$filter" == "uninstall" ]]; then
+        if ! run_test_suite "Uninstall Tests" "test_uninstall.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     echo "========================================"
     echo "Overall Summary"
     echo "========================================"
