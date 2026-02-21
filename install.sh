@@ -152,30 +152,27 @@ check_dependencies() {
 }
 
 # Resolve the directory where install.sh lives
-# Handles symlinks. Returns empty string if resolution fails (e.g. piped input).
+# Returns empty string if resolution fails (e.g. piped input).
 get_script_dir() {
     local source="${BASH_SOURCE[0]:-}"
 
-    # If BASH_SOURCE is empty or "-" or "bash" (piped), we cannot resolve
-    if [[ -z "$source" || "$source" == "-" || "$source" == "bash" || "$source" == "/dev/stdin" ]]; then
-        echo ""
+    # Piped input: cannot resolve
+    case "$source" in
+        ""|"-"|"bash"|"/dev/stdin") echo ""; return 0 ;;
+    esac
+
+    # readlink -f resolves symlinks, relative paths, and paths with spaces
+    local resolved
+    resolved="$(readlink -f "$source" 2>/dev/null)" || true
+
+    if [[ -n "$resolved" && -f "$resolved" ]]; then
+        dirname "$resolved"
         return 0
     fi
 
-    # Handle relative paths: if source has no directory component, prepend PWD
-    if [[ "$source" != */* ]]; then
-        source="${PWD}/${source}"
-    fi
-
-    # Resolve symlinks
-    while [[ -L "$source" ]]; do
-        local dir
-        dir="$(cd -P "$(dirname "$source")" && pwd)"
-        source="$(readlink "$source")"
-        [[ "$source" != /* ]] && source="$dir/$source"
-    done
-
-    cd -P "$(dirname "$source")" && pwd
+    # Fallback: resolve manually
+    [[ "$source" != /* ]] && source="${PWD}/${source}"
+    dirname "$source"
 }
 
 # Check if local project files exist alongside install.sh
