@@ -154,29 +154,56 @@ check_dependencies() {
 # Resolve the directory where install.sh lives
 # Returns empty string if resolution fails (e.g. piped input).
 get_script_dir() {
-    local source="${BASH_SOURCE[0]:-}"
+    local source="${BASH_SOURCE[0]:-$0}"
 
     # Piped input: cannot resolve
     case "$source" in
-        ""|"-"|"bash"|"/dev/stdin") echo ""; return 0 ;;
+        ""|"-"|"bash"|"/dev/stdin"|"/dev/fd/"*) echo ""; return 0 ;;
     esac
 
-    # readlink -f resolves symlinks, relative paths, and paths with spaces
+    # Try 1: readlink -f resolves everything (symlinks, relative, spaces)
     local resolved
     resolved="$(readlink -f "$source" 2>/dev/null)" || true
-
     if [[ -n "$resolved" && -f "$resolved" ]]; then
         dirname "$resolved"
         return 0
     fi
 
-    # Fallback: resolve manually
-    [[ "$source" != /* ]] && source="${PWD}/${source}"
-    dirname "$source"
+    # Try 2: absolute path — verify it exists before returning
+    if [[ "$source" == /* && -f "$source" ]]; then
+        dirname "$source"
+        return 0
+    fi
+
+    # Try 3: relative path + valid PWD — join and resolve
+    if [[ "$source" != /* && -n "${PWD:-}" ]]; then
+        local joined="${PWD}/${source}"
+        if [[ -f "$joined" ]]; then
+            # Use readlink -f on the joined path, fall back to dirname
+            resolved="$(readlink -f "$joined" 2>/dev/null)" || true
+            if [[ -n "$resolved" && -f "$resolved" ]]; then
+                dirname "$resolved"
+            else
+                dirname "$joined"
+            fi
+            return 0
+        fi
+    fi
+
+    # Try 4: broken PWD (sudo on mounted drive) — bash keeps script open on fd 255
+    if [[ -e /proc/$$/fd/255 ]]; then
+        resolved="$(readlink /proc/$$/fd/255 2>/dev/null)" || true
+        if [[ -n "$resolved" && -f "$resolved" ]]; then
+            dirname "$resolved"
+            return 0
+        fi
+    fi
+
+    echo ""
 }
 
 # Check if local project files exist alongside install.sh
-# Strict: BOTH bin/cac AND core lib/*.sh must exist
+# Verifies bin/cac AND all core lib/*.sh files exist (integrity check)
 detect_local_files() {
     local script_dir="$1"
     [[ -n "$script_dir" ]] && \
@@ -1194,6 +1221,10 @@ main() {
             die "Root privileges required. Run with: sudo bash install.sh"
         fi
         do_install_local "$script_dir"
+    elif is_root && [[ -z "$script_dir" ]] && [[ -z "$INSTALL_MODE_FLAG" ]]; then
+        # Root + could not resolve script dir + no pipe-mode flags = likely broken PWD
+        die "Cannot detect script directory (broken PWD from sudo?)." \
+            "Use absolute path: sudo bash /path/to/install.sh"
     else
         # PIPE mode: existing behavior (root optional depending on --global/--all)
         do_install_pipe
