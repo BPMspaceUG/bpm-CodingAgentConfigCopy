@@ -180,7 +180,7 @@ download_project() {
     chmod +x "${temp_dir}/bin/cac"
 
     # Download library modules
-    local libs=(config.sh security.sh tools.sh bundle.sh backend_local.sh backend_gokapi.sh utils.sh logging.sh check.sh env.sh)
+    local libs=(config.sh security.sh tools.sh bundle.sh backend_local.sh backend_gokapi.sh utils.sh logging.sh check.sh env.sh skill.sh)
     for lib in "${libs[@]}"; do
         download_file "${base_url}/lib/${lib}" "${temp_dir}/lib/${lib}"
     done
