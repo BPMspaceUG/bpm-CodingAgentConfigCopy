@@ -156,10 +156,15 @@ check_dependencies() {
 get_script_dir() {
     local source="${BASH_SOURCE[0]:-}"
 
-    # If BASH_SOURCE is empty or "-" (piped), we cannot resolve
-    if [[ -z "$source" || "$source" == "-" || "$source" == "bash" ]]; then
+    # If BASH_SOURCE is empty or "-" or "bash" (piped), we cannot resolve
+    if [[ -z "$source" || "$source" == "-" || "$source" == "bash" || "$source" == "/dev/stdin" ]]; then
         echo ""
         return 0
+    fi
+
+    # Handle relative paths: if source has no directory component, prepend PWD
+    if [[ "$source" != */* ]]; then
+        source="${PWD}/${source}"
     fi
 
     # Resolve symlinks
@@ -682,83 +687,97 @@ setup_path() {
     echo "  Run 'source ${target_rc}' or open a new terminal to use cac."
 }
 
-# Run the full post-install pipeline (steps 2-6, local mode only)
+# Run the full post-install pipeline (steps 2-7, local mode only)
 # Each step is non-fatal — warn and continue on failure.
 # Returns: 0 if all passed, 1 if any failed.
 run_full_pipeline() {
     local cac_bin="${BIN_DIR}/cac"
+    local total_steps=6
     local passed=0
     local failed=0
 
-    # Step 2/6: Install AI tool environments
+    # Step 2/7: Install AI tool environments
     echo ""
     echo "-----------------------------------"
-    info "[Step 2/6] Installing AI tool environments..."
+    info "[Step 2/7] Installing AI tool environments..."
     echo "-----------------------------------"
     if "$cac_bin" env install --global --yes; then
-        success "[Step 2/6] AI tool environments installed"
+        success "[Step 2/7] AI tool environments installed"
         ((passed++)) || true
     else
-        warn "[Step 2/6] AI tool environment installation had issues (continuing)"
+        warn "[Step 2/7] AI tool environment installation had issues (continuing)"
         ((failed++)) || true
     fi
 
-    # Step 3/6: Pull latest config bundle
+    # Step 3/7: Pull latest config bundle
     echo ""
     echo "-----------------------------------"
-    info "[Step 3/6] Pulling latest configuration bundle..."
+    info "[Step 3/7] Pulling latest configuration bundle..."
     echo "-----------------------------------"
     if "$cac_bin" pull; then
-        success "[Step 3/6] Configuration pulled"
+        success "[Step 3/7] Configuration pulled"
         ((passed++)) || true
     else
-        warn "[Step 3/6] Pull failed (may not have bundles yet)"
+        warn "[Step 3/7] Pull failed (may not have bundles yet)"
         ((failed++)) || true
     fi
 
-    # Step 4/6: Test AI tool connectivity
+    # Step 4/7: Test AI tool connectivity
     echo ""
     echo "-----------------------------------"
-    info "[Step 4/6] Testing AI tool connectivity..."
+    info "[Step 4/7] Testing AI tool connectivity..."
     echo "-----------------------------------"
     if "$cac_bin" test; then
-        success "[Step 4/6] AI tool tests passed"
+        success "[Step 4/7] AI tool tests passed"
         ((passed++)) || true
     else
-        warn "[Step 4/6] Some AI tool tests failed (non-critical)"
+        warn "[Step 4/7] Some AI tool tests failed (non-critical)"
         ((failed++)) || true
     fi
 
-    # Step 5/6: Install BPM skill library
+    # Step 5/7: Install BPM skill library
     echo ""
     echo "-----------------------------------"
-    info "[Step 5/6] Installing BPM skill library..."
+    info "[Step 5/7] Installing BPM skill library..."
     echo "-----------------------------------"
     if "$cac_bin" skill install https://github.com/BPMspaceUG/bpm-claude-global-agent-skill-library.git --global --yes; then
-        success "[Step 5/6] BPM skill library installed"
+        success "[Step 5/7] BPM skill library installed"
         ((passed++)) || true
     else
-        warn "[Step 5/6] BPM skill library installation failed (continuing)"
+        warn "[Step 5/7] BPM skill library installation failed (continuing)"
         ((failed++)) || true
     fi
 
-    # Step 6/6: Install ICO skill library
+    # Step 6/7: Install ICO skill library
     echo ""
     echo "-----------------------------------"
-    info "[Step 6/6] Installing ICO skill library..."
+    info "[Step 6/7] Installing ICO skill library..."
     echo "-----------------------------------"
     if "$cac_bin" skill install https://github.com/International-Certification-Org/ico-claude-global-agent-skill-library.git --global --yes; then
-        success "[Step 6/6] ICO skill library installed"
+        success "[Step 6/7] ICO skill library installed"
         ((passed++)) || true
     else
-        warn "[Step 6/6] ICO skill library installation failed (continuing)"
+        warn "[Step 6/7] ICO skill library installation failed (continuing)"
+        ((failed++)) || true
+    fi
+
+    # Step 7/7: Install Tailscale
+    echo ""
+    echo "-----------------------------------"
+    info "[Step 7/7] Installing Tailscale..."
+    echo "-----------------------------------"
+    if curl -fsSL https://tailscale.com/install.sh | sh; then
+        success "[Step 7/7] Tailscale installed"
+        ((passed++)) || true
+    else
+        warn "[Step 7/7] Tailscale installation failed (continuing)"
         ((failed++)) || true
     fi
 
     echo ""
     echo "-----------------------------------"
     if [[ "$failed" -eq 0 ]]; then
-        success "Pipeline complete: ${passed}/5 steps passed"
+        success "Pipeline complete: ${passed}/${total_steps} steps passed"
     else
         warn "Pipeline complete: ${passed} passed, ${failed} failed"
     fi
@@ -863,7 +882,7 @@ do_install_local() {
     setup_config_local "$script_dir"
 
     echo ""
-    success "[Step 1/6] cac installed to ${BIN_DIR}/cac"
+    success "[Step 1/7] cac installed to ${BIN_DIR}/cac"
 
     # Run full 6-step pipeline
     local pipeline_exit=0
@@ -1061,6 +1080,7 @@ LOCAL MODE (USB stick — auto-detects everything):
     3. cac test                         (verify all credentials)
     4. cac skill install <BPM-URL>      (install BPM skill library)
     5. cac skill install <ICO-URL>      (install ICO skill library)
+    6. curl tailscale.com/install.sh    (install Tailscale VPN)
 
 PIPE MODE (GitHub — backward compatible):
   curl -fsSL URL | bash -s -- [OPTIONS]
