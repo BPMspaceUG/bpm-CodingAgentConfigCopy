@@ -29,6 +29,8 @@ source "${LIB_DIR}/backend_gokapi.sh"
 source "${LIB_DIR}/check.sh"
 # shellcheck source=lib/env.sh
 source "${LIB_DIR}/env.sh"
+# shellcheck source=lib/skill.sh
+source "${LIB_DIR}/skill.sh"
 
 # ============================================================================
 # Help / Usage
@@ -53,7 +55,11 @@ COMMANDS:
     test [--user USER]              (Alias for check) Test API connectivity
     env install [TOOL] [--user|--global]  Install AI tool environments
     env update [TOOL] [--user|--global]   Update AI tool environments
-    env status [--parseable]        Show AI tool installation status
+    env status [--parseable] [--check-updates]  Show AI tool installation status
+    skill install <URL> [--global] [--yes]  Install a skill library from Git
+    skill update [LIBRARY] [--yes]          Update installed skill libraries
+    skill list                              List installed skill libraries
+    skill status                            Show libraries with update info
 
 OPTIONS:
     --user USER     Operate on specified user (requires root for other users)
@@ -61,6 +67,7 @@ OPTIONS:
     --all           Pull to all users with AI tool configs (requires root)
     --dry-run       Preview what would happen without making changes
     --skip-check    Skip credential verification before push
+    --check-updates Check for latest versions (env status only)
     --verbose       Enable verbose output for debugging
     --help, -h      Show this help message
     --version, -v   Show version information
@@ -84,10 +91,16 @@ EXAMPLES:
     cac check claude            Verify only Claude credentials
     cac check --user bob        Verify credentials for user bob (requires root)
     cac env status              Show AI tool installation status
+    cac env status --check-updates  Show status with update availability
     cac env install claude      Install Claude Code CLI
     cac env install --global    Install all AI tools system-wide (requires root)
     cac env update codex        Update Codex CLI
     cac env --help              Show full env subcommand help
+    cac skill install https://github.com/BPMspaceUG/bpm-claude-global-agent-skill-library.git
+                                    Install BPM skill library
+    cac skill list              List installed skill libraries
+    cac skill update            Update all installed skill libraries
+    cac skill --help            Show full skill subcommand help
 
 CONFIGURATION:
     Config file locations (in order of precedence):
@@ -542,7 +555,7 @@ USAGE:
 SUBCOMMANDS:
     install [TOOL] [--user|--global] [--yes]  Install AI tool environments
     update [TOOL] [--user|--global]           Update AI tool environments
-    status [--parseable]                      Show installation status
+    status [--parseable] [--check-updates]    Show installation status
 
 TOOLS:
     claude            Claude Code CLI
@@ -555,6 +568,7 @@ OPTIONS:
     --global          Install/update system-wide (requires root)
     --yes, -y         Skip confirmation prompts
     --parseable       Output status in tab-separated format
+    --check-updates   Check for latest versions (env status only)
 
 EXAMPLES:
     cac env status                    Show status of all AI tools
@@ -563,6 +577,7 @@ EXAMPLES:
     cac env install --global          Install all tools system-wide
     cac env update codex              Update Codex CLI
     cac env status --parseable        Machine-readable status output
+    cac env status --check-updates    Show status with update availability
 
 EOF
             ;;
@@ -625,6 +640,11 @@ main() {
 
     if [[ "$command" == "env" ]]; then
         cmd_env "$@"
+        exit $?
+    fi
+
+    if [[ "$command" == "skill" ]]; then
+        skill_cmd_main "$@"
         exit $?
     fi
 

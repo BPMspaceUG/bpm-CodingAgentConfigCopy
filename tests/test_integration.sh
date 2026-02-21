@@ -645,6 +645,41 @@ test_extract_preserves_content() {
 }
 
 # ============================================================================
+# Issue #35: env status --check-updates
+# ============================================================================
+
+test_env_status_check_updates() {
+    # Run the real cac binary with --check-updates; no backend config needed
+    local output
+    output=$("${PROJECT_ROOT}/bin/cac" env status --check-updates 2>&1) || true
+
+    # Must contain "Latest" column header
+    assert_contains "Latest" "$output" "check-updates output" || return 1
+
+    # Extract only tool row lines (skip header/separator)
+    local tool_lines
+    tool_lines=$(echo "$output" | grep -E "Claude Code|Codex CLI|Gemini CLI|continuous-claude") || true
+
+    # Must have at least one tool row
+    if [[ -z "$tool_lines" ]]; then
+        echo "Expected output to contain at least one tool row" >&2
+        echo "$output" >&2
+        return 1
+    fi
+
+    # At least one tool row must contain a version indicator in the Latest column
+    # ✓ = up-to-date, ⬆ = upgrade available, ? = lookup failed
+    # (NOT checking for "-" here as it would match the separator row)
+    if echo "$tool_lines" | grep -qE "[✓⬆?]"; then
+        return 0
+    else
+        echo "No version indicator (✓, ⬆, or ?) found on tool rows:" >&2
+        echo "$tool_lines" >&2
+        return 1
+    fi
+}
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -692,6 +727,10 @@ main() {
     run_test "get newest host filter only" test_get_newest_host_filter_only
     run_test "get newest both filters" test_get_newest_both_filters
     run_test "get newest filter no match" test_get_newest_filter_no_match
+    echo ""
+
+    echo "--- Issue #35: env status --check-updates ---"
+    run_test "env status --check-updates shows Latest column" test_env_status_check_updates
     echo ""
 
     echo "--- Codex Review Regression Tests ---"

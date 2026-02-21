@@ -160,6 +160,38 @@ shellcheck bin/cac lib/*.sh install.sh uninstall.sh tests/*.sh
 - `check_all_tools(user)` - Verify all configured tools
 - `check_tool_claude/codex/gemini(user)` - Provider-specific verification
 
+## Milestone-Based Issue Lifecycle (MANDATORY)
+
+Every issue in this repository MUST follow the milestone-based lifecycle. No exceptions.
+
+| Milestone | Set By | Meaning |
+|-----------|--------|---------|
+| `new` | Team Lead | Issue created, not yet planned |
+| `planned` | Team Lead | Agent submitted a plan (posted as issue comment) |
+| `plan-approved` | Team Lead + Codex | Both reviewed and approved the plan |
+| `test-designed` | Team Lead | Agent submitted test design as issue comment |
+| `test-design-approved` | Team Lead + Codex | Both approved test design |
+| `implemented` | Team Lead | Code written, agent reports completion |
+| `tested-success` | Team Lead | All tests pass |
+| `tested-failed` | Team Lead | Tests fail — bounces back with documented reason |
+| `test-approved` | Team Lead + Codex | Final automated gate — independent verification passed |
+| `DONE` | **Human only** | Final sign-off. Agents NEVER set this. |
+
+**Lifecycle flow:**
+```
+new -> planned -> plan-approved -> test-designed -> test-design-approved
+  -> implemented -> tested-success / tested-failed -> test-approved -> DONE
+```
+
+**Rules (Non-Negotiable):**
+1. One milestone at a time per issue — no skipping states
+2. Dual approval required at every gate — Team Lead AND Codex must both approve
+3. `DONE` is human-only — agents must NEVER set this milestone
+4. One issue per discrete change — all phases documented as comments on that issue
+5. Every Codex response posted as comment on the GitHub Issue
+
+See `/my-team-milestones` skill for full details including Codex gate patterns and compact lifecycle variant.
+
 ## Multi-Agent Workflow
 
 This project uses a multi-agent development workflow:

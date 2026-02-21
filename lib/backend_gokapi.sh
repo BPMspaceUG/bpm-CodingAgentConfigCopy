@@ -113,7 +113,7 @@ _gokapi_request() {
 
     local url="${CAC_GOKAPI_URL}${endpoint}"
 
-    curl -s -X "$method" \
+    curl -s -m 30 -X "$method" \
         -H "accept: application/json" \
         -H "apikey: ${CAC_GOKAPI_API_KEY}" \
         "$@" \
@@ -364,15 +364,24 @@ backend_gokapi_get_newest() {
         return 1
     fi
 
-    # Collect filtered metadata entries and find newest
-    local newest_name
+    # Collect filtered metadata entries (two-step to avoid pipefail when
+    # the last utils_parse_bundle_metadata returns 1 for a non-matching entry)
+    local filtered_entries
     # shellcheck disable=SC2034  # id is intentionally unused
-    if ! newest_name=$(
+    filtered_entries=$(
         while IFS='|' read -r name id; do
             [[ -z "$name" ]] && continue
-            utils_parse_bundle_metadata "$name" "$filter_host" "$filter_user"
-        done < <(utils_gokapi_extract_names "$GOKAPI_FILE_LIST") | utils_find_newest_bundle
-    ); then
+            utils_parse_bundle_metadata "$name" "$filter_host" "$filter_user" || true
+        done < <(utils_gokapi_extract_names "$GOKAPI_FILE_LIST")
+    )
+
+    if [[ -z "$filtered_entries" ]]; then
+        utils_error_no_bundle_found "$filter_host" "$filter_user" "on server"
+        return 1
+    fi
+
+    local newest_name
+    if ! newest_name=$(echo "$filtered_entries" | utils_find_newest_bundle); then
         utils_error_no_bundle_found "$filter_host" "$filter_user" "on server"
         return 1
     fi

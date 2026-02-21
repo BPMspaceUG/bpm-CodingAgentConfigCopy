@@ -121,6 +121,14 @@ main() {
         echo ""
     fi
 
+    # Run skill tests
+    if $run_all || [[ "$filter" == "skill" ]]; then
+        if ! run_test_suite "Skill Tests" "test_skill.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     echo "========================================"
     echo "Overall Summary"
     echo "========================================"
