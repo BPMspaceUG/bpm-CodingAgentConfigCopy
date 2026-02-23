@@ -268,6 +268,90 @@ test_bundle_list_contents_nonexistent() {
 }
 
 # ============================================================================
+# Mistral Bundle Tests (Issue #45)
+# ============================================================================
+
+test_bundle_create_with_mistral_files() {
+    local fake_home="${TEST_TMPDIR}/mistral_home"
+    local output_zip="${TEST_TMPDIR}/mistral_output.zip"
+
+    # Create fake home with mistral config files
+    mkdir -p "${fake_home}/.vibe"
+    echo 'MISTRAL_API_KEY=test-key' > "${fake_home}/.vibe/.env"
+    printf '[settings]\nmodel = "mistral-large"\n' > "${fake_home}/.vibe/config.toml"
+
+    # Create bundle
+    assert_success "bundle_create mistral" bundle_create "$fake_home" "$output_zip" "mistral"
+
+    # Verify ZIP was created
+    assert_file_exists "$output_zip" "output ZIP"
+
+    # Verify ZIP contains expected files
+    local contents
+    contents=$(unzip -Z1 "$output_zip")
+
+    assert_contains ".vibe/.env" "$contents" "ZIP contents" &&
+    assert_contains ".vibe/config.toml" "$contents" "ZIP contents"
+}
+
+test_bundle_create_mistral_only() {
+    local fake_home="${TEST_TMPDIR}/mistral_only_home"
+    local output_zip="${TEST_TMPDIR}/mistral_only.zip"
+
+    # Create fake home with both claude AND mistral configs
+    mkdir -p "${fake_home}/.claude"
+    mkdir -p "${fake_home}/.vibe"
+    echo '{"test": true}' > "${fake_home}/.claude.json"
+    echo 'MISTRAL_API_KEY=test-key' > "${fake_home}/.vibe/.env"
+    printf '[settings]\nmodel = "mistral-large"\n' > "${fake_home}/.vibe/config.toml"
+
+    # Create bundle for mistral only
+    assert_success "bundle_create mistral only" bundle_create "$fake_home" "$output_zip" "mistral"
+
+    # Verify ZIP contains only mistral files
+    local contents
+    contents=$(unzip -Z1 "$output_zip")
+
+    assert_contains ".vibe/.env" "$contents" "ZIP contents"
+
+    # Should NOT contain claude files
+    if [[ "$contents" == *".claude"* ]]; then
+        echo "ZIP should not contain .claude files, got: $contents" >&2
+        return 1
+    fi
+}
+
+test_bundle_extract_mistral_permissions() {
+    local fake_home="${TEST_TMPDIR}/mistral_perm_src"
+    local target_home="${TEST_TMPDIR}/mistral_perm_dst"
+    local bundle_zip="${TEST_TMPDIR}/mistral_perm.zip"
+
+    # Create source home with mistral config
+    mkdir -p "${fake_home}/.vibe"
+    echo 'MISTRAL_API_KEY=test-key' > "${fake_home}/.vibe/.env"
+    printf '[settings]\nmodel = "mistral-large"\n' > "${fake_home}/.vibe/config.toml"
+
+    # Create target home
+    mkdir -p "$target_home"
+
+    # Create and extract bundle
+    bundle_create "$fake_home" "$bundle_zip" "mistral" >/dev/null 2>&1
+    bundle_extract "$bundle_zip" "$target_home" "$(whoami)" >/dev/null 2>&1
+
+    # Verify files exist
+    assert_file_exists "${target_home}/.vibe/.env" "extracted .vibe/.env" &&
+    assert_file_exists "${target_home}/.vibe/config.toml" "extracted .vibe/config.toml" || return 1
+
+    # Verify 600 permissions
+    local env_perms toml_perms
+    env_perms=$(stat -c '%a' "${target_home}/.vibe/.env")
+    toml_perms=$(stat -c '%a' "${target_home}/.vibe/config.toml")
+
+    assert_equals "600" "$env_perms" ".vibe/.env permissions" &&
+    assert_equals "600" "$toml_perms" ".vibe/config.toml permissions"
+}
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -302,6 +386,12 @@ main() {
     run_test "bundle_extract creates backup" test_bundle_extract_creates_backup
     run_test "bundle_list_contents" test_bundle_list_contents
     run_test "bundle_list_contents nonexistent" test_bundle_list_contents_nonexistent
+    echo ""
+
+    echo "--- Mistral Bundle Tests (Issue #45) ---"
+    run_test "bundle_create with mistral files" test_bundle_create_with_mistral_files
+    run_test "bundle_create mistral only" test_bundle_create_mistral_only
+    run_test "bundle_extract mistral permissions" test_bundle_extract_mistral_permissions
     echo ""
 
     framework_report

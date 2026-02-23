@@ -7,6 +7,7 @@ A production-grade CLI tool for managing versioned ZIP-based configuration bundl
 - **Claude Code** (Anthropic)
 - **Codex CLI** (OpenAI)
 - **Gemini CLI** (Google)
+- **Mistral Vibe** (<a href="https://mistral.ai" target="_blank">Mistral AI</a>)
 
 ## Installation
 
@@ -281,6 +282,7 @@ cac env update codex        # Update specific tool
 | Codex CLI | npm | No |
 | Gemini CLI | npm | No |
 | continuous-claude | curl installer | Yes |
+| Mistral Vibe | npm | No |
 
 **Automated installation with cac installer:**
 
@@ -315,6 +317,7 @@ Example: `CodingAgentConfig_prod-server-01_ubuntu_250111-143022.zip`
 | Claude Code | `.claude.json`, `.claude/.credentials.json` |
 | Codex CLI | `.codex/auth.json` |
 | Gemini CLI | `.gemini/oauth_creds.json`, `.gemini/google_accounts.json`, `.gemini/settings.json`, `.gemini/state.json`, `.gemini/installation_id`, `.config/gcloud/application_default_credentials.json` |
+| Mistral Vibe | `.vibe/.env`, `.vibe/config.toml` |
 
 ## Security
 

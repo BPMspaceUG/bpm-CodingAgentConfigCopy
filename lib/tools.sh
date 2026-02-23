@@ -13,10 +13,22 @@ declare -A _TOOLS_REGISTRY=(
 .gemini/state.json
 .gemini/installation_id
 .config/gcloud/application_default_credentials.json'
+    [mistral]='.vibe/.env
+.vibe/config.toml'
 )
 
 # Derived list of supported tools (excluding 'all')
 _TOOLS_SUPPORTED="${!_TOOLS_REGISTRY[*]}"
+
+# Resolve tool alias to canonical name
+# Usage: _resolve_tool_alias <name>
+# Returns: canonical tool name (e.g., "vibe" -> "mistral")
+_resolve_tool_alias() {
+    case "$1" in
+        vibe) echo "mistral" ;;
+        *)    echo "$1" ;;
+    esac
+}
 
 # Get file mappings for a specific tool
 # Usage: tools_get_files <tool>

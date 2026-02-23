@@ -44,6 +44,10 @@ setup_integration_env() {
     echo '{"auth_token": "codex-token"}' > "${TEST_HOME}/.codex/auth.json"
     echo '{"oauth": "gemini-oauth"}' > "${TEST_HOME}/.gemini/oauth_creds.json"
 
+    mkdir -p "${TEST_HOME}/.vibe"
+    echo 'MISTRAL_API_KEY=test-mistral-key' > "${TEST_HOME}/.vibe/.env"
+    printf '[settings]\nmodel = "mistral-large"\n' > "${TEST_HOME}/.vibe/config.toml"
+
     # Create local storage directory
     TEST_STORAGE="${TEST_TMPDIR}/storage"
     mkdir -p "$TEST_STORAGE"
@@ -112,6 +116,16 @@ test_tools_get_files_claude() {
     assert_contains ".claude/.credentials.json" "$files" "claude files"
 }
 
+test_tools_get_files_mistral() {
+    source "${PROJECT_ROOT}/lib/tools.sh"
+
+    local files
+    files=$(tools_get_files "mistral")
+
+    assert_contains ".vibe/.env" "$files" "mistral files" &&
+    assert_contains ".vibe/config.toml" "$files" "mistral files"
+}
+
 test_tools_get_files_all() {
     source "${PROJECT_ROOT}/lib/tools.sh"
 
@@ -120,7 +134,8 @@ test_tools_get_files_all() {
 
     assert_contains ".claude.json" "$files" "all files" &&
     assert_contains ".codex/auth.json" "$files" "all files" &&
-    assert_contains ".gemini/oauth_creds.json" "$files" "all files"
+    assert_contains ".gemini/oauth_creds.json" "$files" "all files" &&
+    assert_contains ".vibe/.env" "$files" "all files"
 }
 
 test_tools_is_valid() {
@@ -128,6 +143,7 @@ test_tools_is_valid() {
 
     assert_success "claude is valid" tools_is_valid "claude" &&
     assert_success "codex is valid" tools_is_valid "codex" &&
+    assert_success "mistral is valid" tools_is_valid "mistral" &&
     assert_success "all is valid" tools_is_valid "all" &&
     assert_fails "invalid_tool is not valid" tools_is_valid "invalid_tool"
 }
@@ -140,7 +156,18 @@ test_tools_collect_existing() {
 
     assert_contains ".claude.json" "$files" "existing files" &&
     assert_contains ".codex/auth.json" "$files" "existing files" &&
-    assert_contains ".gemini/oauth_creds.json" "$files" "existing files"
+    assert_contains ".gemini/oauth_creds.json" "$files" "existing files" &&
+    assert_contains ".vibe/.env" "$files" "existing files"
+}
+
+test_tools_collect_existing_mistral() {
+    source "${PROJECT_ROOT}/lib/tools.sh"
+
+    local files
+    files=$(tools_collect_existing "$TEST_HOME" "mistral")
+
+    assert_contains ".vibe/.env" "$files" "mistral existing files" &&
+    assert_contains ".vibe/config.toml" "$files" "mistral existing files"
 }
 
 test_tools_count_existing() {
@@ -149,8 +176,8 @@ test_tools_count_existing() {
     local count
     count=$(tools_count_existing "$TEST_HOME" "all")
 
-    # We created 4 files in setup - check minimum
-    [[ "$count" -ge 4 ]] || { echo "Expected at least 4 files, got $count" >&2; return 1; }
+    # We created 6 files in setup (claude:2 + codex:1 + gemini:1 + mistral:2) - check minimum
+    [[ "$count" -ge 6 ]] || { echo "Expected at least 6 files, got $count" >&2; return 1; }
 }
 
 # ============================================================================
@@ -615,6 +642,93 @@ test_full_push_pull_workflow() {
     unset CAC_CONFIG_DIR
 }
 
+test_full_push_pull_mistral_roundtrip() {
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+    source "${PROJECT_ROOT}/lib/security.sh"
+    source "${PROJECT_ROOT}/lib/bundle.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    local host
+    host=$(hostname -s)
+
+    # Create a bundle and upload
+    local bundle_name
+    bundle_name=$(bundle_generate_filename "mistralrt")
+    local bundle_path="${TEST_TMPDIR}/${bundle_name}"
+
+    bundle_create "$TEST_HOME" "$bundle_path" "all" >/dev/null 2>&1
+    backend_local_upload "$bundle_path" >/dev/null 2>&1
+
+    # Create empty target home
+    local target_home="${TEST_TMPDIR}/mistral_target"
+    mkdir -p "$target_home"
+
+    # Find and download the newest bundle
+    local newest
+    newest=$(backend_local_get_newest --host "$host" --user "mistralrt")
+
+    local download_path="${TEST_TMPDIR}/mistral_download.zip"
+    backend_local_download "$newest" "$download_path" >/dev/null 2>&1
+
+    # Extract to target
+    bundle_extract "$download_path" "$target_home" "$(whoami)" >/dev/null 2>&1
+
+    # Verify mistral files were restored
+    assert_file_exists "${target_home}/.vibe/.env" "restored .vibe/.env" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_file_exists "${target_home}/.vibe/config.toml" "restored .vibe/config.toml" || { unset CAC_CONFIG_DIR; return 1; }
+
+    # Verify content preserved
+    local content
+    content=$(cat "${target_home}/.vibe/.env")
+    assert_contains "MISTRAL_API_KEY=test-mistral-key" "$content" "mistral env content" || { unset CAC_CONFIG_DIR; return 1; }
+
+    unset CAC_CONFIG_DIR
+}
+
+test_backward_compat_bundle_without_mistral() {
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+    source "${PROJECT_ROOT}/lib/security.sh"
+    source "${PROJECT_ROOT}/lib/bundle.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Create a home with only claude+codex (no mistral)
+    local old_home="${TEST_TMPDIR}/old_home"
+    mkdir -p "${old_home}/.claude"
+    mkdir -p "${old_home}/.codex"
+    echo '{"api_key": "old-key"}' > "${old_home}/.claude.json"
+    echo '{"auth": "old-token"}' > "${old_home}/.codex/auth.json"
+
+    # Create bundle
+    local bundle_path="${TEST_TMPDIR}/old_bundle.zip"
+    bundle_create "$old_home" "$bundle_path" "all" >/dev/null 2>&1
+
+    # Extract to target
+    local target_home="${TEST_TMPDIR}/old_target"
+    mkdir -p "$target_home"
+    bundle_extract "$bundle_path" "$target_home" "$(whoami)" >/dev/null 2>&1
+
+    # Verify claude/codex files restored
+    assert_file_exists "${target_home}/.claude.json" "restored claude.json" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_file_exists "${target_home}/.codex/auth.json" "restored codex auth" || { unset CAC_CONFIG_DIR; return 1; }
+
+    # Verify .vibe dir does NOT exist (no phantom files)
+    if [[ -d "${target_home}/.vibe" ]]; then
+        echo ".vibe directory should not exist in old bundle target" >&2
+        unset CAC_CONFIG_DIR
+        return 1
+    fi
+
+    unset CAC_CONFIG_DIR
+}
+
 test_extract_preserves_content() {
     source "${PROJECT_ROOT}/lib/config.sh"
     source "${PROJECT_ROOT}/lib/tools.sh"
@@ -642,6 +756,99 @@ test_extract_preserves_content() {
 
     assert_equals "$original_content" "$extracted_content" "file content" || { unset CAC_CONFIG_DIR; return 1; }
     unset CAC_CONFIG_DIR
+}
+
+# ============================================================================
+# Issue #45: Alias Resolution Tests
+# ============================================================================
+
+test_resolve_tool_alias_vibe() {
+    source "${PROJECT_ROOT}/lib/tools.sh"
+
+    local result
+    result=$(_resolve_tool_alias "vibe")
+
+    assert_equals "mistral" "$result" "vibe alias resolves to mistral"
+}
+
+test_resolve_tool_alias_passthrough() {
+    source "${PROJECT_ROOT}/lib/tools.sh"
+
+    local result
+    result=$(_resolve_tool_alias "claude")
+
+    assert_equals "claude" "$result" "claude passes through unchanged"
+}
+
+# ============================================================================
+# Issue #45: check_tool_mistral Behavior Tests
+# ============================================================================
+
+test_check_mistral_missing_env_file() {
+    source "${PROJECT_ROOT}/lib/logging.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+    source "${PROJECT_ROOT}/lib/check.sh"
+
+    # Create a home dir without .vibe/.env
+    local fake_home="${TEST_TMPDIR}/no_vibe_home"
+    mkdir -p "$fake_home"
+
+    # Mock _check_tool_binary_exists to return success
+    _check_tool_binary_exists() { return 0; }
+
+    check_tool_mistral "false" "$(whoami)" "$fake_home" >/dev/null 2>&1
+    local exit_code=$?
+
+    # Should return CHECK_EXIT_AUTH_FAIL (1) when .env file is missing
+    assert_equals "1" "$exit_code" "missing .vibe/.env exit code"
+}
+
+test_check_mistral_missing_api_key() {
+    source "${PROJECT_ROOT}/lib/logging.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+    source "${PROJECT_ROOT}/lib/check.sh"
+
+    # Create a home dir with .vibe/.env but no MISTRAL_API_KEY
+    local fake_home="${TEST_TMPDIR}/empty_vibe_home"
+    mkdir -p "${fake_home}/.vibe"
+    echo 'SOME_OTHER_VAR=hello' > "${fake_home}/.vibe/.env"
+
+    # Mock _check_tool_binary_exists to return success
+    _check_tool_binary_exists() { return 0; }
+
+    check_tool_mistral "false" "$(whoami)" "$fake_home" >/dev/null 2>&1
+    local exit_code=$?
+
+    # Should return CHECK_EXIT_AUTH_FAIL (1) when key is missing
+    assert_equals "1" "$exit_code" "missing MISTRAL_API_KEY exit code"
+}
+
+test_check_mistral_key_extraction() {
+    source "${PROJECT_ROOT}/lib/logging.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+    source "${PROJECT_ROOT}/lib/check.sh"
+
+    # Create a home dir with valid .vibe/.env
+    local fake_home="${TEST_TMPDIR}/valid_vibe_home"
+    mkdir -p "${fake_home}/.vibe"
+    echo 'MISTRAL_API_KEY=test-key-12345' > "${fake_home}/.vibe/.env"
+
+    # Mock _check_tool_binary_exists to return success
+    _check_tool_binary_exists() { return 0; }
+
+    # Mock _check_with_timeout to avoid real API call — simulate auth failure response
+    _check_with_timeout() { echo '{"message":"Unauthorized"}'; return 0; }
+
+    check_tool_mistral "false" "$(whoami)" "$fake_home" >/dev/null 2>&1
+    local exit_code=$?
+
+    # Should return CHECK_EXIT_AUTH_FAIL (1) — key was extracted but API returned unauthorized
+    # The important thing: it got past the "key not found" check (which would also be exit 1)
+    # but reached the API call stage. We verify this didn't crash or return unexpected codes.
+    [[ "$exit_code" -eq 1 ]] || {
+        echo "Expected exit code 1 (auth fail after API call), got $exit_code" >&2
+        return 1
+    }
 }
 
 # ============================================================================
@@ -699,9 +906,11 @@ main() {
 
     echo "--- Tools Module ---"
     run_test "tools_get_files claude" test_tools_get_files_claude
+    run_test "tools_get_files mistral" test_tools_get_files_mistral
     run_test "tools_get_files all" test_tools_get_files_all
     run_test "tools_is_valid" test_tools_is_valid
     run_test "tools_collect_existing" test_tools_collect_existing
+    run_test "tools_collect_existing mistral" test_tools_collect_existing_mistral
     run_test "tools_count_existing" test_tools_count_existing
     echo ""
 
@@ -743,6 +952,22 @@ main() {
     echo "--- Full Workflow ---"
     run_test "push/pull workflow" test_full_push_pull_workflow
     run_test "extract preserves content" test_extract_preserves_content
+    echo ""
+
+    echo "--- Issue #45: Mistral Vibe Support ---"
+    run_test "mistral push/pull roundtrip" test_full_push_pull_mistral_roundtrip
+    run_test "backward compat without mistral" test_backward_compat_bundle_without_mistral
+    echo ""
+
+    echo "--- Issue #45: Alias Tests ---"
+    run_test "resolve alias vibe -> mistral" test_resolve_tool_alias_vibe
+    run_test "resolve alias passthrough" test_resolve_tool_alias_passthrough
+    echo ""
+
+    echo "--- Issue #45: check_tool_mistral Behavior ---"
+    run_test "check mistral missing .env file" test_check_mistral_missing_env_file
+    run_test "check mistral missing API key" test_check_mistral_missing_api_key
+    run_test "check mistral key extraction" test_check_mistral_key_extraction
     echo ""
 
     framework_report

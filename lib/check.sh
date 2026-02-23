@@ -243,6 +243,9 @@ _check_get_primary_cred_file() {
         gemini)
             echo "${home_dir}/.gemini/oauth_creds.json"
             ;;
+        mistral)
+            echo "${home_dir}/.vibe/.env"
+            ;;
     esac
 }
 
@@ -261,6 +264,9 @@ _check_get_tool_version() {
             ;;
         gemini)
             gemini --version 2>/dev/null | head -1 || echo "unknown"
+            ;;
+        mistral)
+            vibe --version 2>/dev/null | head -1 || echo "unknown"
             ;;
         *)
             echo "unknown"
@@ -284,6 +290,9 @@ _check_tool_binary_exists() {
         gemini)
             command -v gemini &>/dev/null
             ;;
+        mistral)
+            command -v vibe &>/dev/null
+            ;;
         *)
             return 1
             ;;
@@ -299,6 +308,7 @@ _check_get_tool_display_name() {
         claude) echo "Claude" ;;
         codex) echo "Codex" ;;
         gemini) echo "Gemini" ;;
+        mistral) echo "Mistral Vibe" ;;
         *) echo "$tool" ;;
     esac
 }
@@ -418,6 +428,64 @@ check_tool_gemini() {
     fi
 }
 
+# Check Mistral credentials
+# Usage: check_tool_mistral <use_sudo> <target_user> <home_dir>
+# Returns: 0 on success, 1 on auth fail, 3 on timeout, 4 on missing binary
+check_tool_mistral() {
+    local use_sudo="$1"
+    local target_user="$2"
+    local home_dir="$3"
+    local output exit_code
+
+    if ! _check_tool_binary_exists "mistral"; then
+        utils_error "Vibe binary not found"
+        return $CHECK_EXIT_MISSING_DEP
+    fi
+
+    # Read MISTRAL_API_KEY from ~/.vibe/.env
+    local env_file="${home_dir}/.vibe/.env"
+    if [[ ! -f "$env_file" ]]; then
+        utils_error "Mistral env file not found: $env_file"
+        return $CHECK_EXIT_AUTH_FAIL
+    fi
+
+    local api_key
+    if [[ "$use_sudo" == "true" ]]; then
+        api_key=$(sudo -u "$target_user" bash -c "grep -E '^MISTRAL_API_KEY=' '$env_file' | cut -d= -f2-" 2>/dev/null)
+    else
+        api_key=$(grep -E '^MISTRAL_API_KEY=' "$env_file" | cut -d= -f2- 2>/dev/null)
+    fi
+
+    # Strip surrounding quotes if present
+    api_key="${api_key%\"}"
+    api_key="${api_key#\"}"
+    api_key="${api_key%\'}"
+    api_key="${api_key#\'}"
+
+    if [[ -z "$api_key" ]]; then
+        utils_error "MISTRAL_API_KEY not found in $env_file"
+        return $CHECK_EXIT_AUTH_FAIL
+    fi
+
+    utils_verbose "Testing Mistral API key via /v1/models endpoint"
+
+    output=$(_check_with_timeout 10 curl -s --max-time 10 \
+        -H "Authorization: Bearer ${api_key}" \
+        "https://api.mistral.ai/v1/models" 2>&1)
+    exit_code=$?
+
+    if [[ $exit_code -eq $CHECK_EXIT_TIMEOUT ]]; then
+        return $CHECK_EXIT_TIMEOUT
+    fi
+
+    if echo "$output" | grep -q '"id"'; then
+        return $CHECK_EXIT_SUCCESS
+    else
+        utils_verbose "Mistral API response: $output"
+        return $CHECK_EXIT_AUTH_FAIL
+    fi
+}
+
 # Check a single tool
 # Usage: check_single_tool <tool> <use_sudo> <target_user> <home_dir>
 # Returns: 0=success, 1=auth fail, 2=unknown tool, 3=timeout, 4=missing dep
@@ -431,7 +499,7 @@ check_single_tool() {
     # Validate tool name
     if ! tools_is_valid "$tool"; then
         utils_error "Unknown tool: $tool"
-        echo "Valid tools: claude codex gemini" >&2
+        echo "Valid tools: claude codex gemini mistral" >&2
         return $CHECK_EXIT_UNKNOWN_TOOL
     fi
 
@@ -476,6 +544,10 @@ check_single_tool() {
             check_tool_gemini "$use_sudo" "$target_user"
             exit_code=$?
             ;;
+        mistral)
+            check_tool_mistral "$use_sudo" "$target_user" "$home_dir"
+            exit_code=$?
+            ;;
     esac
 
     # Update cache and display result
@@ -507,7 +579,7 @@ check_all_tools() {
     local target_user="$2"
     local home_dir="$3"
 
-    local tools=("claude" "codex" "gemini")
+    local tools=("claude" "codex" "gemini" "mistral")
     local highest_exit=0
     local passed=0 failed=0 skipped=0 total=0
     local exit_code

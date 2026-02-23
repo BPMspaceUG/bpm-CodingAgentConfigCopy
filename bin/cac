@@ -41,7 +41,7 @@ show_help() {
 cac - Coding Agent Config CLI v${VERSION}
 
 Manages versioned ZIP-based configuration bundles for AI coding assistants
-(Claude Code, Codex CLI, Gemini CLI).
+(Claude Code, Codex CLI, Gemini CLI, Mistral Vibe).
 
 USAGE:
     cac <command> [options]
@@ -53,7 +53,7 @@ COMMANDS:
     list [--host HOST] [--user USER]  List available bundles
     check [TOOL] [--user USER]      Verify AI tool credentials work
     test [--user USER]              (Alias for check) Test API connectivity
-    env install [TOOL] [--user|--global]  Install AI tool environments
+    env install [TOOL] [--user|--global] [--tmux]  Install AI tool environments
     env update [TOOL] [--user|--global]   Update AI tool environments
     env status [--parseable] [--check-updates]  Show AI tool installation status
     skill install <URL> [--global] [--yes]  Install a skill library from Git
@@ -68,6 +68,7 @@ OPTIONS:
     --dry-run       Preview what would happen without making changes
     --skip-check    Skip credential verification before push
     --check-updates Check for latest versions (env status only)
+    --tmux          Set Claude Code teammateMode to "tmux" (env install only)
     --verbose       Enable verbose output for debugging
     --help, -h      Show this help message
     --version, -v   Show version information
@@ -369,7 +370,7 @@ cmd_pull_all() {
 
     # Find users with AI tool config directories or files
     local users_found=()
-    local tool_dirs=(".claude" ".codex" ".gemini")
+    local tool_dirs=(".claude" ".codex" ".gemini" ".vibe")
     local tool_files=(".claude.json")
 
     for user_home in /home/*; do
@@ -483,10 +484,10 @@ cmd_check() {
     local tool_arg=""
     local args=()
 
-    # Extract tool argument (first non-option argument)
+    # Extract tool argument (first non-option argument), resolve aliases
     for arg in "$@"; do
         if [[ "$arg" != --* && -z "$tool_arg" ]]; then
-            tool_arg="$arg"
+            tool_arg="$(_resolve_tool_alias "$arg")"
         else
             args+=("$arg")
         fi
@@ -535,15 +536,25 @@ cmd_env() {
     local subcommand="${1:-status}"
     shift || true
 
+    # Resolve tool aliases in arguments (e.g., "vibe" -> "mistral")
+    local resolved_args=()
+    for arg in "$@"; do
+        if [[ "$arg" != -* ]]; then
+            resolved_args+=("$(_resolve_tool_alias "$arg")")
+        else
+            resolved_args+=("$arg")
+        fi
+    done
+
     case "$subcommand" in
         install)
-            env_cmd_install "$@"
+            env_cmd_install "${resolved_args[@]+"${resolved_args[@]}"}"
             ;;
         update)
-            env_cmd_update "$@"
+            env_cmd_update "${resolved_args[@]+"${resolved_args[@]}"}"
             ;;
         status)
-            env_cmd_status "$@"
+            env_cmd_status "${resolved_args[@]+"${resolved_args[@]}"}"
             ;;
         --help|-h)
             cat <<EOF
@@ -553,7 +564,7 @@ USAGE:
     cac env <subcommand> [options]
 
 SUBCOMMANDS:
-    install [TOOL] [--user|--global] [--yes]  Install AI tool environments
+    install [TOOL] [--user|--global] [--yes] [--tmux]  Install AI tool environments
     update [TOOL] [--user|--global]           Update AI tool environments
     status [--parseable] [--check-updates]    Show installation status
 
@@ -561,6 +572,7 @@ TOOLS:
     claude            Claude Code CLI
     codex             OpenAI Codex CLI
     gemini            Google Gemini CLI
+    mistral (vibe)    Mistral Vibe CLI
     continuous-claude continuous-claude (optional)
 
 OPTIONS:
@@ -569,6 +581,7 @@ OPTIONS:
     --yes, -y         Skip confirmation prompts
     --parseable       Output status in tab-separated format
     --check-updates   Check for latest versions (env status only)
+    --tmux            Set Claude Code teammateMode to "tmux" (install only)
 
 EXAMPLES:
     cac env status                    Show status of all AI tools

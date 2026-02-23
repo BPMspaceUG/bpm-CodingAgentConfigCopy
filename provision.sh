@@ -7,7 +7,7 @@
 # Does NOT require curl, git, or any other tools pre-installed
 #
 # Steps:
-#   1. Install system dependencies (curl, zip, unzip, git)
+#   1. Install system dependencies (curl, zip, unzip, git, tmux)
 #   2. Install cac via pipe installer from GitHub (--global)
 #   3. cac env install --global --yes
 #   4. cac pull
@@ -78,7 +78,7 @@ echo ""
 # Step 1: Install system dependencies
 info "[Step 1/8] Installing system dependencies..."
 apt-get update -qq
-apt-get install -y curl zip unzip git
+apt-get install -y curl zip unzip git tmux
 success "[Step 1/8] Dependencies installed"
 
 # Step 2: Install cac via pipe installer from GitHub
@@ -115,11 +115,16 @@ info "[Step 7/8] Installing ICO skill library..."
 cac skill install "$ICO_SKILL" --global --yes || echo "[WARN] ICO skill install failed (continuing)"
 success "[Step 7/8] ICO skills done"
 
-# Step 8: Install Tailscale
+# Step 8: Install Tailscale via signed apt repository
 info "[Step 8/8] Installing Tailscale..."
-# Tailscale's official installer — unpinned by design (always latest stable)
+# Tailscale official apt repo — signed package, no curl|bash
 # See: https://tailscale.com/kb/1031/install-linux
-curl -fsSL https://tailscale.com/install.sh | sh || echo "[WARN] Tailscale install failed (continuing)"
+curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg \
+    | tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list \
+    | tee /etc/apt/sources.list.d/tailscale.list >/dev/null
+apt-get update -qq
+apt-get install -y tailscale || echo "[WARN] Tailscale install failed (continuing)"
 success "[Step 8/8] Tailscale done"
 
 echo ""

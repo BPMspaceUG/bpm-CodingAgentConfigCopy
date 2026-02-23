@@ -34,12 +34,14 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
         "codex|Codex CLI|command -v codex|codex --version|npm|no"
         "gemini|Gemini CLI|command -v gemini|gemini --version|npm|no"
         "continuous-claude|continuous-claude|command -v continuous-claude|continuous-claude --version|curl|yes"
+        "mistral|Mistral Vibe|command -v vibe|vibe --version|curl|no"
     )
 
     # Install URLs for curl-based tools
     declare -A _ENV_INSTALL_URLS=(
         [claude]="https://claude.ai/install.sh"
         [continuous-claude]="https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/main/install.sh"
+        [mistral]="https://mistral.ai/vibe/install.sh"
     )
 
     # npm package names
@@ -581,10 +583,17 @@ env_install_tool() {
     local tool="$1"
     local scope="${2:-user}"
     local auto_yes="false"
+    local tmux_flag="false"
 
-    if [[ "${3:-}" == "--yes" ]]; then
-        auto_yes="true"
-    fi
+    # Parse optional flags (--yes, --tmux) from remaining args
+    shift 2 || true
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes) auto_yes="true" ;;
+            --tmux) tmux_flag="true" ;;
+        esac
+        shift
+    done
 
     # Validate tool
     if ! env_validate_tool "$tool"; then
@@ -701,6 +710,12 @@ env_install_tool() {
         local version
         version=$(PATH="$check_path" env_get_version "$tool")
         utils_success "$display_name installed successfully (version: $version)"
+
+        # Post-install: configure Claude Code settings.json (Issues #39, #40)
+        if [[ "$tool" == "claude" ]]; then
+            _env_configure_claude_settings "$tmux_flag"
+        fi
+
         return $ENV_EXIT_SUCCESS
     else
         utils_error "Failed to install $display_name"
@@ -842,11 +857,12 @@ env_update_tool() {
 }
 
 # Install all core tools
-# Usage: env_install_all <scope> [--yes]
+# Usage: env_install_all <scope> [flags...]
 # Returns: 0 all succeeded, 1 partial, 2 all failed
 env_install_all() {
     local scope="${1:-user}"
-    local auto_yes="${2:-}"
+    shift || true
+    local -a extra_flags=("$@")
     local success=0
     local failed=0
     local skipped=0
@@ -864,7 +880,7 @@ env_install_all() {
             continue
         fi
 
-        if env_install_tool "$tool" "$scope" "$auto_yes"; then
+        if env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"; then
             ((success++)) || true
         else
             ((failed++)) || true
@@ -1199,7 +1215,9 @@ env_interactive_install() {
             return 0
             ;;
         A|ALL)
-            env_install_all "$scope" "--yes"
+            local -a all_flags=("--yes")
+            [[ "${ENV_PARSED_TMUX:-false}" == "true" ]] && all_flags+=("--tmux")
+            env_install_all "$scope" "${all_flags[@]}"
             return $?
             ;;
         *)
@@ -1225,8 +1243,10 @@ env_interactive_install() {
             local success=0
             local failed=0
 
+            local -a sel_flags=("--yes")
+            [[ "${ENV_PARSED_TMUX:-false}" == "true" ]] && sel_flags+=("--tmux")
             for tool in "${selected_tools[@]}"; do
-                if env_install_tool "$tool" "$scope" "--yes"; then
+                if env_install_tool "$tool" "$scope" "${sel_flags[@]}"; then
                     ((success++)) || true
                 else
                     ((failed++)) || true
@@ -1246,6 +1266,131 @@ env_interactive_install() {
 }
 
 # ============================================================================
+# Claude Code Settings Configuration (Issues #39, #40)
+# ============================================================================
+
+# Merge a JSON snippet into a settings.json file using deep merge
+# Usage: _env_write_claude_settings <json_snippet> [settings_file]
+# Requires: python3
+# Returns: 0 on success, 1 on failure
+#
+# Edge cases handled:
+#   - File does not exist: create with snippet, chmod 600
+#   - Invalid JSON in existing file: warn and skip (do NOT overwrite)
+#   - Non-object root in existing file: warn and recreate
+#   - Arrays in snippet: replace (not concatenate)
+#   - Atomicity: writes to temp file + mv (atomic rename)
+#   - python3 missing: warn and return 1
+_env_write_claude_settings() {
+    local snippet="$1"
+    local settings_file="${2:-${HOME}/.claude/settings.json}"
+    local settings_dir
+    settings_dir="$(dirname "$settings_file")"
+
+    # Require python3
+    if ! command -v python3 &>/dev/null; then
+        utils_warn "python3 not available — cannot write settings.json"
+        return 1
+    fi
+
+    mkdir -p "$settings_dir"
+
+    if [[ ! -f "$settings_file" ]]; then
+        # New file: write snippet atomically
+        local temp_new
+        temp_new=$(mktemp "${settings_dir}/settings.XXXXXX")
+        chmod 600 "$temp_new"
+        echo "$snippet" > "$temp_new"
+        mv "$temp_new" "$settings_file"
+        return 0
+    fi
+
+    # Merge using python3 with full edge-case handling
+    # Writes to temp file, then atomic mv
+    local temp_merge
+    temp_merge=$(mktemp "${settings_dir}/settings.XXXXXX")
+    chmod 600 "$temp_merge"
+
+    local py_exit=0
+    python3 -c "
+import json, sys, os
+
+settings_file = sys.argv[1]
+snippet_str = sys.argv[2]
+temp_file = sys.argv[3]
+
+# Parse snippet (must be valid)
+snippet = json.loads(snippet_str)
+
+# Read existing file
+try:
+    with open(settings_file) as f:
+        existing = json.load(f)
+except json.JSONDecodeError:
+    print('ERROR: Invalid JSON in existing settings.json — skipping merge', file=sys.stderr)
+    sys.exit(2)
+
+# Validate root is a dict
+if not isinstance(existing, dict):
+    print('WARNING: settings.json root is not an object — recreating', file=sys.stderr)
+    existing = {}
+
+# Deep merge: dicts merge recursively, everything else (including arrays) replaces
+def deep_merge(base, override):
+    for k, v in override.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            deep_merge(base[k], v)
+        else:
+            base[k] = v
+
+deep_merge(existing, snippet)
+
+with open(temp_file, 'w') as f:
+    json.dump(existing, f, indent=2)
+    f.write('\n')
+" "$settings_file" "$snippet" "$temp_merge" || py_exit=$?
+
+    if [[ $py_exit -ne 0 ]]; then
+        rm -f "$temp_merge"
+        if [[ $py_exit -eq 2 ]]; then
+            utils_warn "Invalid JSON in $settings_file — merge skipped to preserve file"
+        else
+            utils_warn "Failed to merge settings.json"
+        fi
+        return 1
+    fi
+
+    # Atomic rename
+    mv "$temp_merge" "$settings_file"
+    return 0
+}
+
+# Configure Claude Code settings.json after install
+# Always enables CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS (Issue #40)
+# Optionally sets teammateMode to "tmux" if --tmux flag and tmux binary present (Issue #39)
+# Usage: _env_configure_claude_settings <tmux_flag>
+_env_configure_claude_settings() {
+    local tmux_flag="${1:-false}"
+    local snippet='{"env":{"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS":"1"}}'
+
+    if [[ "$tmux_flag" == "true" ]]; then
+        if command -v tmux &>/dev/null; then
+            snippet='{"env":{"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS":"1"},"teammateMode":"tmux"}'
+        else
+            log_warn "tmux is not installed — skipping teammateMode configuration"
+            log_warn "Install with: sudo apt install tmux"
+        fi
+    fi
+
+    echo "Configuring Claude Code settings..."
+    if _env_write_claude_settings "$snippet"; then
+        utils_success "Claude Code settings.json updated"
+    else
+        utils_warn "Could not update Claude Code settings.json"
+    fi
+}
+
+# ============================================================================
 # Main Command Functions (called from bin/cac)
 # ============================================================================
 
@@ -1258,6 +1403,7 @@ _env_parse_scope_args() {
     ENV_PARSED_YES="false"
     ENV_PARSED_PARSEABLE="false"
     ENV_PARSED_CHECK_UPDATES="false"
+    ENV_PARSED_TMUX="false"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1297,6 +1443,10 @@ _env_parse_scope_args() {
                 ENV_PARSED_CHECK_UPDATES="true"
                 shift
                 ;;
+            --tmux)
+                ENV_PARSED_TMUX="true"
+                shift
+                ;;
             -*)
                 utils_error "Unknown option: $1"
                 return 1
@@ -1330,14 +1480,15 @@ env_cmd_install() {
     fi
 
     local scope="$ENV_PARSED_SCOPE"
-    local auto_yes=""
-    [[ "$ENV_PARSED_YES" == "true" ]] && auto_yes="--yes"
+    local -a extra_flags=()
+    [[ "$ENV_PARSED_YES" == "true" ]] && extra_flags+=("--yes")
+    [[ "$ENV_PARSED_TMUX" == "true" ]] && extra_flags+=("--tmux")
 
     # No tools specified
     if [[ ${#ENV_PARSED_TOOLS[@]} -eq 0 ]]; then
-        if [[ -n "$auto_yes" ]]; then
+        if [[ "${ENV_PARSED_YES}" == "true" ]]; then
             # --yes flag: skip interactive menu, install all core tools
-            env_install_all "$scope" "$auto_yes"
+            env_install_all "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"
             return $?
         elif [[ -t 0 ]]; then
             # Interactive terminal: show selection menu
@@ -1346,7 +1497,7 @@ env_cmd_install() {
         else
             # Non-interactive (piped): install all core tools
             echo "Non-interactive mode: installing all core tools"
-            env_install_all "$scope"
+            env_install_all "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"
             return $?
         fi
     fi
@@ -1356,7 +1507,7 @@ env_cmd_install() {
     local failed=0
 
     for tool in "${ENV_PARSED_TOOLS[@]}"; do
-        if env_install_tool "$tool" "$scope" "$auto_yes"; then
+        if env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"; then
             ((success++)) || true
         else
             ((failed++)) || true

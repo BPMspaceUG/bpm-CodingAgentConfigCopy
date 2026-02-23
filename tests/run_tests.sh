@@ -129,6 +129,14 @@ main() {
         echo ""
     fi
 
+    # Run env settings tests (Issues #39, #40)
+    if $run_all || [[ "$filter" == "env_settings" ]] || [[ "$filter" == "env" ]]; then
+        if ! run_test_suite "Environment Settings Tests" "test_env_settings.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run uninstall tests
     if $run_all || [[ "$filter" == "uninstall" ]]; then
         if ! run_test_suite "Uninstall Tests" "test_uninstall.sh"; then
