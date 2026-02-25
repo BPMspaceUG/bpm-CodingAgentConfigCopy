@@ -172,7 +172,7 @@ download_project() {
     chmod +x "${temp_dir}/bin/cac"
 
     # Download library modules
-    local libs=(config.sh security.sh tools.sh bundle.sh backend_local.sh backend_gokapi.sh utils.sh logging.sh check.sh env.sh skill.sh)
+    local libs=(config.sh security.sh tools.sh bundle.sh backend_local.sh backend_gokapi.sh utils.sh logging.sh check.sh env.sh skill.sh update.sh)
     for lib in "${libs[@]}"; do
         download_file "${base_url}/lib/${lib}" "${temp_dir}/lib/${lib}"
     done
@@ -252,6 +252,46 @@ update_cli_lib_path() {
     fi
 }
 
+# Stamp version into installed cac binary (bakes in the version at install time)
+# Uses git state of the SOURCE directory to determine version:
+#   dirty (uncommitted changes) → current date + "-dirty"
+#   draft (committed, not pushed) → commit date + "-draft"
+#   clean (committed + pushed) → commit date (no suffix)
+# Args: $1 = target file (installed copy), $2 = source directory (for git detection)
+stamp_version() {
+    local target="$1"
+    local src_dir="${2:-}"
+    local ver="" suffix=""
+    if [[ -n "$src_dir" ]] && git -C "$src_dir" rev-parse --git-dir &>/dev/null; then
+        if ! git -C "$src_dir" diff --quiet HEAD 2>/dev/null || ! git -C "$src_dir" diff --cached --quiet HEAD 2>/dev/null; then
+            ver=$(date '+%y%m%d-%H%M')
+            suffix="-dirty"
+        elif ! git -C "$src_dir" diff --quiet HEAD "@{upstream}" 2>/dev/null; then
+            ver=$(git -C "$src_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
+            suffix="-draft"
+        else
+            ver=$(git -C "$src_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
+        fi
+    fi
+    if [[ -n "$ver" ]]; then
+        if sed -i "0,/^VERSION=/{s/^VERSION=.*/VERSION=\"${ver}${suffix}\"/}" "$target" 2>/dev/null; then
+            : # GNU sed success
+        elif sed -i '' "s/^VERSION=\"dev\"/VERSION=\"${ver}${suffix}\"/" "$target" 2>/dev/null; then
+            : # BSD sed success (no 0,/addr/ support, use simple replace)
+        else
+            local temp_file
+            temp_file=$(mktemp)
+            if sed "s/^VERSION=\"dev\"/VERSION=\"${ver}${suffix}\"/" "$target" > "$temp_file" && \
+               mv "$temp_file" "$target"; then
+                : # Fallback success
+            else
+                rm -f "$temp_file" 2>/dev/null || true
+                warn "Failed to stamp version using sed"
+            fi
+        fi
+    fi
+}
+
 # Install shell completion files
 install_completions() {
     local temp_dir="$1"
@@ -309,6 +349,20 @@ install_files() {
     chmod 644 "${LIB_DIR}/"*
 
     update_cli_lib_path "${BIN_DIR}/cac" "${LIB_DIR}"
+
+    # Stamp version into installed binary (uses source dir git state)
+    stamp_version "${BIN_DIR}/cac" "${temp_dir}"
+
+    # Fallback: if VERSION is still "dev" (curl|bash with no git repo), stamp current date
+    if grep -q '^VERSION="dev"' "${BIN_DIR}/cac" 2>/dev/null; then
+        local fallback_ver
+        fallback_ver=$(date '+%y%m%d-%H%M')
+        if sed -i "0,/^VERSION=/{s/^VERSION=.*/VERSION=\"${fallback_ver}\"/}" "${BIN_DIR}/cac" 2>/dev/null; then
+            : # GNU sed
+        elif sed -i '' "s/^VERSION=\"dev\"/VERSION=\"${fallback_ver}\"/" "${BIN_DIR}/cac" 2>/dev/null; then
+            : # BSD sed
+        fi
+    fi
 
     success "Installed cac to ${BIN_DIR}/cac"
     success "Installed libraries to ${LIB_DIR}/"
@@ -656,10 +710,7 @@ do_install() {
     download_project "$branch" "$temp_dir"
     verify_checksums "$branch" "$temp_dir"
 
-    # Extract actual version from downloaded binary (YYMMDD-HHMMSS format)
-    local version
-    version=$(grep -m1 '^VERSION=' "${temp_dir}/bin/cac" 2>/dev/null | cut -d'"' -f2) || version="$branch"
-    info "Installing cac v${version}"
+    info "Installing cac from ${branch}..."
 
     # Install based on mode flag
     case "$INSTALL_MODE_FLAG" in
@@ -696,6 +747,10 @@ do_install() {
 
     # Setup PATH for user installation
     setup_path
+
+    # Extract stamped version from installed binary for display
+    local version
+    version=$(grep -m1 '^VERSION=' "${BIN_DIR}/cac" 2>/dev/null | cut -d'"' -f2) || version="unknown"
 
     echo ""
     echo "==================================="

@@ -90,6 +90,15 @@ _update_extract_version_from_file() {
     echo "$version"
 }
 
+# Strip -dirty or -draft suffix from version for comparison.
+# Usage: _update_strip_suffix "260225-1542-dirty" → "260225-1542"
+_update_strip_suffix() {
+    local version="$1"
+    version="${version%-dirty}"
+    version="${version%-draft}"
+    echo "$version"
+}
+
 # Get the version of the locally installed cac binary.
 # Usage: update_get_local_version
 # Returns: version string on stdout, 1 on failure
@@ -121,31 +130,36 @@ update_get_local_version() {
     echo "$version"
 }
 
-# Fetch the version of the latest cac from GitHub.
+# Fetch the version of the latest cac from GitHub using the commit date.
+# Uses the GitHub API to get the latest commit on main and extracts the
+# committer date, formatting it as YYMMDD-HHMM to match stamp_version().
 # Usage: update_get_remote_version
 # Returns: version string on stdout, 1 on failure
 update_get_remote_version() {
-    local url="${UPDATE_GITHUB_RAW_BASE}/bin/cac"
-    local remote_content
+    local api_url="${UPDATE_GITHUB_API_BASE:-https://api.github.com/repos/BPMspaceUG/bpm-CodingAgentConfigCopy}/commits/main"
+    local response
 
-    if ! remote_content=$(curl -fsSL --max-time 15 "$url" 2>/dev/null); then
-        utils_error "Failed to fetch remote version from $url"
+    if ! response=$(curl -fsSL --max-time 15 "$api_url" 2>/dev/null); then
+        utils_error "Failed to fetch remote version from GitHub API"
         return 1
     fi
 
-    local version_line
-    version_line=$(echo "$remote_content" | grep -m1 '^VERSION=' 2>/dev/null) || {
-        utils_error "Remote cac binary does not contain VERSION= line"
+    # Extract committer date from JSON response.
+    # The GitHub commits API returns "commit.committer.date" in ISO 8601 format:
+    #   "date": "2026-02-25T15:42:33Z"
+    # We grab the last "date" field (committer date, after author date).
+    local commit_date
+    commit_date=$(echo "$response" | grep '"date"' | tail -1 | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}' | head -1) || {
+        utils_error "Cannot parse commit date from GitHub API response"
         return 1
     }
 
-    # Strip VERSION= prefix and quotes
-    local version="${version_line#VERSION=}"
-    version="${version//\"/}"
-    version="${version//\'/}"
+    # Convert 2026-02-25T15:42 to 260225-1542
+    local version
+    version=$(echo "$commit_date" | sed 's/^20\([0-9][0-9]\)-\([0-9][0-9]\)-\([0-9][0-9]\)T\([0-9][0-9]\):\([0-9][0-9]\)/\1\2\3-\4\5/')
 
-    if [[ -z "$version" ]]; then
-        utils_error "Remote version is empty"
+    if [[ -z "$version" || "$version" == "$commit_date" ]]; then
+        utils_error "Failed to format remote version from commit date"
         return 1
     fi
 
@@ -157,6 +171,8 @@ update_get_remote_version() {
 # ============================================================================
 
 # Check if an update is available without installing.
+# Strips -dirty/-draft suffixes before comparing so that a local
+# "260225-1542-dirty" matches a remote "260225-1542" as up-to-date.
 # Usage: update_check
 # Returns: 0 if update available, 1 if already up to date, 2 on error
 update_check() {
@@ -170,10 +186,14 @@ update_check() {
         return 2
     fi
 
+    local local_clean remote_clean
+    local_clean=$(_update_strip_suffix "$local_version")
+    remote_clean=$(_update_strip_suffix "$remote_version")
+
     echo "Installed version: $local_version"
     echo "Available version: $remote_version"
 
-    if [[ "$local_version" == "$remote_version" ]]; then
+    if [[ "$local_clean" == "$remote_clean" ]]; then
         echo ""
         echo "Already up to date."
         return 1
@@ -219,7 +239,11 @@ update_self() {
         return 1
     fi
 
-    if [[ "$old_version" == "$remote_version" ]]; then
+    local old_clean remote_clean
+    old_clean=$(_update_strip_suffix "$old_version")
+    remote_clean=$(_update_strip_suffix "$remote_version")
+
+    if [[ "$old_clean" == "$remote_clean" ]]; then
         echo "Already up to date (version: $old_version)."
         return 0
     fi

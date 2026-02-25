@@ -4,7 +4,22 @@
 
 set -euo pipefail
 
-VERSION="260225-154233"
+# Version: YYMMDD-HHMM from HEAD commit
+#   clean + pushed   → 260218-1330         (release)
+#   clean + unpushed → 260218-1330-draft   (push pending)
+#   uncommitted      → 260218-1655-dirty   (uncommitted changes)
+# install.sh bakes the version string in at install time
+VERSION="dev"
+_tool_dir="$(dirname "${BASH_SOURCE[0]:-$0}")"
+if git -C "$_tool_dir" rev-parse --git-dir &>/dev/null; then
+    VERSION=$(git -C "$_tool_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "dev")
+    if ! git -C "$_tool_dir" diff --quiet HEAD 2>/dev/null || ! git -C "$_tool_dir" diff --cached --quiet HEAD 2>/dev/null; then
+        VERSION="${VERSION}-dirty"
+    elif ! git -C "$_tool_dir" diff --quiet HEAD "@{upstream}" 2>/dev/null; then
+        VERSION="${VERSION}-draft"
+    fi
+fi
+unset _tool_dir
 
 # Determine script location and library path
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

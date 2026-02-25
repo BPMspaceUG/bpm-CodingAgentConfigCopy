@@ -135,7 +135,7 @@ test_update_get_local_version() {
     mkdir -p "$mock_dir"
     cat > "${mock_dir}/cac" <<'MOCK'
 #!/usr/bin/env bash
-VERSION="260203-122236"
+VERSION="260203-1222"
 echo "cac v${VERSION}"
 MOCK
     chmod +x "${mock_dir}/cac"
@@ -150,7 +150,7 @@ MOCK
     PATH="$old_path"
 
     [[ $rc -eq 0 ]] || { echo "update_get_local_version failed" >&2; return 1; }
-    assert_equals "260203-122236" "$version" "extracted local version"
+    assert_equals "260203-1222" "$version" "extracted local version"
 }
 
 test_update_get_local_version_different_format() {
@@ -159,7 +159,7 @@ test_update_get_local_version_different_format() {
     mkdir -p "$mock_dir"
     cat > "${mock_dir}/cac" <<'MOCK'
 #!/usr/bin/env bash
-VERSION='260301-090000'
+VERSION='260301-0900'
 echo "cac v${VERSION}"
 MOCK
     chmod +x "${mock_dir}/cac"
@@ -174,7 +174,7 @@ MOCK
     PATH="$old_path"
 
     [[ $rc -eq 0 ]] || { echo "update_get_local_version failed" >&2; return 1; }
-    assert_equals "260301-090000" "$version" "extracted single-quoted version"
+    assert_equals "260301-0900" "$version" "extracted single-quoted version"
 }
 
 test_update_get_local_version_missing() {
@@ -209,13 +209,13 @@ test_update_extract_version_from_file() {
     local mock_file="${TEST_TMPDIR}/mock_cac"
     cat > "$mock_file" <<'EOF'
 #!/usr/bin/env bash
-VERSION="260203-122236"
+VERSION="260203-1222"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EOF
 
     local version
     version=$(_update_extract_version_from_file "$mock_file")
-    assert_equals "260203-122236" "$version" "version from file"
+    assert_equals "260203-1222" "$version" "version from file"
 }
 
 test_update_extract_version_from_file_missing() {
@@ -235,20 +235,30 @@ test_update_extract_version_from_file_no_version_line() {
 # ============================================================================
 
 test_update_get_remote_version_with_mock() {
-    # Set up a local HTTP mock by overriding the URL base to a local file
-    # We create a mock cac file and serve it via a file:// URL won't work with curl,
-    # so instead we override the function to use a local file.
-
-    local mock_remote="${TEST_TMPDIR}/remote_cac"
-    cat > "$mock_remote" <<'EOF'
-#!/usr/bin/env bash
-VERSION="260301-150000"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # Mock the GitHub API commits/main JSON response
+    local mock_json="${TEST_TMPDIR}/github_api_response.json"
+    cat > "$mock_json" <<'EOF'
+{
+  "sha": "abc123",
+  "commit": {
+    "author": {
+      "name": "Test User",
+      "email": "test@example.com",
+      "date": "2026-03-01T15:00:33Z"
+    },
+    "committer": {
+      "name": "Test User",
+      "email": "test@example.com",
+      "date": "2026-03-01T15:00:33Z"
+    },
+    "message": "test commit"
+  }
+}
 EOF
 
-    # Override curl to return our mock content
+    # Override curl to return our mock GitHub API JSON
     curl() {
-        cat "$mock_remote"
+        cat "$mock_json"
     }
 
     local version
@@ -258,7 +268,7 @@ EOF
     unset -f curl
 
     [[ $rc -eq 0 ]] || { echo "update_get_remote_version failed" >&2; return 1; }
-    assert_equals "260301-150000" "$version" "remote version from mock"
+    assert_equals "260301-1500" "$version" "remote version from mock GitHub API"
 }
 
 test_update_get_remote_version_failure() {
@@ -278,8 +288,8 @@ test_update_get_remote_version_failure() {
 
 test_update_check_up_to_date() {
     # Mock both local and remote to return same version
-    update_get_local_version() { echo "260203-122236"; }
-    update_get_remote_version() { echo "260203-122236"; }
+    update_get_local_version() { echo "260203-1222"; }
+    update_get_remote_version() { echo "260203-1222"; }
 
     local output
     output=$(update_check 2>/dev/null)
@@ -294,8 +304,8 @@ test_update_check_up_to_date() {
 
 test_update_check_update_available() {
     # Mock local and remote with different versions
-    update_get_local_version() { echo "260203-122236"; }
-    update_get_remote_version() { echo "260301-150000"; }
+    update_get_local_version() { echo "260203-1222"; }
+    update_get_remote_version() { echo "260301-1500"; }
 
     local output
     output=$(update_check 2>/dev/null)
@@ -305,14 +315,14 @@ test_update_check_update_available() {
 
     [[ $rc -eq 0 ]] || { echo "Expected rc=0 for update available, got $rc" >&2; return 1; }
     assert_contains "Update available" "$output" "update-available message"
-    assert_contains "260203-122236" "$output" "old version in output"
-    assert_contains "260301-150000" "$output" "new version in output"
+    assert_contains "260203-1222" "$output" "old version in output"
+    assert_contains "260301-1500" "$output" "new version in output"
 }
 
 test_update_check_output_format() {
     # Verify output contains both installed and available labels
-    update_get_local_version() { echo "260101-000000"; }
-    update_get_remote_version() { echo "260201-000000"; }
+    update_get_local_version() { echo "260101-0000"; }
+    update_get_remote_version() { echo "260201-0000"; }
 
     local output
     output=$(update_check 2>/dev/null)
@@ -336,8 +346,8 @@ test_update_global_requires_root() {
 
     # Mock scope detection to return "global"
     update_detect_scope() { echo "global"; }
-    update_get_local_version() { echo "260101-000000"; }
-    update_get_remote_version() { echo "260201-000000"; }
+    update_get_local_version() { echo "260101-0000"; }
+    update_get_remote_version() { echo "260201-0000"; }
 
     assert_fails "global update without root" update_self
 
@@ -348,8 +358,8 @@ test_update_user_scope_no_root_needed() {
     # Mock scope as user — should not require root
     # We mock the whole chain to avoid actually running install.sh
     update_detect_scope() { echo "user"; }
-    update_get_local_version() { echo "260203-122236"; }
-    update_get_remote_version() { echo "260203-122236"; }
+    update_get_local_version() { echo "260203-1222"; }
+    update_get_remote_version() { echo "260203-1222"; }
 
     # Same version = "already up to date" = returns 0
     local output
@@ -382,8 +392,8 @@ test_update_cmd_main_unknown_option() {
 
 test_update_cmd_main_check_flag() {
     # Mock the version functions
-    update_get_local_version() { echo "260203-122236"; }
-    update_get_remote_version() { echo "260203-122236"; }
+    update_get_local_version() { echo "260203-1222"; }
+    update_get_remote_version() { echo "260203-1222"; }
 
     local output
     output=$(update_cmd_main --check 2>/dev/null)
@@ -394,6 +404,173 @@ test_update_cmd_main_check_flag() {
     # --check with same version: up to date, but cmd_main converts rc=1 to rc=0
     [[ $rc -eq 0 ]] || { echo "Expected rc=0 from cmd_main --check, got $rc" >&2; return 1; }
     assert_contains "Already up to date" "$output" "check mode up-to-date"
+}
+
+# ============================================================================
+# Suffix Stripping Tests
+# ============================================================================
+
+test_update_strip_suffix_dirty() {
+    local result
+    result=$(_update_strip_suffix "260225-1542-dirty")
+    assert_equals "260225-1542" "$result" "strip -dirty suffix"
+}
+
+test_update_strip_suffix_draft() {
+    local result
+    result=$(_update_strip_suffix "260225-1542-draft")
+    assert_equals "260225-1542" "$result" "strip -draft suffix"
+}
+
+test_update_strip_suffix_clean() {
+    local result
+    result=$(_update_strip_suffix "260225-1542")
+    assert_equals "260225-1542" "$result" "clean version passthrough"
+}
+
+test_update_strip_suffix_dev() {
+    local result
+    result=$(_update_strip_suffix "dev")
+    assert_equals "dev" "$result" "dev passthrough"
+}
+
+# ============================================================================
+# Version Extraction with Live Detection Block
+# ============================================================================
+
+test_update_extract_version_from_file_with_live_block() {
+    # Simulate the installed binary where stamp_version has baked in a version
+    # but the live detection block still exists below as dead code
+    local mock_file="${TEST_TMPDIR}/mock_cac_live_block"
+    cat > "$mock_file" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+VERSION="260225-1542"
+_tool_dir="$(dirname "${BASH_SOURCE[0]:-$0}")"
+if git -C "$_tool_dir" rev-parse --git-dir &>/dev/null; then
+    VERSION=$(git -C "$_tool_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "dev")
+fi
+unset _tool_dir
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EOF
+
+    local version
+    version=$(_update_extract_version_from_file "$mock_file")
+    assert_equals "260225-1542" "$version" "version from file with live detection block"
+}
+
+test_update_extract_version_from_file_dev_default() {
+    # Simulate the source file in git repo where VERSION="dev" is the default
+    local mock_file="${TEST_TMPDIR}/mock_cac_dev"
+    cat > "$mock_file" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+VERSION="dev"
+_tool_dir="$(dirname "${BASH_SOURCE[0]:-$0}")"
+EOF
+
+    local version
+    version=$(_update_extract_version_from_file "$mock_file")
+    assert_equals "dev" "$version" "dev default from source file"
+}
+
+# ============================================================================
+# Version Comparison with Suffixes
+# ============================================================================
+
+test_update_check_dirty_matches_clean_remote() {
+    # Local has -dirty suffix, remote is clean — same base version = up to date
+    update_get_local_version() { echo "260225-1542-dirty"; }
+    update_get_remote_version() { echo "260225-1542"; }
+
+    local output
+    output=$(update_check 2>/dev/null)
+    local rc=$?
+
+    unset -f update_get_local_version update_get_remote_version
+
+    [[ $rc -eq 1 ]] || { echo "Expected rc=1 for up-to-date (dirty matches clean), got $rc" >&2; return 1; }
+    assert_contains "Already up to date" "$output" "dirty local matches clean remote"
+}
+
+test_update_check_draft_matches_clean_remote() {
+    # Local has -draft suffix, remote is clean — same base version = up to date
+    update_get_local_version() { echo "260225-1542-draft"; }
+    update_get_remote_version() { echo "260225-1542"; }
+
+    local output
+    output=$(update_check 2>/dev/null)
+    local rc=$?
+
+    unset -f update_get_local_version update_get_remote_version
+
+    [[ $rc -eq 1 ]] || { echo "Expected rc=1 for up-to-date (draft matches clean), got $rc" >&2; return 1; }
+    assert_contains "Already up to date" "$output" "draft local matches clean remote"
+}
+
+test_update_check_dirty_older_than_remote() {
+    # Local is older with -dirty, remote is newer — update available
+    update_get_local_version() { echo "260203-1222-dirty"; }
+    update_get_remote_version() { echo "260301-1500"; }
+
+    local output
+    output=$(update_check 2>/dev/null)
+    local rc=$?
+
+    unset -f update_get_local_version update_get_remote_version
+
+    [[ $rc -eq 0 ]] || { echo "Expected rc=0 for update available, got $rc" >&2; return 1; }
+    assert_contains "Update available" "$output" "dirty older than remote"
+}
+
+# ============================================================================
+# Local Version with Suffix
+# ============================================================================
+
+test_update_get_local_version_with_dirty() {
+    local mock_dir="${TEST_TMPDIR}/mock_bin_dirty"
+    mkdir -p "$mock_dir"
+    cat > "${mock_dir}/cac" <<'MOCK'
+#!/usr/bin/env bash
+VERSION="260225-1542-dirty"
+echo "cac v${VERSION}"
+MOCK
+    chmod +x "${mock_dir}/cac"
+
+    local old_path="$PATH"
+    PATH="${mock_dir}:$PATH"
+
+    local version
+    version=$(update_get_local_version 2>/dev/null)
+    local rc=$?
+
+    PATH="$old_path"
+
+    [[ $rc -eq 0 ]] || { echo "update_get_local_version failed" >&2; return 1; }
+    assert_equals "260225-1542-dirty" "$version" "local version with dirty suffix"
+}
+
+test_update_get_local_version_with_draft() {
+    local mock_dir="${TEST_TMPDIR}/mock_bin_draft"
+    mkdir -p "$mock_dir"
+    cat > "${mock_dir}/cac" <<'MOCK'
+#!/usr/bin/env bash
+VERSION="260225-1542-draft"
+echo "cac v${VERSION}"
+MOCK
+    chmod +x "${mock_dir}/cac"
+
+    local old_path="$PATH"
+    PATH="${mock_dir}:$PATH"
+
+    local version
+    version=$(update_get_local_version 2>/dev/null)
+    local rc=$?
+
+    PATH="$old_path"
+
+    [[ $rc -eq 0 ]] || { echo "update_get_local_version failed" >&2; return 1; }
+    assert_equals "260225-1542-draft" "$version" "local version with draft suffix"
 }
 
 # ============================================================================
@@ -432,10 +609,30 @@ main() {
     run_test "get_remote_version failure" test_update_get_remote_version_failure
     echo ""
 
+    echo "--- Suffix Stripping ---"
+    run_test "strip_suffix: -dirty" test_update_strip_suffix_dirty
+    run_test "strip_suffix: -draft" test_update_strip_suffix_draft
+    run_test "strip_suffix: clean passthrough" test_update_strip_suffix_clean
+    run_test "strip_suffix: dev passthrough" test_update_strip_suffix_dev
+    echo ""
+
+    echo "--- Version File Parsing (live block) ---"
+    run_test "extract_version: baked-in with live block" test_update_extract_version_from_file_with_live_block
+    run_test "extract_version: dev default" test_update_extract_version_from_file_dev_default
+    echo ""
+
+    echo "--- Local Version with Suffix ---"
+    run_test "get_local_version with -dirty" test_update_get_local_version_with_dirty
+    run_test "get_local_version with -draft" test_update_get_local_version_with_draft
+    echo ""
+
     echo "--- Version Comparison ---"
     run_test "check: already up to date" test_update_check_up_to_date
     run_test "check: update available" test_update_check_update_available
     run_test "check: output format" test_update_check_output_format
+    run_test "check: dirty matches clean remote" test_update_check_dirty_matches_clean_remote
+    run_test "check: draft matches clean remote" test_update_check_draft_matches_clean_remote
+    run_test "check: dirty older than remote" test_update_check_dirty_older_than_remote
     echo ""
 
     echo "--- Root Checks ---"
