@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+# lib/update.sh - Self-update logic for cac CLI
+#
+# Provides functions to detect installation scope, check for updates,
+# and re-run install.sh with the correct scope flags.
+#
+# Dependencies: logging.sh, security.sh (sourced via dependency chain)
+
+# Source dependencies
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/security.sh
+source "${SCRIPT_DIR}/security.sh"
+
+# GitHub raw URL base for fetching remote files
+UPDATE_GITHUB_RAW_BASE="${UPDATE_GITHUB_RAW_BASE:-https://raw.githubusercontent.com/BPMspaceUG/bpm-CodingAgentConfigCopy/main}"
+
+# ============================================================================
+# Scope Detection
+# ============================================================================
+
+# Detect the installation scope of the currently running cac binary.
+# Returns "global" if installed in /usr/local/bin/, "user" if in ~/.local/bin/.
+# Usage: update_detect_scope
+# Returns: scope string on stdout ("global" or "user"), 1 if cannot determine
+update_detect_scope() {
+    local cac_path
+
+    # Try to find the cac binary path
+    if cac_path=$(command -v cac 2>/dev/null); then
+        # Resolve symlinks to get the real path
+        if command -v realpath &>/dev/null; then
+            cac_path=$(realpath "$cac_path" 2>/dev/null) || true
+        fi
+    fi
+
+    # Fallback: check common locations directly
+    if [[ -z "${cac_path:-}" ]]; then
+        if [[ -x "/usr/local/bin/cac" ]]; then
+            cac_path="/usr/local/bin/cac"
+        elif [[ -x "${HOME}/.local/bin/cac" ]]; then
+            cac_path="${HOME}/.local/bin/cac"
+        fi
+    fi
+
+    if [[ -z "${cac_path:-}" ]]; then
+        utils_error "Cannot find cac binary in PATH or standard locations"
+        return 1
+    fi
+
+    if [[ "$cac_path" == /usr/local/bin/* ]]; then
+        echo "global"
+        return 0
+    fi
+
+    if [[ "$cac_path" == */.local/bin/* ]]; then
+        echo "user"
+        return 0
+    fi
+
+    utils_error "Cannot determine installation scope from path: $cac_path"
+    return 1
+}
+
+# ============================================================================
+# Version Extraction
+# ============================================================================
+
+# Extract version from a cac binary file by parsing the VERSION= line.
+# Usage: _update_extract_version <file_content_or_path>
+# Internal helper — operates on file content passed via stdin or a file path.
+_update_extract_version_from_file() {
+    local file="$1"
+
+    if [[ ! -f "$file" ]]; then
+        return 1
+    fi
+
+    local version_line
+    version_line=$(grep -m1 '^VERSION=' "$file" 2>/dev/null) || return 1
+
+    # Strip VERSION= prefix and quotes
+    local version="${version_line#VERSION=}"
+    version="${version//\"/}"
+    version="${version//\'/}"
+
+    if [[ -z "$version" ]]; then
+        return 1
+    fi
+
+    echo "$version"
+}
+
+# Get the version of the locally installed cac binary.
+# Usage: update_get_local_version
+# Returns: version string on stdout, 1 on failure
+update_get_local_version() {
+    local cac_path
+
+    cac_path=$(command -v cac 2>/dev/null) || true
+
+    # Fallback to common locations
+    if [[ -z "${cac_path:-}" ]]; then
+        if [[ -x "/usr/local/bin/cac" ]]; then
+            cac_path="/usr/local/bin/cac"
+        elif [[ -x "${HOME}/.local/bin/cac" ]]; then
+            cac_path="${HOME}/.local/bin/cac"
+        fi
+    fi
+
+    if [[ -z "${cac_path:-}" ]]; then
+        utils_error "Cannot find local cac binary"
+        return 1
+    fi
+
+    local version
+    if ! version=$(_update_extract_version_from_file "$cac_path"); then
+        utils_error "Cannot extract version from $cac_path"
+        return 1
+    fi
+
+    echo "$version"
+}
+
+# Fetch the version of the latest cac from GitHub.
+# Usage: update_get_remote_version
+# Returns: version string on stdout, 1 on failure
+update_get_remote_version() {
+    local url="${UPDATE_GITHUB_RAW_BASE}/bin/cac"
+    local remote_content
+
+    if ! remote_content=$(curl -fsSL --max-time 15 "$url" 2>/dev/null); then
+        utils_error "Failed to fetch remote version from $url"
+        return 1
+    fi
+
+    local version_line
+    version_line=$(echo "$remote_content" | grep -m1 '^VERSION=' 2>/dev/null) || {
+        utils_error "Remote cac binary does not contain VERSION= line"
+        return 1
+    }
+
+    # Strip VERSION= prefix and quotes
+    local version="${version_line#VERSION=}"
+    version="${version//\"/}"
+    version="${version//\'/}"
+
+    if [[ -z "$version" ]]; then
+        utils_error "Remote version is empty"
+        return 1
+    fi
+
+    echo "$version"
+}
+
+# ============================================================================
+# Update Check
+# ============================================================================
+
+# Check if an update is available without installing.
+# Usage: update_check
+# Returns: 0 if update available, 1 if already up to date, 2 on error
+update_check() {
+    local local_version remote_version
+
+    if ! local_version=$(update_get_local_version); then
+        return 2
+    fi
+
+    if ! remote_version=$(update_get_remote_version); then
+        return 2
+    fi
+
+    echo "Installed version: $local_version"
+    echo "Available version: $remote_version"
+
+    if [[ "$local_version" == "$remote_version" ]]; then
+        echo ""
+        echo "Already up to date."
+        return 1
+    fi
+
+    echo ""
+    echo "Update available: $local_version -> $remote_version"
+    return 0
+}
+
+# ============================================================================
+# Self-Update
+# ============================================================================
+
+# Download install.sh and re-run it with the correct scope.
+# Usage: update_self
+# Returns: 0 on success, 1 on error
+update_self() {
+    local scope
+
+    if ! scope=$(update_detect_scope); then
+        return 1
+    fi
+
+    utils_verbose "Detected installation scope: $scope"
+
+    # System-wide update requires root
+    if [[ "$scope" == "global" && "${EUID:-$(id -u)}" -ne 0 ]]; then
+        utils_error "Root privileges required for system-wide update"
+        echo "Run with: sudo cac update" >&2
+        return 1
+    fi
+
+    # Get current version
+    local old_version
+    if ! old_version=$(update_get_local_version); then
+        return 1
+    fi
+
+    # Get remote version and check if update is needed
+    local remote_version
+    if ! remote_version=$(update_get_remote_version); then
+        return 1
+    fi
+
+    if [[ "$old_version" == "$remote_version" ]]; then
+        echo "Already up to date (version: $old_version)."
+        return 0
+    fi
+
+    echo "Updating cac: $old_version -> $remote_version"
+    echo "Installation scope: $scope"
+    echo ""
+
+    # Create secure temp dir for install.sh download
+    local temp_dir=""
+    temp_dir=$(security_mktemp_dir "cac-update")
+    trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
+
+    local install_script="${temp_dir}/install.sh"
+    local install_url="${UPDATE_GITHUB_RAW_BASE}/install.sh"
+
+    utils_verbose "Downloading install.sh from $install_url"
+
+    if ! curl -fsSL --max-time 30 -o "$install_script" "$install_url"; then
+        utils_error "Failed to download install.sh"
+        return 1
+    fi
+
+    # Run install.sh with the correct scope flag (non-interactive pipe mode)
+    utils_verbose "Running: bash $install_script --$scope"
+
+    if ! bash "$install_script" "--${scope}"; then
+        utils_error "install.sh failed"
+        return 1
+    fi
+
+    # Get the new version after update
+    local new_version
+    new_version=$(update_get_local_version 2>/dev/null) || new_version="unknown"
+
+    echo ""
+    echo "Update complete: $old_version -> $new_version"
+}
+
+# ============================================================================
+# Command Entry Point
+# ============================================================================
+
+# Main entry point for the update command, called from bin/cac.
+# Usage: update_cmd_main [--check]
+update_cmd_main() {
+    local check_only=false
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --check)
+                check_only=true
+                shift
+                ;;
+            --help|-h)
+                cat <<EOF
+cac update - Self-update the cac CLI
+
+USAGE:
+    cac update [--check]
+
+OPTIONS:
+    --check     Show available version without installing
+
+DESCRIPTION:
+    Downloads the latest install.sh from GitHub and re-runs it
+    with the same scope (--user or --global) as the current install.
+
+    System-wide updates require root privileges.
+
+EXAMPLES:
+    cac update              Update cac to the latest version
+    cac update --check      Check if an update is available
+    sudo cac update         Update system-wide installation
+
+EOF
+                return 0
+                ;;
+            *)
+                utils_error "Unknown option: $1"
+                echo "Run 'cac update --help' for usage information." >&2
+                return 1
+                ;;
+        esac
+    done
+
+    if $check_only; then
+        update_check
+        # update_check returns 1 for "up to date" which is not an error
+        local rc=$?
+        if [[ $rc -eq 2 ]]; then
+            return 1
+        fi
+        return 0
+    fi
+
+    update_self
+}

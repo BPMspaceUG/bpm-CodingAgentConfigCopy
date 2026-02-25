@@ -43,13 +43,15 @@ bpm-CodingAgentConfigCopy/
 │   ├── logging.sh               # Logging utilities (info, warn, error, verbose)
 │   ├── security.sh              # Permission checks, zip-slip protection
 │   ├── tools.sh                 # Tool-specific file mappings
+│   ├── update.sh                # Self-update logic (scope detection, version check)
 │   └── utils.sh                 # Shared utilities (JSON parsing, retry, filters)
 ├── tests/
 │   ├── run_tests.sh             # Test runner
 │   ├── test_bundle.sh           # Bundle tests
 │   ├── test_security.sh         # Security validation tests
 │   ├── test_integration.sh      # End-to-end tests
-│   └── test_env_settings.sh     # Claude Code settings.json merge tests
+│   ├── test_env_settings.sh     # Claude Code settings.json merge tests
+│   └── test_update.sh           # Self-update module tests
 ├── install.sh                   # Bootstrap installer
 ├── uninstall.sh                 # Clean removal script
 ├── cpaiagentconfig.sh           # Legacy single-host copy script
@@ -64,11 +66,12 @@ bpm-CodingAgentConfigCopy/
 | Command | Description |
 |---------|-------------|
 | `cac push [--user USER] [--skip-check]` | Create ZIP bundle from user configs and upload to backend |
-| `cac pull [BUNDLE_ID] [--host HOST] [--user USER]` | Download and apply bundle (globally newest, filtered, or specific) |
+| `cac pull [BUNDLE_ID] [--tool TOOL] [--user USER]` | Download and apply bundle (globally newest, filtered, or specific) |
 | `cac get` | Silent alias for `cac pull` (backward compatibility) |
-| `cac list [--host HOST] [--user USER]` | List available bundles with optional filtering |
+| `cac list [--tool TOOL] [--user USER]` | List available bundles with optional filtering |
 | `cac check [TOOL] [--user USER]` | Verify AI tool credentials work (real API calls) |
 | `cac test [--user USER]` | Alias for check (backward compatibility) |
+| `cac update [--check]` | Self-update cac to the latest version |
 | `cac env status [--parseable]` | Show AI tool installation status |
 | `cac env install [TOOL] [--global] [--yes] [--tmux]` | Install AI tool environments |
 | `cac env update [TOOL]` | Update installed AI tools |
@@ -84,6 +87,7 @@ bpm-CodingAgentConfigCopy/
 - **check.sh**: Credential verification via real API calls; 5-minute cache, 10-second timeout per provider
 - **env.sh**: AI tool environment management; install/update/status for Claude, Codex, Gemini, Mistral Vibe, continuous-claude; `--tmux` flag sets `teammateMode` in settings.json
 - **logging.sh**: Structured logging (info, warn, error, verbose, spinner)
+- **update.sh**: Self-update logic; detects install scope (user/global), compares local vs remote version, downloads and re-runs install.sh
 - **utils.sh**: Shared utilities (JSON field extraction, retry with backoff, filter parsing, command context)
 
 ### Bundle Naming Convention
@@ -162,8 +166,8 @@ shellcheck bin/cac lib/*.sh install.sh uninstall.sh tests/*.sh
 **backend_local.sh / backend_gokapi.sh:**
 - `backend_*_upload(bundle_file)` - Upload bundle
 - `backend_*_download(bundle_id, output_file)` - Download bundle
-- `backend_*_list([--host HOST] [--user USER])` - List bundles
-- `backend_*_get_newest([--host HOST] [--user USER])` - Get newest matching
+- `backend_*_list([--tool TOOL] [--user USER])` - List bundles
+- `backend_*_get_newest([--tool TOOL] [--user USER])` - Get newest matching
 
 **check.sh:**
 - `check_single_tool(tool, user)` - Verify one tool's credentials with caching

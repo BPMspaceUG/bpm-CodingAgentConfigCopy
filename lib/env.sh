@@ -605,12 +605,14 @@ env_install_tool() {
     local display_name
     display_name=$(env_get_display_name "$tool")
 
-    # Check if already installed
+    # Check if already installed — if so, attempt update (Issue #49)
     if env_is_installed "$tool"; then
         local version
         version=$(env_get_version "$tool")
-        echo "$display_name is already installed (version: $version)"
-        echo "Use 'cac env update $tool' to update."
+        echo "$display_name already installed (version: $version) — updating..."
+        if ! env_update_tool "$tool" "$scope"; then
+            utils_warn "Update failed, but $display_name is still installed (version: $version)"
+        fi
         return $ENV_EXIT_SUCCESS
     fi
 
@@ -864,38 +866,38 @@ env_install_all() {
     shift || true
     local -a extra_flags=("$@")
     local success=0
+    local updated=0
     local failed=0
-    local skipped=0
 
     echo "Installing all core AI tools..."
     echo ""
 
     while IFS= read -r tool; do
+        # Issue #49: installed tools get updated via env_install_tool
         if env_is_installed "$tool"; then
-            local display_name version
-            display_name=$(env_get_display_name "$tool")
-            version=$(env_get_version "$tool")
-            echo "Skipping $display_name (already installed: $version)"
-            ((skipped++)) || true
-            continue
-        fi
-
-        if env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"; then
-            ((success++)) || true
+            if env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"; then
+                ((updated++)) || true
+            else
+                ((failed++)) || true
+            fi
         else
-            ((failed++)) || true
+            if env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"; then
+                ((success++)) || true
+            else
+                ((failed++)) || true
+            fi
         fi
         echo ""
     done < <(env_get_core_tools)
 
     echo "=== Installation Summary ==="
     echo "Installed: $success"
-    echo "Skipped (already installed): $skipped"
+    echo "Updated: $updated"
     echo "Failed: $failed"
 
     if [[ $failed -eq 0 ]]; then
         return $ENV_EXIT_SUCCESS
-    elif [[ $success -gt 0 ]]; then
+    elif [[ $((success + updated)) -gt 0 ]]; then
         return $ENV_EXIT_PARTIAL
     else
         return $ENV_EXIT_ALL_FAILED

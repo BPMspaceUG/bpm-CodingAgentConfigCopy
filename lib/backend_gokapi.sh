@@ -293,11 +293,12 @@ backend_gokapi_download() {
 }
 
 # List bundles in Gokapi
-# Usage: backend_gokapi_list [--host HOST] [--user USER]
+# Issue #41/#50: --host removed, --tool added for per-service bundle filtering
+# Usage: backend_gokapi_list [--tool TOOL] [--user USER]
 backend_gokapi_list() {
     # Parse filter arguments
     utils_parse_filter_args "$@"
-    local filter_host="$FILTER_HOST"
+    local filter_tool="$FILTER_TOOL"
     local filter_user="$FILTER_USER"
 
     if ! _gokapi_validate_config; then
@@ -322,7 +323,7 @@ backend_gokapi_list() {
         [[ -z "$name" ]] && continue
 
         local metadata
-        if metadata=$(utils_parse_bundle_metadata "$name" "$filter_host" "$filter_user"); then
+        if metadata=$(utils_parse_bundle_metadata "$name" "$filter_tool" "$filter_user"); then
             entries+=("${metadata}|${id}")
             ((found++)) || true  # Prevent errexit when incrementing from 0
         fi
@@ -336,10 +337,10 @@ backend_gokapi_list() {
     # Sort by timestamp (newest first) and print
     utils_print_bundle_list_header
 
-    # Sort entries by timestamp (field 4)
+    # Sort entries by timestamp (field 5, since metadata now includes tool)
     # shellcheck disable=SC2034  # id is intentionally unused
-    printf '%s\n' "${entries[@]}" | sort -t'|' -k4 -r | while IFS='|' read -r name host user timestamp id; do
-        utils_print_bundle_list_entry "$name" "$host" "$user" "$timestamp"
+    printf '%s\n' "${entries[@]}" | sort -t'|' -k5 -r | while IFS='|' read -r name host user tool timestamp id; do
+        utils_print_bundle_list_entry "$name" "$host" "$user" "$tool" "$timestamp"
     done
 
     utils_print_bundle_list_footer "$found"
@@ -347,12 +348,13 @@ backend_gokapi_list() {
 }
 
 # Get the newest bundle matching criteria
-# Usage: backend_gokapi_get_newest [--host HOST] [--user USER]
+# Issue #41/#50: --host removed, --tool added for per-service bundle filtering
+# Usage: backend_gokapi_get_newest [--tool TOOL] [--user USER]
 # Returns the filename of the newest matching bundle
 backend_gokapi_get_newest() {
     # Parse filter arguments
     utils_parse_filter_args "$@"
-    local filter_host="$FILTER_HOST"
+    local filter_tool="$FILTER_TOOL"
     local filter_user="$FILTER_USER"
 
     if ! _gokapi_validate_config; then
@@ -371,18 +373,18 @@ backend_gokapi_get_newest() {
     filtered_entries=$(
         while IFS='|' read -r name id; do
             [[ -z "$name" ]] && continue
-            utils_parse_bundle_metadata "$name" "$filter_host" "$filter_user" || true
+            utils_parse_bundle_metadata "$name" "$filter_tool" "$filter_user" || true
         done < <(utils_gokapi_extract_names "$GOKAPI_FILE_LIST")
     )
 
     if [[ -z "$filtered_entries" ]]; then
-        utils_error_no_bundle_found "$filter_host" "$filter_user" "on server"
+        utils_error_no_bundle_found "$filter_tool" "$filter_user" "on server"
         return 1
     fi
 
     local newest_name
     if ! newest_name=$(echo "$filtered_entries" | utils_find_newest_bundle); then
-        utils_error_no_bundle_found "$filter_host" "$filter_user" "on server"
+        utils_error_no_bundle_found "$filter_tool" "$filter_user" "on server"
         return 1
     fi
 

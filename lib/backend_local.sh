@@ -134,11 +134,12 @@ backend_local_download() {
 }
 
 # List bundles in local storage
-# Usage: backend_local_list [--host HOST] [--user USER]
+# Issue #41/#50: --host removed, --tool added for per-service bundle filtering
+# Usage: backend_local_list [--tool TOOL] [--user USER]
 backend_local_list() {
     # Parse filter arguments
     utils_parse_filter_args "$@"
-    local filter_host="$FILTER_HOST"
+    local filter_tool="$FILTER_TOOL"
     local filter_user="$FILTER_USER"
 
     if ! _local_validate_storage; then
@@ -159,19 +160,19 @@ backend_local_list() {
         filename=$(basename "$zip_file")
 
         local metadata
-        if ! metadata=$(utils_parse_bundle_metadata "$filename" "$filter_host" "$filter_user"); then
+        if ! metadata=$(utils_parse_bundle_metadata "$filename" "$filter_tool" "$filter_user"); then
             continue  # Skip files that don't match or are filtered out
         fi
 
-        # metadata format: "name|host|user|timestamp"
-        local host user timestamp
-        IFS='|' read -r _ host user timestamp <<< "$metadata"
+        # metadata format: "name|host|user|tool|timestamp"
+        local host user tool timestamp
+        IFS='|' read -r _ host user tool timestamp <<< "$metadata"
 
         if [[ "$found" -eq 0 ]]; then
             utils_print_bundle_list_header
         fi
 
-        utils_print_bundle_list_entry "$filename" "$host" "$user" "$timestamp"
+        utils_print_bundle_list_entry "$filename" "$host" "$user" "$tool" "$timestamp"
         ((found++)) || true  # Prevent errexit when incrementing from 0
 
     done < <(_local_list_bundle_files "$storage_dir")
@@ -186,12 +187,13 @@ backend_local_list() {
 }
 
 # Get the newest bundle matching criteria
-# Usage: backend_local_get_newest [--host HOST] [--user USER]
+# Issue #41/#50: --host removed, --tool added for per-service bundle filtering
+# Usage: backend_local_get_newest [--tool TOOL] [--user USER]
 # Returns the filename of the newest matching bundle
 backend_local_get_newest() {
     # Parse filter arguments
     utils_parse_filter_args "$@"
-    local filter_host="$FILTER_HOST"
+    local filter_tool="$FILTER_TOOL"
     local filter_user="$FILTER_USER"
 
     if ! _local_validate_storage; then
@@ -207,7 +209,7 @@ backend_local_get_newest() {
         filename=$(basename "$zip_file")
 
         # Use shared utility for parsing and filtering
-        if utils_parse_bundle_metadata "$filename" "$filter_host" "$filter_user" >/dev/null; then
+        if utils_parse_bundle_metadata "$filename" "$filter_tool" "$filter_user" >/dev/null; then
             # Return the first match (newest due to sort)
             echo "$filename"
             return 0
@@ -215,7 +217,7 @@ backend_local_get_newest() {
 
     done < <(_local_list_bundle_files "$storage_dir")
 
-    utils_error_no_bundle_found "$filter_host" "$filter_user" "in storage"
+    utils_error_no_bundle_found "$filter_tool" "$filter_user" "in storage"
     return 1
 }
 

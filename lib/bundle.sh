@@ -20,15 +20,17 @@ if [[ -z "${BUNDLE_NAME_PREFIX:-}" ]]; then
 fi
 
 # Generate bundle filename following naming convention:
-# ${BUNDLE_NAME_PREFIX}_<HOST>_<USER>_<YYMMDD-HHMMSS>.zip
-# Note: Hostnames and usernames must not contain underscores, as underscores
-#       are used as field delimiters in the bundle naming convention.
-# Returns: 0 on success, 1 if hostname or username contains underscores
+# Issue #41: New format: ${BUNDLE_NAME_PREFIX}_<HOST>_<USER>_<TOOL>_<YYMMDD-HHMMSS>.zip
+# Note: Hostnames, usernames, and tool names must not contain underscores,
+#       as underscores are used as field delimiters in the bundle naming convention.
+# Usage: bundle_generate_filename [user] [tool]
+# Returns: 0 on success, 1 if hostname, username, or tool contains underscores
 bundle_generate_filename() {
-    local host user timestamp
+    local host user tool timestamp
 
     host=$(hostname -s)
     user="${1:-$USER}"
+    tool="${2:-all}"
 
     # Validate hostname doesn't contain underscores (field delimiter)
     if [[ "$host" == *_* ]]; then
@@ -42,25 +44,40 @@ bundle_generate_filename() {
         return 1
     fi
 
+    # Validate tool name doesn't contain underscores (field delimiter)
+    if [[ "$tool" == *_* ]]; then
+        utils_error "Tool name '$tool' contains underscores, which conflicts with bundle naming convention"
+        return 1
+    fi
+
     timestamp=$(date +%y%m%d-%H%M%S)
 
-    echo "${BUNDLE_NAME_PREFIX}_${host}_${user}_${timestamp}.zip"
+    echo "${BUNDLE_NAME_PREFIX}_${host}_${user}_${tool}_${timestamp}.zip"
 }
 
 # Parse bundle filename to extract metadata
-# Returns: host user timestamp (space-separated)
-# Note: Hostnames and usernames must not contain underscores, as the
+# Supports both old and new formats for backward compatibility:
+#   Old (4-segment): ${BUNDLE_NAME_PREFIX}_HOST_USER_YYMMDD-HHMMSS  -> tool defaults to "all"
+#   New (5-segment): ${BUNDLE_NAME_PREFIX}_HOST_USER_TOOL_YYMMDD-HHMMSS
+# Returns: host user tool timestamp (space-separated)
+# Note: Hostnames, usernames, and tool names must not contain underscores, as the
 #       bundle naming convention uses underscores as field delimiters.
 bundle_parse_filename() {
     local filename="$1"
-    local basename
+    local bn
 
     # Strip path and .zip extension
-    basename=$(basename "$filename" .zip)
+    bn=$(basename "$filename" .zip)
 
-    # Expected format: ${BUNDLE_NAME_PREFIX}_HOST_USER_YYMMDD-HHMMSS
-    if [[ "$basename" =~ ^${BUNDLE_NAME_PREFIX}_([^_]+)_([^_]+)_([0-9]{6}-[0-9]{6})$ ]]; then
-        echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
+    # Try new 5-segment format first: PREFIX_HOST_USER_TOOL_YYMMDD-HHMMSS
+    if [[ "$bn" =~ ^${BUNDLE_NAME_PREFIX}_([^_]+)_([^_]+)_([^_]+)_([0-9]{6}-[0-9]{6})$ ]]; then
+        echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]} ${BASH_REMATCH[4]}"
+        return 0
+    fi
+
+    # Fall back to old 4-segment format: PREFIX_HOST_USER_YYMMDD-HHMMSS (tool="all")
+    if [[ "$bn" =~ ^${BUNDLE_NAME_PREFIX}_([^_]+)_([^_]+)_([0-9]{6}-[0-9]{6})$ ]]; then
+        echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]} all ${BASH_REMATCH[3]}"
         return 0
     fi
 
@@ -69,7 +86,7 @@ bundle_parse_filename() {
 
 # Get specific field from bundle filename by field number
 # Usage: _bundle_get_field <filename> <field_num>
-# Fields: 1=host, 2=user, 3=timestamp
+# Fields: 1=host, 2=user, 3=tool, 4=timestamp
 _bundle_get_field() {
     local filename="$1"
     local field_num="$2"
@@ -81,7 +98,8 @@ _bundle_get_field() {
 
 bundle_get_host() { _bundle_get_field "$1" 1; }
 bundle_get_user() { _bundle_get_field "$1" 2; }
-bundle_get_timestamp() { _bundle_get_field "$1" 3; }
+bundle_get_tool() { _bundle_get_field "$1" 3; }
+bundle_get_timestamp() { _bundle_get_field "$1" 4; }
 
 # Create a bundle ZIP from user's configuration files
 # Usage: bundle_create <home_dir> <output_file> [tool]

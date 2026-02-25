@@ -338,9 +338,9 @@ test_local_backend_push_and_list() {
     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
     config_load 2>/dev/null
 
-    # Create a bundle
+    # Issue #41: bundle_generate_filename now requires tool parameter
     local bundle_name
-    bundle_name=$(bundle_generate_filename "testuser")
+    bundle_name=$(bundle_generate_filename "testuser" "all")
     local bundle_path="${TEST_TMPDIR}/${bundle_name}"
 
     assert_success "bundle_create" bundle_create "$TEST_HOME" "$bundle_path" "all" || { unset CAC_CONFIG_DIR; return 1; }
@@ -364,9 +364,9 @@ test_local_backend_download() {
     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
     config_load 2>/dev/null
 
-    # Create and upload a bundle
+    # Issue #41: bundle_generate_filename now requires tool parameter
     local bundle_name
-    bundle_name=$(bundle_generate_filename "dltest")
+    bundle_name=$(bundle_generate_filename "dltest" "all")
     local bundle_path="${TEST_TMPDIR}/${bundle_name}"
 
     bundle_create "$TEST_HOME" "$bundle_path" "all" >/dev/null 2>&1
@@ -392,7 +392,7 @@ test_local_backend_get_newest() {
     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
     config_load 2>/dev/null
 
-    # Create multiple bundles with different timestamps
+    # Create multiple bundles with different timestamps (new format with tool)
     local bundle1="${TEST_TMPDIR}/bundle1.zip"
     local bundle2="${TEST_TMPDIR}/bundle2.zip"
 
@@ -400,22 +400,23 @@ test_local_backend_get_newest() {
     sleep 1  # Ensure different timestamp
     bundle_create "$TEST_HOME" "$bundle2" "all" >/dev/null 2>&1
 
-    # Rename to have specific timestamps for predictable ordering
+    # Rename to have specific timestamps for predictable ordering (new 5-segment format)
     local host
     host=$(hostname -s)
-    cp "$bundle1" "${TEST_STORAGE}/CodingAgentConfig_${host}_newestuser_250101-100000.zip"
-    cp "$bundle2" "${TEST_STORAGE}/CodingAgentConfig_${host}_newestuser_250101-120000.zip"
+    cp "$bundle1" "${TEST_STORAGE}/CodingAgentConfig_${host}_newestuser_all_250101-100000.zip"
+    cp "$bundle2" "${TEST_STORAGE}/CodingAgentConfig_${host}_newestuser_all_250101-120000.zip"
 
-    # Get newest
+    # Get newest (Issue #50: no --host filter, use --user)
     local newest
-    newest=$(backend_local_get_newest --host "$host" --user "newestuser") || { echo "backend_local_get_newest failed" >&2; unset CAC_CONFIG_DIR; return 1; }
+    newest=$(backend_local_get_newest --user "newestuser") || { echo "backend_local_get_newest failed" >&2; unset CAC_CONFIG_DIR; return 1; }
 
     # Should be the one with later timestamp
     assert_contains "120000" "$newest" "newest bundle timestamp" || { unset CAC_CONFIG_DIR; return 1; }
     unset CAC_CONFIG_DIR
 }
 
-test_local_backend_filter_by_host() {
+test_local_backend_filter_by_tool() {
+    # Issue #41: Filter bundles by --tool instead of --host
     source "${PROJECT_ROOT}/lib/config.sh"
     source "${PROJECT_ROOT}/lib/tools.sh"
     source "${PROJECT_ROOT}/lib/security.sh"
@@ -425,20 +426,24 @@ test_local_backend_filter_by_host() {
     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
     config_load 2>/dev/null
 
-    # Create bundles for different hosts
-    local bundle="${TEST_TMPDIR}/host_test.zip"
+    # Create bundles for different tools (new 5-segment format)
+    local bundle="${TEST_TMPDIR}/tool_filter_test.zip"
     bundle_create "$TEST_HOME" "$bundle" "all" >/dev/null 2>&1
 
-    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_host-a_alice_250101-100000.zip"
-    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_host-b_bob_250101-100000.zip"
+    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_myhost_alice_claude_250101-100000.zip"
+    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_myhost_alice_codex_250101-100000.zip"
 
-    # List with host filter
+    # List with tool filter
     local list_output
-    list_output=$(backend_local_list --host "host-a" 2>&1)
+    list_output=$(backend_local_list --tool "claude" 2>&1)
 
-    assert_contains "host-a" "$list_output" "filtered list" || { unset CAC_CONFIG_DIR; return 1; }
-    # Ensure host-b is NOT in output
-    [[ "$list_output" != *"host-b"* ]] || { echo "Host filter should exclude host-b" >&2; unset CAC_CONFIG_DIR; return 1; }
+    assert_contains "claude" "$list_output" "tool-filtered list" || { unset CAC_CONFIG_DIR; return 1; }
+    # Ensure codex is NOT in output (check for the bundle name pattern, not general text)
+    if echo "$list_output" | grep -q "alice_codex_"; then
+        echo "Tool filter should exclude codex bundles" >&2
+        unset CAC_CONFIG_DIR
+        return 1
+    fi
     unset CAC_CONFIG_DIR
 }
 
@@ -452,12 +457,12 @@ test_local_backend_filter_by_user() {
     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
     config_load 2>/dev/null
 
-    # Create bundles for different users
+    # Create bundles for different users (new 5-segment format)
     local bundle="${TEST_TMPDIR}/user_test.zip"
     bundle_create "$TEST_HOME" "$bundle" "all" >/dev/null 2>&1
 
-    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_myhost_charlie_250101-100000.zip"
-    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_myhost_david_250101-100000.zip"
+    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_myhost_charlie_all_250101-100000.zip"
+    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_myhost_david_all_250101-100000.zip"
 
     # List with user filter
     local list_output
@@ -473,7 +478,7 @@ test_local_backend_filter_by_user() {
 # Issue #19: get_newest Global vs Filtered Behavior
 # ============================================================================
 
-# Helper: set up a clean storage with bundles from different hosts/users
+# Helper: set up a clean storage with bundles from different hosts/users/tools
 _setup_issue19_storage() {
     source "${PROJECT_ROOT}/lib/config.sh"
     source "${PROJECT_ROOT}/lib/tools.sh"
@@ -488,13 +493,14 @@ _setup_issue19_storage() {
     local base_bundle="${TEST_TMPDIR}/issue19_base.zip"
     bundle_create "$TEST_HOME" "$base_bundle" "all" >/dev/null 2>&1
 
-    # Place bundles from different hosts/users with known timestamps
-    # Oldest: rob@host-a (250101-100000)
-    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-a_rob_250101-100000.zip"
-    # Middle: tim@host-b (250102-100000)
-    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-b_tim_250102-100000.zip"
-    # Newest: rob@host-b (250103-100000)
-    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-b_rob_250103-100000.zip"
+    # Place bundles from different hosts/users/tools with known timestamps
+    # Issue #41: Use new 5-segment naming format
+    # Oldest: rob@host-a, claude (250101-100000)
+    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-a_rob_claude_250101-100000.zip"
+    # Middle: tim@host-b, all (250102-100000)
+    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-b_tim_all_250102-100000.zip"
+    # Newest: rob@host-b, codex (250103-100000)
+    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-b_rob_codex_250103-100000.zip"
 }
 
 test_get_newest_no_filters_returns_global_newest() {
@@ -504,15 +510,15 @@ test_get_newest_no_filters_returns_global_newest() {
     local newest
     newest=$(backend_local_get_newest) || { echo "get_newest failed" >&2; unset CAC_CONFIG_DIR; return 1; }
 
-    # Newest is rob@host-b (250103-100000)
-    assert_contains "host-b_rob_250103" "$newest" "global newest bundle" || { unset CAC_CONFIG_DIR; return 1; }
+    # Newest is rob@host-b codex (250103-100000)
+    assert_contains "host-b_rob_codex_250103" "$newest" "global newest bundle" || { unset CAC_CONFIG_DIR; return 1; }
     unset CAC_CONFIG_DIR
 }
 
 test_get_newest_user_filter_only() {
     _setup_issue19_storage
 
-    # --user tim should return tim's bundle regardless of host
+    # --user tim should return tim's bundle regardless of host/tool
     local newest
     newest=$(backend_local_get_newest --user "tim") || { echo "get_newest --user tim failed" >&2; unset CAC_CONFIG_DIR; return 1; }
 
@@ -521,26 +527,27 @@ test_get_newest_user_filter_only() {
     unset CAC_CONFIG_DIR
 }
 
-test_get_newest_host_filter_only() {
+test_get_newest_tool_filter_only() {
+    # Issue #41: --tool filter replaces --host filter
     _setup_issue19_storage
 
-    # --host host-a should return bundles from host-a regardless of user
+    # --tool claude should return only claude bundles
     local newest
-    newest=$(backend_local_get_newest --host "host-a") || { echo "get_newest --host host-a failed" >&2; unset CAC_CONFIG_DIR; return 1; }
+    newest=$(backend_local_get_newest --tool "claude") || { echo "get_newest --tool claude failed" >&2; unset CAC_CONFIG_DIR; return 1; }
 
-    assert_contains "host-a" "$newest" "host-filtered bundle" || { unset CAC_CONFIG_DIR; return 1; }
-    assert_contains "rob" "$newest" "host-a's bundle user" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_contains "claude" "$newest" "tool-filtered bundle" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_contains "rob" "$newest" "claude bundle user" || { unset CAC_CONFIG_DIR; return 1; }
     unset CAC_CONFIG_DIR
 }
 
 test_get_newest_both_filters() {
     _setup_issue19_storage
 
-    # --host host-b --user rob should return rob's bundle from host-b
+    # Issue #41/50: --tool codex --user rob should return rob's codex bundle
     local newest
-    newest=$(backend_local_get_newest --host "host-b" --user "rob") || { echo "get_newest --host host-b --user rob failed" >&2; unset CAC_CONFIG_DIR; return 1; }
+    newest=$(backend_local_get_newest --tool "codex" --user "rob") || { echo "get_newest --tool codex --user rob failed" >&2; unset CAC_CONFIG_DIR; return 1; }
 
-    assert_contains "host-b_rob" "$newest" "both-filtered bundle" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_contains "rob_codex" "$newest" "both-filtered bundle" || { unset CAC_CONFIG_DIR; return 1; }
     unset CAC_CONFIG_DIR
 }
 
@@ -655,12 +662,9 @@ test_full_push_pull_workflow() {
     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
     config_load 2>/dev/null
 
-    local host
-    host=$(hostname -s)
-
-    # Create a bundle and upload
+    # Issue #41: bundle_generate_filename now requires tool parameter
     local bundle_name
-    bundle_name=$(bundle_generate_filename "workflow")
+    bundle_name=$(bundle_generate_filename "workflow" "all")
     local bundle_path="${TEST_TMPDIR}/${bundle_name}"
 
     bundle_create "$TEST_HOME" "$bundle_path" "all" >/dev/null 2>&1
@@ -670,9 +674,9 @@ test_full_push_pull_workflow() {
     local target_home="${TEST_TMPDIR}/target_home"
     mkdir -p "$target_home"
 
-    # Find and download the newest bundle
+    # Find and download the newest bundle (Issue #50: no --host, use --user)
     local newest
-    newest=$(backend_local_get_newest --host "$host" --user "workflow")
+    newest=$(backend_local_get_newest --user "workflow")
 
     local download_path="${TEST_TMPDIR}/workflow_download.zip"
     backend_local_download "$newest" "$download_path" >/dev/null 2>&1
@@ -697,12 +701,9 @@ test_full_push_pull_mistral_roundtrip() {
     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
     config_load 2>/dev/null
 
-    local host
-    host=$(hostname -s)
-
-    # Create a bundle and upload
+    # Issue #41: bundle_generate_filename now requires tool parameter
     local bundle_name
-    bundle_name=$(bundle_generate_filename "mistralrt")
+    bundle_name=$(bundle_generate_filename "mistralrt" "all")
     local bundle_path="${TEST_TMPDIR}/${bundle_name}"
 
     bundle_create "$TEST_HOME" "$bundle_path" "all" >/dev/null 2>&1
@@ -712,9 +713,9 @@ test_full_push_pull_mistral_roundtrip() {
     local target_home="${TEST_TMPDIR}/mistral_target"
     mkdir -p "$target_home"
 
-    # Find and download the newest bundle
+    # Find and download the newest bundle (Issue #50: no --host, use --user)
     local newest
-    newest=$(backend_local_get_newest --host "$host" --user "mistralrt")
+    newest=$(backend_local_get_newest --user "mistralrt")
 
     local download_path="${TEST_TMPDIR}/mistral_download.zip"
     backend_local_download "$newest" "$download_path" >/dev/null 2>&1
@@ -897,6 +898,185 @@ test_check_mistral_key_extraction() {
 }
 
 # ============================================================================
+# Issue #41: Per-Tool Bundle Tests
+# ============================================================================
+
+test_per_tool_bundle_roundtrip() {
+    # Issue #41: Create a per-tool bundle, upload, list, download, extract
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+    source "${PROJECT_ROOT}/lib/security.sh"
+    source "${PROJECT_ROOT}/lib/bundle.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Create a claude-only bundle with per-tool naming
+    local bundle_name
+    bundle_name=$(bundle_generate_filename "pertoolrt" "claude")
+    local bundle_path="${TEST_TMPDIR}/${bundle_name}"
+
+    bundle_create "$TEST_HOME" "$bundle_path" "claude" >/dev/null 2>&1
+    backend_local_upload "$bundle_path" >/dev/null 2>&1
+
+    # Verify it appears in list
+    local list_output
+    list_output=$(backend_local_list --tool "claude" 2>&1)
+    assert_contains "pertoolrt" "$list_output" "per-tool list output" || { unset CAC_CONFIG_DIR; return 1; }
+
+    # Download and extract
+    local target_home="${TEST_TMPDIR}/pertool_target"
+    mkdir -p "$target_home"
+
+    local download_path="${TEST_TMPDIR}/pertool_download.zip"
+    backend_local_download "$bundle_name" "$download_path" >/dev/null 2>&1
+    bundle_extract "$download_path" "$target_home" "$(whoami)" >/dev/null 2>&1
+
+    # Verify only claude files extracted (not codex, gemini, etc.)
+    assert_file_exists "${target_home}/.claude.json" "restored claude.json" || { unset CAC_CONFIG_DIR; return 1; }
+    if [[ -f "${target_home}/.codex/auth.json" ]]; then
+        echo "Per-tool bundle should not contain codex files" >&2
+        unset CAC_CONFIG_DIR
+        return 1
+    fi
+    unset CAC_CONFIG_DIR
+}
+
+test_old_format_bundle_still_listable() {
+    # Issue #41: Old 4-segment bundles must still appear in list
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+    source "${PROJECT_ROOT}/lib/security.sh"
+    source "${PROJECT_ROOT}/lib/bundle.sh"
+    source "${PROJECT_ROOT}/lib/backend_local.sh"
+
+    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+    config_load 2>/dev/null
+
+    # Create an old-format bundle (4 segments, no tool)
+    local bundle="${TEST_TMPDIR}/old_compat.zip"
+    bundle_create "$TEST_HOME" "$bundle" "all" >/dev/null 2>&1
+
+    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_oldhost_alice_250101-100000.zip"
+
+    # Also create a new-format bundle
+    cp "$bundle" "${TEST_STORAGE}/CodingAgentConfig_newhost_alice_claude_250201-100000.zip"
+
+    # List all — both should appear
+    local list_output
+    list_output=$(backend_local_list 2>&1)
+
+    assert_contains "oldhost" "$list_output" "old format in list" || { unset CAC_CONFIG_DIR; return 1; }
+    assert_contains "newhost" "$list_output" "new format in list" || { unset CAC_CONFIG_DIR; return 1; }
+    unset CAC_CONFIG_DIR
+}
+
+# ============================================================================
+# Issue #41: Sync Marker Tests
+# ============================================================================
+
+test_sync_marker_creation() {
+    # Issue #41: Sync marker created/updated after push
+    source "${PROJECT_ROOT}/lib/config.sh"
+
+    local marker_path
+    marker_path=$(config_get_sync_marker_path "claude")
+
+    # Should return a valid path containing the tool name
+    assert_contains "claude" "$marker_path" "marker path contains tool" || return 1
+    assert_contains ".last_sync_" "$marker_path" "marker path format"
+}
+
+test_sync_marker_update_and_read() {
+    # Issue #41: Update marker and read back its time
+    source "${PROJECT_ROOT}/lib/config.sh"
+
+    # Override config dir to test location
+    local test_config="${TEST_TMPDIR}/sync_config"
+    mkdir -p "$test_config"
+
+    # Update marker
+    CAC_CONFIG_DIR="$test_config" config_update_sync_marker "claude"
+
+    # Verify marker file exists
+    local marker_path="${test_config}/.last_sync_claude"
+    assert_file_exists "$marker_path" "sync marker file" || return 1
+
+    # Read marker time — should be non-zero
+    local marker_time
+    marker_time=$(CAC_CONFIG_DIR="$test_config" config_get_sync_marker_time "claude")
+    [[ "$marker_time" -gt 0 ]] || { echo "Expected non-zero marker time, got: $marker_time" >&2; return 1; }
+}
+
+test_sync_marker_missing_returns_zero() {
+    # Issue #41: Missing marker should return time 0 (always needs sync)
+    source "${PROJECT_ROOT}/lib/config.sh"
+
+    local test_config="${TEST_TMPDIR}/sync_empty"
+    mkdir -p "$test_config"
+
+    local marker_time
+    marker_time=$(CAC_CONFIG_DIR="$test_config" config_get_sync_marker_time "claude")
+    assert_equals "0" "$marker_time" "missing marker returns 0"
+}
+
+test_sync_marker_change_detection() {
+    # Issue #41: Detect when credentials are newer than sync marker
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+
+    local test_config="${TEST_TMPDIR}/sync_detect"
+    mkdir -p "$test_config"
+
+    # Create marker first (in the past)
+    CAC_CONFIG_DIR="$test_config" config_update_sync_marker "claude"
+    sleep 1
+
+    # Touch credential files to be newer than marker
+    touch "${TEST_HOME}/.claude.json"
+
+    # Should detect that sync is needed
+    local needs_sync
+    needs_sync=$(CAC_CONFIG_DIR="$test_config" config_needs_sync "claude" "$TEST_HOME")
+    assert_equals "true" "$needs_sync" "needs sync after credential change"
+}
+
+test_sync_marker_no_change() {
+    # Issue #41: No sync needed when marker is newer than credentials
+    source "${PROJECT_ROOT}/lib/config.sh"
+    source "${PROJECT_ROOT}/lib/tools.sh"
+
+    local test_config="${TEST_TMPDIR}/sync_nochange"
+    mkdir -p "$test_config"
+
+    # Touch credentials first, then create marker (marker is newer)
+    touch "${TEST_HOME}/.claude.json"
+    sleep 1
+    CAC_CONFIG_DIR="$test_config" config_update_sync_marker "claude"
+
+    # Should NOT need sync
+    local needs_sync
+    needs_sync=$(CAC_CONFIG_DIR="$test_config" config_needs_sync "claude" "$TEST_HOME")
+    assert_equals "false" "$needs_sync" "no sync needed when marker is newer"
+}
+
+test_sync_marker_tool_with_dashes() {
+    # Codex note: Verify sync markers work for tools with dashes (e.g., continuous-claude)
+    source "${PROJECT_ROOT}/lib/config.sh"
+
+    local test_config="${TEST_TMPDIR}/sync_dashes"
+    mkdir -p "$test_config"
+
+    # Update marker for a tool with dashes
+    CAC_CONFIG_DIR="$test_config" config_update_sync_marker "continuous-claude"
+
+    # Verify marker file exists with dashes in name
+    local marker_path="${test_config}/.last_sync_continuous-claude"
+    assert_file_exists "$marker_path" "sync marker for tool with dashes"
+}
+
+# ============================================================================
 # Issue #35: env status --check-updates
 # ============================================================================
 
@@ -974,16 +1154,30 @@ main() {
     run_test "push and list" test_local_backend_push_and_list
     run_test "download" test_local_backend_download
     run_test "get newest" test_local_backend_get_newest
-    run_test "filter by host" test_local_backend_filter_by_host
+    run_test "filter by tool (Issue #41)" test_local_backend_filter_by_tool
     run_test "filter by user" test_local_backend_filter_by_user
     echo ""
 
     echo "--- Issue #19: Global vs Filtered get_newest ---"
     run_test "get newest no filters (global)" test_get_newest_no_filters_returns_global_newest
     run_test "get newest user filter only" test_get_newest_user_filter_only
-    run_test "get newest host filter only" test_get_newest_host_filter_only
-    run_test "get newest both filters" test_get_newest_both_filters
+    run_test "get newest tool filter only (Issue #41)" test_get_newest_tool_filter_only
+    run_test "get newest both filters (tool+user)" test_get_newest_both_filters
     run_test "get newest filter no match" test_get_newest_filter_no_match
+    echo ""
+
+    echo "--- Issue #41: Per-Tool Bundles ---"
+    run_test "per-tool bundle roundtrip" test_per_tool_bundle_roundtrip
+    run_test "old format bundle still listable" test_old_format_bundle_still_listable
+    echo ""
+
+    echo "--- Issue #41: Sync Markers ---"
+    run_test "sync marker creation" test_sync_marker_creation
+    run_test "sync marker update and read" test_sync_marker_update_and_read
+    run_test "sync marker missing returns zero" test_sync_marker_missing_returns_zero
+    run_test "sync marker change detection" test_sync_marker_change_detection
+    run_test "sync marker no change needed" test_sync_marker_no_change
+    run_test "sync marker tool with dashes" test_sync_marker_tool_with_dashes
     echo ""
 
     echo "--- Issue #35: env status --check-updates ---"

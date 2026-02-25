@@ -50,7 +50,7 @@ fi
 # Call a backend function with the current backend type
 # Usage: backend_call <operation> [args...]
 # Example: backend_call upload "$bundle_path"
-#          backend_call get_newest --host "$host" --user "$user"
+#          backend_call get_newest --tool "$tool" --user "$user"
 #
 # This eliminates duplicated case statements throughout the codebase.
 # The CAC_BACKEND variable must be set before calling.
@@ -289,26 +289,27 @@ utils_init_push_context() {
     return 0
 }
 
-# Parse common filter arguments (--host and --user)
+# Parse common filter arguments (--tool and --user)
+# Issue #41/#50: --host removed, --tool added for per-service bundle filtering
 # Usage: utils_parse_filter_args "$@"
-# Sets: FILTER_HOST, FILTER_USER (used by callers)
+# Sets: FILTER_TOOL, FILTER_USER (used by callers)
 # Returns: Remaining arguments should be captured via shift
 #
 # Example:
 #   utils_parse_filter_args "$@"
-#   local filter_host="$FILTER_HOST"
+#   local filter_tool="$FILTER_TOOL"
 #   local filter_user="$FILTER_USER"
 utils_parse_filter_args() {
     # shellcheck disable=SC2034  # Variables are used by callers
-    FILTER_HOST=""
+    FILTER_TOOL=""
     # shellcheck disable=SC2034  # Variables are used by callers
     FILTER_USER=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --host)
+            --tool)
                 # shellcheck disable=SC2034  # Variables are used by callers
-                FILTER_HOST="$2"
+                FILTER_TOOL="$2"
                 shift 2
                 ;;
             --user)
@@ -323,37 +324,39 @@ utils_parse_filter_args() {
     done
 }
 
-# Build a human-readable filter description from host/user filters
-# Usage: utils_build_filter_description <host> <user>
-# Returns: Description string like "host=myhost, user=bob" or empty if no filters
+# Build a human-readable filter description from tool/user filters
+# Issue #41/#50: Changed from host/user to tool/user
+# Usage: utils_build_filter_description <tool> <user>
+# Returns: Description string like "tool=claude, user=bob" or empty if no filters
 #
 # Example:
-#   desc=$(utils_build_filter_description "$filter_host" "$filter_user")
+#   desc=$(utils_build_filter_description "$filter_tool" "$filter_user")
 #   [[ -n "$desc" ]] && echo "Filtering by: $desc"
 utils_build_filter_description() {
-    local filter_host="${1:-}"
+    local filter_tool="${1:-}"
     local filter_user="${2:-}"
     local desc=""
 
-    [[ -n "$filter_host" ]] && desc="host=$filter_host"
+    [[ -n "$filter_tool" ]] && desc="tool=$filter_tool"
     [[ -n "$filter_user" ]] && desc="${desc:+$desc, }user=$filter_user"
 
     echo "$desc"
 }
 
 # Report "no bundle found" error with appropriate filter context
-# Usage: utils_error_no_bundle_found <filter_host> <filter_user> <location>
+# Issue #41/#50: Changed from host/user to tool/user
+# Usage: utils_error_no_bundle_found <filter_tool> <filter_user> <location>
 # location: Human-readable storage location (e.g., "in storage", "on server")
 #
 # Example:
-#   utils_error_no_bundle_found "$filter_host" "$filter_user" "in storage"
+#   utils_error_no_bundle_found "$filter_tool" "$filter_user" "in storage"
 utils_error_no_bundle_found() {
-    local filter_host="${1:-}"
+    local filter_tool="${1:-}"
     local filter_user="${2:-}"
     local location="${3:-}"
     local filter_desc
 
-    filter_desc=$(utils_build_filter_description "$filter_host" "$filter_user")
+    filter_desc=$(utils_build_filter_description "$filter_tool" "$filter_user")
     if [[ -n "$filter_desc" ]]; then
         utils_error "No bundle found matching: $filter_desc"
     else
@@ -452,41 +455,43 @@ utils_json_check_error() {
 # ============================================================================
 
 # Parse and filter a bundle name, extracting metadata
-# Usage: utils_parse_bundle_metadata <name> <filter_host> <filter_user>
-# Returns: "name|host|user|timestamp" or empty if filtered out
+# Issue #41/#50: Changed from host/user filters to tool/user filters
+# Usage: utils_parse_bundle_metadata <name> <filter_tool> <filter_user>
+# Returns: "name|host|user|tool|timestamp" or empty if filtered out
 # Exit code: 0 if bundle passes filters, 1 if filtered out or invalid
 #
 # This function consolidates the common pattern of:
 #   1. Checking if name matches ${BUNDLE_NAME_PREFIX}_* pattern
 #   2. Parsing the filename to extract metadata (single parse for efficiency)
-#   3. Applying host/user filters
+#   3. Applying tool/user filters
+# Supports both old (4-segment) and new (5-segment) bundle naming formats.
 utils_parse_bundle_metadata() {
     local name="$1"
-    local filter_host="${2:-}"
+    local filter_tool="${2:-}"
     local filter_user="${3:-}"
 
     # Only process bundles matching our naming convention
     # BUNDLE_NAME_PREFIX is defined in bundle.sh
     [[ "$name" != ${BUNDLE_NAME_PREFIX}_* ]] && return 1
 
-    # Parse once using bundle_parse_filename (returns "host user timestamp")
-    local parsed host user timestamp
+    # Parse once using bundle_parse_filename (returns "host user tool timestamp")
+    local parsed host user tool timestamp
     if ! parsed=$(bundle_parse_filename "$name"); then
         return 1
     fi
 
-    # Split parsed result (space-separated)
-    read -r host user timestamp <<< "$parsed"
+    # Split parsed result (space-separated: host user tool timestamp)
+    read -r host user tool timestamp <<< "$parsed"
 
     # Apply filters (before allocating output string)
-    if [[ -n "$filter_host" && "$host" != "$filter_host" ]]; then
+    if [[ -n "$filter_tool" && "$tool" != "$filter_tool" ]]; then
         return 1
     fi
     if [[ -n "$filter_user" && "$user" != "$filter_user" ]]; then
         return 1
     fi
 
-    echo "${name}|${host}|${user}|${timestamp}"
+    echo "${name}|${host}|${user}|${tool}|${timestamp}"
     return 0
 }
 
@@ -515,25 +520,28 @@ utils_gokapi_extract_names() {
 # ============================================================================
 
 # Print standard bundle list header
+# Issue #41: Added TOOL column
 # Usage: utils_print_bundle_list_header
 # Outputs: Formatted header line and separator for bundle listings
 #
 # This centralizes the header formatting used by both local and gokapi backends.
 utils_print_bundle_list_header() {
-    printf "%-40s %-15s %-15s %s\n" "BUNDLE" "HOST" "USER" "TIMESTAMP"
-    printf "%s\n" "--------------------------------------------------------------------------------"
+    printf "%-50s %-15s %-12s %-10s %s\n" "BUNDLE" "HOST" "USER" "TOOL" "TIMESTAMP"
+    printf "%s\n" "----------------------------------------------------------------------------------------------------"
 }
 
 # Print a bundle entry in the standard list format
-# Usage: utils_print_bundle_list_entry <name> <host> <user> <timestamp>
+# Issue #41: Added tool parameter
+# Usage: utils_print_bundle_list_entry <name> <host> <user> <tool> <timestamp>
 # Outputs: Formatted bundle entry line
 utils_print_bundle_list_entry() {
     local name="$1"
     local host="$2"
     local user="$3"
-    local timestamp="$4"
+    local tool="$4"
+    local timestamp="$5"
 
-    printf "%-40s %-15s %-15s %s\n" "$name" "$host" "$user" "$timestamp"
+    printf "%-50s %-15s %-12s %-10s %s\n" "$name" "$host" "$user" "$tool" "$timestamp"
 }
 
 # Print bundle list footer with total count

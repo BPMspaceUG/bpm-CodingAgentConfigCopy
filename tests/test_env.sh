@@ -1605,6 +1605,180 @@ test_env_parseable_normalizes_versions() {
 }
 
 # ============================================================================
+# Issue #49: Merged Install/Update Tests
+# ============================================================================
+
+test_env_install_updates_when_already_installed() {
+    # When tool is already installed, env_install_tool should call env_update_tool
+    local update_marker="${TEST_TMPDIR}/update_called_$$"
+    env_is_installed() { return 0; }
+    env_get_version() { echo "1.0.0"; }
+    env_get_display_name() { echo "Mock Tool"; }
+    env_validate_tool() { return 0; }
+    env_update_tool() { touch "$update_marker"; return 0; }
+
+    local output
+    output=$(env_install_tool "claude" "user" 2>&1)
+
+    if [[ -f "$update_marker" ]]; then
+        pass "install calls update_tool when already installed"
+    else
+        fail "install calls update_tool when already installed" "update_tool was not called"
+    fi
+
+    assert_contains "already installed" "$output" "output mentions already installed"
+    assert_contains "updating" "$output" "output mentions updating"
+
+    rm -f "$update_marker"
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+test_env_install_returns_success_even_if_update_fails() {
+    # Update failure should be non-fatal — env_install_tool returns 0 since tool IS installed
+    env_is_installed() { return 0; }
+    env_get_version() { echo "1.0.0"; }
+    env_get_display_name() { echo "Mock Tool"; }
+    env_validate_tool() { return 0; }
+    env_update_tool() { return 1; }
+    utils_warn() { :; }
+
+    local exit_code=0
+    env_install_tool "claude" "user" >/dev/null 2>&1 || exit_code=$?
+
+    if [[ $exit_code -eq 0 ]]; then
+        pass "install returns success even when update fails"
+    else
+        fail "install returns success even when update fails" "exit code was $exit_code"
+    fi
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+test_env_install_tool_update_output_message() {
+    # Verify output format when tool is already installed
+    env_is_installed() { return 0; }
+    env_get_version() { echo "2.1.56"; }
+    env_get_display_name() { echo "Claude Code"; }
+    env_validate_tool() { return 0; }
+    env_update_tool() { return 0; }
+
+    local output
+    output=$(env_install_tool "claude" "user" 2>&1)
+
+    local rc=0
+    assert_contains "Claude Code already installed (version: 2.1.56)" "$output" "message format" || rc=$?
+    assert_contains "updating..." "$output" "message ends with updating..." || rc=$?
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+    return $rc
+}
+
+test_env_cmd_update_still_warns_not_installed() {
+    # env_cmd_update must keep update-only semantics: warn if tool not installed
+    env_is_installed() { return 1; }
+    env_validate_tool() { return 0; }
+    env_get_display_name() { echo "Mock Tool"; }
+    local warn_output=""
+    utils_warn() { warn_output+="$* "; }
+
+    local exit_code=0
+    env_update_tool "claude" "user" >/dev/null 2>&1 || exit_code=$?
+
+    if [[ $exit_code -ne 0 ]]; then
+        pass "update_tool returns non-zero when not installed"
+    else
+        fail "update_tool returns non-zero when not installed" "exit code was 0"
+    fi
+
+    if [[ "$warn_output" == *"not installed"* ]]; then
+        pass "update_tool warns 'not installed'"
+    else
+        fail "update_tool warns 'not installed'" "got: $warn_output"
+    fi
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+test_env_install_all_updates_installed_tools() {
+    # env_install_all should call env_install_tool for ALL tools, including installed ones
+    env_get_core_tools() { printf "toolA\ntoolB\n"; }
+    env_get_display_name() {
+        case "$1" in
+            toolA) echo "Tool A" ;; toolB) echo "Tool B" ;;
+        esac
+    }
+    env_get_version() { echo "1.0.0"; }
+
+    # toolA is installed, toolB is not
+    env_is_installed() {
+        [[ "$1" == "toolA" ]]
+    }
+
+    local install_marker="${TEST_TMPDIR}/install_calls_$$"
+    : > "$install_marker"
+    env_install_tool() {
+        echo "$1" >> "$install_marker"
+        return 0
+    }
+
+    env_install_all "user" >/dev/null 2>&1 || true
+
+    local call_count
+    call_count=$(wc -l < "$install_marker")
+
+    if [[ $call_count -eq 2 ]]; then
+        pass "install_all calls install_tool for all tools (including installed)"
+    else
+        fail "install_all calls install_tool for all tools" "called $call_count times, expected 2"
+    fi
+
+    rm -f "$install_marker"
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+test_env_install_all_summary_format() {
+    # Verify summary output has Installed/Updated/Failed with correct counts
+    # Setup: 3 tools — toolA installed (update), toolB not installed (fresh), toolC not installed (fails)
+    env_get_core_tools() { printf "toolA\ntoolB\ntoolC\n"; }
+    env_get_display_name() {
+        case "$1" in
+            toolA) echo "Tool A" ;; toolB) echo "Tool B" ;; toolC) echo "Tool C" ;;
+        esac
+    }
+    env_get_version() { echo "1.0.0"; }
+
+    # toolA is installed, toolB and toolC are not
+    env_is_installed() {
+        [[ "$1" == "toolA" ]]
+    }
+
+    # toolA (installed) -> success, toolB (not installed) -> success, toolC (not installed) -> fail
+    env_install_tool() {
+        if [[ "$1" == "toolC" ]]; then
+            return 1
+        fi
+        return 0
+    }
+
+    local output
+    output=$(env_install_all "user" 2>&1) || true
+
+    local rc=0
+    assert_contains "Installed: 1" "$output" "summary shows 1 installed" || rc=$?
+    assert_contains "Updated: 1" "$output" "summary shows 1 updated" || rc=$?
+    assert_contains "Failed: 1" "$output" "summary shows 1 failed" || rc=$?
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+    return $rc
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -1713,6 +1887,15 @@ run_test "check-updates matches normalized versions" test_env_status_check_updat
 run_test "status without check-updates" test_env_status_without_check_updates
 run_test "parseable without check-updates" test_env_status_parseable_without_check_updates
 run_test "parseable normalizes versions" test_env_parseable_normalizes_versions
+
+echo ""
+echo "--- Issue #49: Merged Install/Update Tests ---"
+run_test "install triggers update when already installed" test_env_install_updates_when_already_installed
+run_test "install returns success even if update fails" test_env_install_returns_success_even_if_update_fails
+run_test "install tool update output message format" test_env_install_tool_update_output_message
+run_test "cmd_update still warns when not installed" test_env_cmd_update_still_warns_not_installed
+run_test "install_all updates installed tools" test_env_install_all_updates_installed_tools
+run_test "install_all summary format Installed/Updated/Failed" test_env_install_all_summary_format
 
 echo ""
 framework_report

@@ -32,26 +32,70 @@ source "${PROJECT_ROOT}/lib/bundle.sh"
 
 test_bundle_generate_filename_format() {
     local filename
-    filename=$(bundle_generate_filename "testuser")
+    filename=$(bundle_generate_filename "testuser" "claude")
 
-    # Should match pattern: CodingAgentConfig_<host>_testuser_<YYMMDD-HHMMSS>.zip
-    assert_match '^CodingAgentConfig_[^_]+_testuser_[0-9]{6}-[0-9]{6}\.zip$' \
+    # Issue #41: New format: CodingAgentConfig_<HOST>_<USER>_<TOOL>_<YYMMDD-HHMMSS>.zip
+    assert_match '^CodingAgentConfig_[^_]+_testuser_claude_[0-9]{6}-[0-9]{6}\.zip$' \
         "$filename" "filename format"
 }
 
 test_bundle_generate_filename_default_user() {
     local filename
-    filename=$(bundle_generate_filename)
+    filename=$(bundle_generate_filename "" "all")
 
     # Should contain current user
     assert_contains "_${USER}_" "$filename" "filename"
 }
 
+test_bundle_generate_filename_with_tool() {
+    # Issue #41: Per-tool bundle naming
+    local filename
+    filename=$(bundle_generate_filename "bob" "codex")
+
+    assert_match '^CodingAgentConfig_[^_]+_bob_codex_[0-9]{6}-[0-9]{6}\.zip$' \
+        "$filename" "per-tool filename format"
+}
+
+test_bundle_generate_filename_all_tool() {
+    # Issue #41: "all" tool creates monolithic bundle
+    local filename
+    filename=$(bundle_generate_filename "alice" "all")
+
+    assert_match '^CodingAgentConfig_[^_]+_alice_all_[0-9]{6}-[0-9]{6}\.zip$' \
+        "$filename" "all-tool filename format"
+}
+
 test_bundle_parse_filename_valid() {
+    # Issue #41: Old 4-segment format still parses, tool defaults to "all"
     local result
     result=$(bundle_parse_filename "CodingAgentConfig_myhost_ubuntu_250111-143022.zip")
 
-    assert_equals "myhost ubuntu 250111-143022" "$result" "parsed result"
+    assert_equals "myhost ubuntu all 250111-143022" "$result" "parsed result (old format)"
+}
+
+test_bundle_parse_filename_new_format() {
+    # Issue #41: New 5-segment format with tool field
+    local result
+    result=$(bundle_parse_filename "CodingAgentConfig_myhost_ubuntu_claude_250111-143022.zip")
+
+    assert_equals "myhost ubuntu claude 250111-143022" "$result" "parsed result (new format)"
+}
+
+test_bundle_parse_filename_new_format_various_tools() {
+    # Issue #41: Verify parsing works for all known tools
+    local result
+
+    result=$(bundle_parse_filename "CodingAgentConfig_srv1_bob_codex_250201-090000.zip")
+    assert_equals "srv1 bob codex 250201-090000" "$result" "codex parse" || return 1
+
+    result=$(bundle_parse_filename "CodingAgentConfig_srv1_bob_gemini_250201-090000.zip")
+    assert_equals "srv1 bob gemini 250201-090000" "$result" "gemini parse" || return 1
+
+    result=$(bundle_parse_filename "CodingAgentConfig_srv1_bob_mistral_250201-090000.zip")
+    assert_equals "srv1 bob mistral 250201-090000" "$result" "mistral parse" || return 1
+
+    result=$(bundle_parse_filename "CodingAgentConfig_srv1_bob_all_250201-090000.zip")
+    assert_equals "srv1 bob all 250201-090000" "$result" "all parse"
 }
 
 test_bundle_parse_filename_invalid() {
@@ -59,30 +103,81 @@ test_bundle_parse_filename_invalid() {
     assert_fails "parse invalid filename" bundle_parse_filename "invalid_filename.zip"
 }
 
-test_bundle_get_host() {
-    local host
-    host=$(bundle_get_host "CodingAgentConfig_prod-server_bob_250111-120000.zip")
+test_bundle_parse_filename_old_format_backward_compat() {
+    # Issue #41: Ensure old monolithic filenames without TOOL segment still work
+    # These have exactly 4 segments: PREFIX_HOST_USER_TIMESTAMP
+    local result
 
-    assert_equals "prod-server" "$host" "host"
+    result=$(bundle_parse_filename "CodingAgentConfig_prod-server_alice_250115-180000.zip")
+    assert_equals "prod-server alice all 250115-180000" "$result" "old format backward compat" || return 1
+
+    # Verify the tool field is "all" for old format
+    local tool
+    tool=$(bundle_get_tool "CodingAgentConfig_prod-server_alice_250115-180000.zip")
+    assert_equals "all" "$tool" "old format tool defaults to all"
+}
+
+test_bundle_parse_filename_ambiguous_old_format() {
+    # Codex note: Test old 4-segment names where host or user could look like a tool name
+    # e.g., hostname "claude" or username "codex" — these should parse as old format
+    local result
+
+    # Host named "claude" — old format: PREFIX_claude_bob_TIMESTAMP
+    result=$(bundle_parse_filename "CodingAgentConfig_claude_bob_250115-180000.zip")
+    assert_equals "claude bob all 250115-180000" "$result" "host named claude (old format)" || return 1
+
+    # User named "codex" — old format: PREFIX_myhost_codex_TIMESTAMP
+    result=$(bundle_parse_filename "CodingAgentConfig_myhost_codex_250115-180000.zip")
+    assert_equals "myhost codex all 250115-180000" "$result" "user named codex (old format)"
+}
+
+test_bundle_get_host() {
+    # Test with new format
+    local host
+    host=$(bundle_get_host "CodingAgentConfig_prod-server_bob_claude_250111-120000.zip")
+    assert_equals "prod-server" "$host" "host (new format)" || return 1
+
+    # Test with old format
+    host=$(bundle_get_host "CodingAgentConfig_prod-server_bob_250111-120000.zip")
+    assert_equals "prod-server" "$host" "host (old format)"
 }
 
 test_bundle_get_user() {
+    # Test with new format
     local user
-    user=$(bundle_get_user "CodingAgentConfig_prod-server_bob_250111-120000.zip")
+    user=$(bundle_get_user "CodingAgentConfig_prod-server_bob_claude_250111-120000.zip")
+    assert_equals "bob" "$user" "user (new format)" || return 1
 
-    assert_equals "bob" "$user" "user"
+    # Test with old format
+    user=$(bundle_get_user "CodingAgentConfig_prod-server_bob_250111-120000.zip")
+    assert_equals "bob" "$user" "user (old format)"
+}
+
+test_bundle_get_tool() {
+    # Issue #41: New accessor for tool field
+    local tool
+
+    tool=$(bundle_get_tool "CodingAgentConfig_srv1_alice_claude_250201-100000.zip")
+    assert_equals "claude" "$tool" "tool from new format" || return 1
+
+    tool=$(bundle_get_tool "CodingAgentConfig_srv1_alice_250201-100000.zip")
+    assert_equals "all" "$tool" "tool from old format defaults to all"
 }
 
 test_bundle_get_timestamp() {
+    # Test with new format
     local ts
-    ts=$(bundle_get_timestamp "CodingAgentConfig_prod-server_bob_250111-120000.zip")
+    ts=$(bundle_get_timestamp "CodingAgentConfig_prod-server_bob_claude_250111-120000.zip")
+    assert_equals "250111-120000" "$ts" "timestamp (new format)" || return 1
 
-    assert_equals "250111-120000" "$ts" "timestamp"
+    # Test with old format
+    ts=$(bundle_get_timestamp "CodingAgentConfig_prod-server_bob_250111-120000.zip")
+    assert_equals "250111-120000" "$ts" "timestamp (old format)"
 }
 
 test_bundle_generate_filename_rejects_username_with_underscore() {
     # Should fail when username contains underscore (conflicts with delimiter)
-    assert_fails "username with underscore" bundle_generate_filename "test_user"
+    assert_fails "username with underscore" bundle_generate_filename "test_user" "claude"
 }
 
 test_bundle_generate_filename_rejects_hostname_with_underscore() {
@@ -91,10 +186,15 @@ test_bundle_generate_filename_rejects_hostname_with_underscore() {
     export -f hostname
 
     # Should fail when hostname contains underscore
-    assert_fails "hostname with underscore" bundle_generate_filename "validuser"
+    assert_fails "hostname with underscore" bundle_generate_filename "validuser" "claude"
 
     # Restore hostname
     unset -f hostname
+}
+
+test_bundle_generate_filename_rejects_tool_with_underscore() {
+    # Issue #41: Tool name must not contain underscores
+    assert_fails "tool with underscore" bundle_generate_filename "validuser" "my_tool"
 }
 
 # ============================================================================
@@ -389,7 +489,7 @@ test_bundle_extract_settings_host_match() {
     echo '{"test": true}' > "${fake_home}/.claude.json"
     echo '{"teammateMode": "tmux"}' > "${fake_home}/.claude/settings.json"
 
-    # Create bundle with matching host+user in filename
+    # Create bundle with matching host+user in OLD filename format (backward compat)
     local bundle_zip="${TEST_TMPDIR}/CodingAgentConfig_${current_host}_${current_user}_250101-100000.zip"
     (cd "$fake_home" && zip -q "$bundle_zip" .claude.json .claude/settings.json)
 
@@ -399,7 +499,35 @@ test_bundle_extract_settings_host_match() {
     # Extract — host+user match, settings should be extracted
     bundle_extract "$bundle_zip" "$target_home" "$current_user" >/dev/null 2>&1
 
-    assert_file_exists "${target_home}/.claude/settings.json" "settings.json should be extracted on match"
+    assert_file_exists "${target_home}/.claude/settings.json" "settings.json should be extracted on match (old format)"
+}
+
+test_bundle_extract_settings_host_match_new_format() {
+    # Issue #41: Settings extraction also works with new 5-segment format
+    local current_host
+    current_host=$(hostname -s)
+    local current_user
+    current_user=$(whoami)
+
+    local fake_home="${TEST_TMPDIR}/settings_match_new_src"
+    local target_home="${TEST_TMPDIR}/settings_match_new_dst"
+
+    # Create source home with settings
+    mkdir -p "${fake_home}/.claude"
+    echo '{"test": true}' > "${fake_home}/.claude.json"
+    echo '{"teammateMode": "tmux"}' > "${fake_home}/.claude/settings.json"
+
+    # Create bundle with matching host+user in NEW filename format
+    local bundle_zip="${TEST_TMPDIR}/CodingAgentConfig_${current_host}_${current_user}_claude_250101-100000.zip"
+    (cd "$fake_home" && zip -q "$bundle_zip" .claude.json .claude/settings.json)
+
+    # Create target home
+    mkdir -p "$target_home"
+
+    # Extract — host+user match, settings should be extracted
+    bundle_extract "$bundle_zip" "$target_home" "$current_user" >/dev/null 2>&1
+
+    assert_file_exists "${target_home}/.claude/settings.json" "settings.json should be extracted on match (new format)"
 }
 
 test_bundle_extract_settings_lost_with_generic_filename() {
@@ -503,12 +631,20 @@ main() {
     echo "--- Filename Generation/Parsing ---"
     run_test "bundle_generate_filename format" test_bundle_generate_filename_format
     run_test "bundle_generate_filename default user" test_bundle_generate_filename_default_user
+    run_test "bundle_generate_filename with tool" test_bundle_generate_filename_with_tool
+    run_test "bundle_generate_filename all tool" test_bundle_generate_filename_all_tool
     run_test "bundle_generate_filename rejects username with underscore" test_bundle_generate_filename_rejects_username_with_underscore
     run_test "bundle_generate_filename rejects hostname with underscore" test_bundle_generate_filename_rejects_hostname_with_underscore
-    run_test "bundle_parse_filename valid" test_bundle_parse_filename_valid
+    run_test "bundle_generate_filename rejects tool with underscore" test_bundle_generate_filename_rejects_tool_with_underscore
+    run_test "bundle_parse_filename valid (old format)" test_bundle_parse_filename_valid
+    run_test "bundle_parse_filename new format" test_bundle_parse_filename_new_format
+    run_test "bundle_parse_filename new format various tools" test_bundle_parse_filename_new_format_various_tools
     run_test "bundle_parse_filename invalid" test_bundle_parse_filename_invalid
+    run_test "bundle_parse_filename old format backward compat" test_bundle_parse_filename_old_format_backward_compat
+    run_test "bundle_parse_filename ambiguous old format" test_bundle_parse_filename_ambiguous_old_format
     run_test "bundle_get_host" test_bundle_get_host
     run_test "bundle_get_user" test_bundle_get_user
+    run_test "bundle_get_tool" test_bundle_get_tool
     run_test "bundle_get_timestamp" test_bundle_get_timestamp
     echo ""
 
@@ -528,6 +664,7 @@ main() {
     echo "--- Issue #46: Settings Extraction Guard ---"
     run_test "bundle_create includes settings" test_bundle_create_includes_settings
     run_test "bundle_extract settings on host match" test_bundle_extract_settings_host_match
+    run_test "bundle_extract settings on host match (new format)" test_bundle_extract_settings_host_match_new_format
     run_test "bundle_extract settings lost with generic filename" test_bundle_extract_settings_lost_with_generic_filename
     run_test "bundle_extract settings skipped on host mismatch" test_bundle_extract_settings_host_mismatch
     echo ""

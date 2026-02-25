@@ -144,7 +144,7 @@ _assert_mock_endpoint() {
 
 SAMPLE_UPLOAD_OK='{"Id":"abc123","Name":"test.zip","Result":"ok"}'
 SAMPLE_UPLOAD_ERR='{"Result":"error","ErrorMessage":"upload failed"}'
-SAMPLE_FILE_LIST='[{"Id":"id1","Name":"CodingAgentConfig_host1_user1_250101-120000.zip","UrlHotlink":"/dl/id1"},{"Id":"id2","Name":"CodingAgentConfig_host2_user2_250102-130000.zip","UrlHotlink":"/dl/id2"},{"Id":"id3","Name":"CodingAgentConfig_host1_user1_250103-140000.zip","UrlHotlink":"/dl/id3"}]'
+SAMPLE_FILE_LIST='[{"Id":"id1","Name":"CodingAgentConfig_host1_user1_claude_250101-120000.zip","UrlHotlink":"/dl/id1"},{"Id":"id2","Name":"CodingAgentConfig_host2_user2_codex_250102-130000.zip","UrlHotlink":"/dl/id2"},{"Id":"id3","Name":"CodingAgentConfig_host1_user1_claude_250103-140000.zip","UrlHotlink":"/dl/id3"}]'
 SAMPLE_EMPTY_LIST='null'
 
 # ============================================================================
@@ -298,9 +298,9 @@ test_json_get_error_unknown() {
 test_extract_names_from_list() {
     local output
     output=$(utils_gokapi_extract_names "$SAMPLE_FILE_LIST")
-    assert_contains "CodingAgentConfig_host1_user1_250101-120000.zip" "$output" "first file" &&
-    assert_contains "CodingAgentConfig_host2_user2_250102-130000.zip" "$output" "second file" &&
-    assert_contains "CodingAgentConfig_host1_user1_250103-140000.zip" "$output" "third file"
+    assert_contains "CodingAgentConfig_host1_user1_claude_250101-120000.zip" "$output" "first file" &&
+    assert_contains "CodingAgentConfig_host2_user2_codex_250102-130000.zip" "$output" "second file" &&
+    assert_contains "CodingAgentConfig_host1_user1_claude_250103-140000.zip" "$output" "third file"
 }
 
 test_extract_names_with_ids() {
@@ -320,14 +320,14 @@ test_extract_names_with_ids() {
 test_find_file_by_id() {
     local result
     result=$(utils_gokapi_find_file "$SAMPLE_FILE_LIST" "id2")
-    assert_contains "CodingAgentConfig_host2_user2_250102-130000.zip" "$result" "found by ID"
+    assert_contains "CodingAgentConfig_host2_user2_codex_250102-130000.zip" "$result" "found by ID"
 }
 
 test_find_file_by_name() {
     local result
-    result=$(utils_gokapi_find_file "$SAMPLE_FILE_LIST" "CodingAgentConfig_host2_user2_250102-130000.zip")
+    result=$(utils_gokapi_find_file "$SAMPLE_FILE_LIST" "CodingAgentConfig_host2_user2_codex_250102-130000.zip")
     assert_contains "/dl/id2" "$result" "download URL" &&
-    assert_contains "CodingAgentConfig_host2_user2_250102-130000.zip" "$result" "filename"
+    assert_contains "CodingAgentConfig_host2_user2_codex_250102-130000.zip" "$result" "filename"
 }
 
 test_find_file_not_found() {
@@ -337,7 +337,7 @@ test_find_file_not_found() {
 test_find_file_partial_match() {
     local result
     result=$(utils_gokapi_find_file "$SAMPLE_FILE_LIST" "host2_user2")
-    assert_contains "CodingAgentConfig_host2_user2_250102-130000.zip" "$result" "partial match"
+    assert_contains "CodingAgentConfig_host2_user2_codex_250102-130000.zip" "$result" "partial match"
 }
 
 # ============================================================================
@@ -347,12 +347,12 @@ test_find_file_partial_match() {
 test_find_newest_bundle() {
     local input
     input=$(printf '%s\n' \
-        "CodingAgentConfig_h_u_250101-120000.zip|h|u|250101-120000" \
-        "CodingAgentConfig_h_u_250103-140000.zip|h|u|250103-140000" \
-        "CodingAgentConfig_h_u_250102-130000.zip|h|u|250102-130000")
+        "CodingAgentConfig_h_u_claude_250101-120000.zip|h|u|claude|250101-120000" \
+        "CodingAgentConfig_h_u_claude_250103-140000.zip|h|u|claude|250103-140000" \
+        "CodingAgentConfig_h_u_claude_250102-130000.zip|h|u|claude|250102-130000")
     local result
     result=$(echo "$input" | utils_find_newest_bundle)
-    assert_equals "CodingAgentConfig_h_u_250103-140000.zip" "$result" "newest bundle"
+    assert_equals "CodingAgentConfig_h_u_claude_250103-140000.zip" "$result" "newest bundle"
 }
 
 test_find_newest_bundle_empty() {
@@ -365,24 +365,25 @@ test_find_newest_bundle_empty() {
 
 test_parse_bundle_metadata_valid() {
     local result
-    result=$(utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_250115-100000.zip" "" "")
+    result=$(utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_claude_250115-100000.zip" "" "")
     assert_contains "myhost" "$result" "host" &&
     assert_contains "bob" "$result" "user" &&
+    assert_contains "claude" "$result" "tool" &&
     assert_contains "250115-100000" "$result" "timestamp"
 }
 
-test_parse_bundle_metadata_filter_host() {
+test_parse_bundle_metadata_filter_tool() {
     # Should pass when filter matches
-    utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_250115-100000.zip" "myhost" "" >/dev/null &&
+    utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_claude_250115-100000.zip" "claude" "" >/dev/null &&
     # Should fail when filter doesn't match
-    ! utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_250115-100000.zip" "otherhost" "" >/dev/null
+    ! utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_claude_250115-100000.zip" "codex" "" >/dev/null
 }
 
 test_parse_bundle_metadata_filter_user() {
     # Should pass when filter matches
-    utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_250115-100000.zip" "" "bob" >/dev/null &&
+    utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_claude_250115-100000.zip" "" "bob" >/dev/null &&
     # Should fail when filter doesn't match
-    ! utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_250115-100000.zip" "" "alice" >/dev/null
+    ! utils_parse_bundle_metadata "CodingAgentConfig_myhost_bob_claude_250115-100000.zip" "" "alice" >/dev/null
 }
 
 test_parse_bundle_metadata_invalid_name() {
@@ -489,14 +490,14 @@ test_list_with_bundles() {
     _assert_mock_endpoint "/api/files/list"
 }
 
-test_list_filter_host() {
+test_list_filter_tool() {
     CAC_GOKAPI_URL="https://mock.example.com"
     CAC_GOKAPI_API_KEY="testkey"
     _mock_curl "$SAMPLE_FILE_LIST"
 
     local output
-    output=$(backend_gokapi_list --host host2 2>/dev/null)
-    assert_contains "host2" "$output" "filtered host" &&
+    output=$(backend_gokapi_list --tool codex 2>/dev/null)
+    assert_contains "codex" "$output" "filtered tool" &&
     assert_contains "Total: 1" "$output" "single result"
 }
 
@@ -523,7 +524,7 @@ test_get_newest() {
     local output
     output=$(backend_gokapi_get_newest 2>/dev/null)
     # id3 has timestamp 250103-140000, which is the newest
-    assert_equals "CodingAgentConfig_host1_user1_250103-140000.zip" "$output" "newest bundle" &&
+    assert_equals "CodingAgentConfig_host1_user1_claude_250103-140000.zip" "$output" "newest bundle" &&
     _assert_mock_method "GET" &&
     _assert_mock_endpoint "/api/files/list"
 }
@@ -534,8 +535,8 @@ test_get_newest_filtered() {
     _mock_curl "$SAMPLE_FILE_LIST"
 
     local output
-    output=$(backend_gokapi_get_newest --host host2 2>/dev/null)
-    assert_equals "CodingAgentConfig_host2_user2_250102-130000.zip" "$output" "newest for host2"
+    output=$(backend_gokapi_get_newest --tool codex 2>/dev/null)
+    assert_equals "CodingAgentConfig_host2_user2_codex_250102-130000.zip" "$output" "newest for codex"
 }
 
 test_get_newest_pipefail_regression() {
@@ -543,14 +544,14 @@ test_get_newest_pipefail_regression() {
     # cause get_newest to fail under set -o pipefail
     CAC_GOKAPI_URL="https://mock.example.com"
     CAC_GOKAPI_API_KEY="testkey"
-    # host2 entry is in the middle; host1 entries come AFTER it — the last
-    # utils_parse_bundle_metadata call returns 1 (non-match for --host host2)
-    local mixed_list='[{"Id":"id2","Name":"CodingAgentConfig_host2_user2_250102-130000.zip","UrlHotlink":"/dl/id2"},{"Id":"id1","Name":"CodingAgentConfig_host1_user1_250101-120000.zip","UrlHotlink":"/dl/id1"},{"Id":"id3","Name":"CodingAgentConfig_host1_user1_250103-140000.zip","UrlHotlink":"/dl/id3"}]'
+    # codex entry is in the middle; claude entries come AFTER it — the last
+    # utils_parse_bundle_metadata call returns 1 (non-match for --tool codex)
+    local mixed_list='[{"Id":"id2","Name":"CodingAgentConfig_host2_user2_codex_250102-130000.zip","UrlHotlink":"/dl/id2"},{"Id":"id1","Name":"CodingAgentConfig_host1_user1_claude_250101-120000.zip","UrlHotlink":"/dl/id1"},{"Id":"id3","Name":"CodingAgentConfig_host1_user1_claude_250103-140000.zip","UrlHotlink":"/dl/id3"}]'
     _mock_curl "$mixed_list"
 
     local output
-    output=$(backend_gokapi_get_newest --host host2 2>/dev/null)
-    assert_equals "CodingAgentConfig_host2_user2_250102-130000.zip" "$output" "newest for host2 despite trailing non-matches"
+    output=$(backend_gokapi_get_newest --tool codex 2>/dev/null)
+    assert_equals "CodingAgentConfig_host2_user2_codex_250102-130000.zip" "$output" "newest for codex despite trailing non-matches"
 }
 
 test_get_newest_all_non_matching() {
@@ -559,7 +560,7 @@ test_get_newest_all_non_matching() {
     CAC_GOKAPI_API_KEY="testkey"
     _mock_curl "$SAMPLE_FILE_LIST"
 
-    ! backend_gokapi_get_newest --host totally_unknown_host 2>/dev/null
+    ! backend_gokapi_get_newest --tool nonexistent 2>/dev/null
 }
 
 test_get_newest_no_match() {
@@ -567,7 +568,7 @@ test_get_newest_no_match() {
     CAC_GOKAPI_API_KEY="testkey"
     _mock_curl "$SAMPLE_FILE_LIST"
 
-    ! backend_gokapi_get_newest --host nonexistent 2>/dev/null
+    ! backend_gokapi_get_newest --tool gemini 2>/dev/null
 }
 
 # ============================================================================
@@ -614,7 +615,7 @@ test_delete_by_name() {
     export -f curl
 
     local output
-    output=$(backend_gokapi_delete "CodingAgentConfig_host1_user1_250101-120000.zip" 2>/dev/null)
+    output=$(backend_gokapi_delete "CodingAgentConfig_host1_user1_claude_250101-120000.zip" 2>/dev/null)
     assert_contains "Deleted:" "$output" "delete by name confirmation" &&
     _assert_mock_method "GET" 1 &&
     _assert_mock_endpoint "/api/files/list" 1 &&
@@ -725,7 +726,7 @@ main() {
 
     echo "--- Parse Bundle Metadata ---"
     run_test "parse_bundle_metadata valid" test_parse_bundle_metadata_valid
-    run_test "parse_bundle_metadata filter host" test_parse_bundle_metadata_filter_host
+    run_test "parse_bundle_metadata filter tool" test_parse_bundle_metadata_filter_tool
     run_test "parse_bundle_metadata filter user" test_parse_bundle_metadata_filter_user
     run_test "parse_bundle_metadata invalid name" test_parse_bundle_metadata_invalid_name
     echo ""
@@ -751,7 +752,7 @@ main() {
     echo "--- Backend List (mocked) ---"
     run_test "list empty" test_list_empty
     run_test "list with bundles" test_list_with_bundles
-    run_test "list filter host" test_list_filter_host
+    run_test "list filter tool" test_list_filter_tool
     run_test "list filter user" test_list_filter_user
     echo ""
 

@@ -162,8 +162,8 @@ sudo cac push --user ubuntu
 # Download and apply the globally newest bundle
 cac pull
 
-# Filter by host or user
-cac pull --host prod-server-01
+# Filter by tool or user
+cac pull --tool claude
 cac pull --user bob
 
 # Apply to another user (requires root)
@@ -173,7 +173,7 @@ sudo cac pull --user bob
 sudo cac pull --all
 ```
 
-Without `--host` or `--user` flags, `cac pull` fetches the **globally newest** bundle across all hosts and users. Use `--host` and/or `--user` to narrow the search.
+Without `--tool` or `--user` flags, `cac pull` fetches the **globally newest** bundle across all hosts and users. Use `--tool` and/or `--user` to narrow the search.
 
 The `--all` flag scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`) or files (`.claude.json`) and pulls the matching bundle for each.
 
@@ -183,10 +183,10 @@ The `--all` flag scans `/home/*` and `/root` for users with AI tool config direc
 # List all available bundles
 cac list
 
-# Filter by host or user
-cac list --host prod-server-01
+# Filter by tool or user
+cac list --tool codex
 cac list --user ubuntu
-cac list --host myhost --user deploy
+cac list --tool claude --user deploy
 ```
 
 ### Pull Specific Bundle
@@ -220,6 +220,19 @@ sudo cac check --user ubuntu
 **Note:** `cac test` is an alias for `cac check` for backward compatibility.
 
 Results are cached for 5 minutes to avoid repeated checks.
+
+### Self-Update
+
+```bash
+# Update cac to the latest version
+cac update
+
+# Check if an update is available (without installing)
+cac update --check
+
+# System-wide update (requires root)
+sudo cac update
+```
 
 ### Push with Credential Verification
 

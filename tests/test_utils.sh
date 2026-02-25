@@ -153,20 +153,20 @@ test_init_command_context_invalid_user() {
 # ============================================================================
 
 test_parse_filter_args_both() {
-    utils_parse_filter_args --host myhost --user myuser
-    assert_equals "myhost" "$FILTER_HOST" "FILTER_HOST" &&
+    utils_parse_filter_args --tool claude --user myuser
+    assert_equals "claude" "$FILTER_TOOL" "FILTER_TOOL" &&
     assert_equals "myuser" "$FILTER_USER" "FILTER_USER"
 }
 
-test_parse_filter_args_host_only() {
-    utils_parse_filter_args --host prodserver
-    assert_equals "prodserver" "$FILTER_HOST" "FILTER_HOST" &&
+test_parse_filter_args_tool_only() {
+    utils_parse_filter_args --tool codex
+    assert_equals "codex" "$FILTER_TOOL" "FILTER_TOOL" &&
     assert_equals "" "$FILTER_USER" "FILTER_USER should be empty"
 }
 
 test_parse_filter_args_empty() {
     utils_parse_filter_args
-    assert_equals "" "$FILTER_HOST" "FILTER_HOST should be empty" &&
+    assert_equals "" "$FILTER_TOOL" "FILTER_TOOL should be empty" &&
     assert_equals "" "$FILTER_USER" "FILTER_USER should be empty"
 }
 
@@ -176,14 +176,14 @@ test_parse_filter_args_empty() {
 
 test_build_filter_description_both() {
     local desc
-    desc=$(utils_build_filter_description "myhost" "myuser")
-    assert_equals "host=myhost, user=myuser" "$desc" "both filters"
+    desc=$(utils_build_filter_description "claude" "myuser")
+    assert_equals "tool=claude, user=myuser" "$desc" "both filters"
 }
 
-test_build_filter_description_host_only() {
+test_build_filter_description_tool_only() {
     local desc
-    desc=$(utils_build_filter_description "myhost" "")
-    assert_equals "host=myhost" "$desc" "host only"
+    desc=$(utils_build_filter_description "codex" "")
+    assert_equals "tool=codex" "$desc" "tool only"
 }
 
 test_build_filter_description_user_only() {
@@ -200,8 +200,8 @@ test_build_filter_description_empty() {
 
 test_error_no_bundle_found_with_filters() {
     local output
-    output=$(utils_error_no_bundle_found "myhost" "myuser" "in storage" 2>&1)
-    [[ "$output" == *"No bundle found matching: host=myhost, user=myuser"* ]] || return 1
+    output=$(utils_error_no_bundle_found "claude" "myuser" "in storage" 2>&1)
+    [[ "$output" == *"No bundle found matching: tool=claude, user=myuser"* ]] || return 1
 }
 
 test_error_no_bundle_found_no_filters() {
@@ -210,10 +210,10 @@ test_error_no_bundle_found_no_filters() {
     [[ "$output" == *"No bundles found on server"* ]] || return 1
 }
 
-test_error_no_bundle_found_host_only() {
+test_error_no_bundle_found_tool_only() {
     local output
-    output=$(utils_error_no_bundle_found "myhost" "" "in storage" 2>&1)
-    [[ "$output" == *"No bundle found matching: host=myhost"* ]] || return 1
+    output=$(utils_error_no_bundle_found "codex" "" "in storage" 2>&1)
+    [[ "$output" == *"No bundle found matching: tool=codex"* ]] || return 1
 }
 
 # ============================================================================
@@ -269,29 +269,41 @@ test_json_get_error_missing() {
 # Bundle Metadata Parsing Tests
 # ============================================================================
 
-test_parse_bundle_metadata_valid() {
+test_parse_bundle_metadata_valid_old_format() {
     local result
     result=$(utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_250111-120000.zip" "" "")
-    assert_equals "CodingAgentConfig_myhost_alice_250111-120000.zip|myhost|alice|250111-120000" "$result" "parsed metadata"
+    assert_equals "CodingAgentConfig_myhost_alice_250111-120000.zip|myhost|alice|all|250111-120000" "$result" "parsed metadata (old format, tool=all)"
+}
+
+test_parse_bundle_metadata_valid_new_format() {
+    local result
+    result=$(utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_claude_250111-120000.zip" "" "")
+    assert_equals "CodingAgentConfig_myhost_alice_claude_250111-120000.zip|myhost|alice|claude|250111-120000" "$result" "parsed metadata (new format)"
 }
 
 test_parse_bundle_metadata_invalid() {
     assert_fails "non-bundle file parsing" utils_parse_bundle_metadata "random_file.zip" "" ""
 }
 
-test_parse_bundle_metadata_filter_host() {
-    assert_success "matching host filter" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_250111-120000.zip" "myhost" "" &&
-    assert_fails "non-matching host filter" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_250111-120000.zip" "otherhost" ""
+test_parse_bundle_metadata_filter_tool() {
+    assert_success "matching tool filter" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_claude_250111-120000.zip" "claude" "" &&
+    assert_fails "non-matching tool filter" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_claude_250111-120000.zip" "codex" ""
+}
+
+test_parse_bundle_metadata_filter_tool_old_format() {
+    # Old format bundles have tool="all", so filtering by "all" should match
+    assert_success "old format matches tool=all" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_250111-120000.zip" "all" "" &&
+    assert_fails "old format does not match specific tool" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_250111-120000.zip" "claude" ""
 }
 
 test_parse_bundle_metadata_filter_user() {
-    assert_success "matching user filter" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_250111-120000.zip" "" "alice" &&
-    assert_fails "non-matching user filter" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_250111-120000.zip" "" "bob"
+    assert_success "matching user filter" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_claude_250111-120000.zip" "" "alice" &&
+    assert_fails "non-matching user filter" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_claude_250111-120000.zip" "" "bob"
 }
 
 test_parse_bundle_metadata_filter_both() {
-    assert_success "matching both filters" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_250111-120000.zip" "myhost" "alice" &&
-    assert_fails "non-matching user with matching host" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_250111-120000.zip" "myhost" "bob"
+    assert_success "matching both filters" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_claude_250111-120000.zip" "claude" "alice" &&
+    assert_fails "non-matching user with matching tool" utils_parse_bundle_metadata "CodingAgentConfig_myhost_alice_claude_250111-120000.zip" "claude" "bob"
 }
 
 # ============================================================================
@@ -300,21 +312,21 @@ test_parse_bundle_metadata_filter_both() {
 
 test_find_newest_bundle_single() {
     local result
-    result=$(echo "CodingAgentConfig_host_user_250111-120000.zip|host|user|250111-120000" | utils_find_newest_bundle)
-    assert_equals "CodingAgentConfig_host_user_250111-120000.zip" "$result" "single bundle"
+    result=$(echo "CodingAgentConfig_host_user_claude_250111-120000.zip|host|user|claude|250111-120000" | utils_find_newest_bundle)
+    assert_equals "CodingAgentConfig_host_user_claude_250111-120000.zip" "$result" "single bundle"
 }
 
 test_find_newest_bundle_multiple() {
     local input
     input=$(cat <<'EOF'
-CodingAgentConfig_host_user_250111-100000.zip|host|user|250111-100000
-CodingAgentConfig_host_user_250111-130000.zip|host|user|250111-130000
-CodingAgentConfig_host_user_250111-120000.zip|host|user|250111-120000
+CodingAgentConfig_host_user_claude_250111-100000.zip|host|user|claude|250111-100000
+CodingAgentConfig_host_user_claude_250111-130000.zip|host|user|claude|250111-130000
+CodingAgentConfig_host_user_claude_250111-120000.zip|host|user|claude|250111-120000
 EOF
 )
     local result
     result=$(echo "$input" | utils_find_newest_bundle)
-    assert_equals "CodingAgentConfig_host_user_250111-130000.zip" "$result" "newest bundle"
+    assert_equals "CodingAgentConfig_host_user_claude_250111-130000.zip" "$result" "newest bundle"
 }
 
 test_find_newest_bundle_empty() {
@@ -578,17 +590,19 @@ test_print_bundle_list_header() {
     assert_contains "BUNDLE" "$output" "BUNDLE column" &&
     assert_contains "HOST" "$output" "HOST column" &&
     assert_contains "USER" "$output" "USER column" &&
+    assert_contains "TOOL" "$output" "TOOL column" &&
     assert_contains "TIMESTAMP" "$output" "TIMESTAMP column"
 }
 
 test_print_bundle_list_entry() {
     local output
-    output=$(utils_print_bundle_list_entry "test_bundle.zip" "myhost" "alice" "250111-120000")
+    output=$(utils_print_bundle_list_entry "test_bundle.zip" "myhost" "alice" "claude" "250111-120000")
 
     # Entry should contain all provided values
     assert_contains "test_bundle.zip" "$output" "bundle name" &&
     assert_contains "myhost" "$output" "host" &&
     assert_contains "alice" "$output" "user" &&
+    assert_contains "claude" "$output" "tool" &&
     assert_contains "250111-120000" "$output" "timestamp"
 }
 
@@ -727,18 +741,18 @@ main() {
 
     echo "--- Filter Args Parsing ---"
     run_test "parse_filter_args both" test_parse_filter_args_both
-    run_test "parse_filter_args host only" test_parse_filter_args_host_only
+    run_test "parse_filter_args tool only" test_parse_filter_args_tool_only
     run_test "parse_filter_args empty" test_parse_filter_args_empty
     echo ""
 
     echo "--- Filter Description Building ---"
     run_test "build_filter_description both" test_build_filter_description_both
-    run_test "build_filter_description host only" test_build_filter_description_host_only
+    run_test "build_filter_description tool only" test_build_filter_description_tool_only
     run_test "build_filter_description user only" test_build_filter_description_user_only
     run_test "build_filter_description empty" test_build_filter_description_empty
     run_test "error_no_bundle_found with filters" test_error_no_bundle_found_with_filters
     run_test "error_no_bundle_found no filters" test_error_no_bundle_found_no_filters
-    run_test "error_no_bundle_found host only" test_error_no_bundle_found_host_only
+    run_test "error_no_bundle_found tool only" test_error_no_bundle_found_tool_only
     echo ""
 
     echo "--- JSON Parsing ---"
@@ -752,9 +766,11 @@ main() {
     echo ""
 
     echo "--- Bundle Metadata Parsing ---"
-    run_test "parse_bundle_metadata valid" test_parse_bundle_metadata_valid
+    run_test "parse_bundle_metadata valid (old format)" test_parse_bundle_metadata_valid_old_format
+    run_test "parse_bundle_metadata valid (new format)" test_parse_bundle_metadata_valid_new_format
     run_test "parse_bundle_metadata invalid" test_parse_bundle_metadata_invalid
-    run_test "parse_bundle_metadata filter host" test_parse_bundle_metadata_filter_host
+    run_test "parse_bundle_metadata filter tool" test_parse_bundle_metadata_filter_tool
+    run_test "parse_bundle_metadata filter tool (old format)" test_parse_bundle_metadata_filter_tool_old_format
     run_test "parse_bundle_metadata filter user" test_parse_bundle_metadata_filter_user
     run_test "parse_bundle_metadata filter both" test_parse_bundle_metadata_filter_both
     echo ""

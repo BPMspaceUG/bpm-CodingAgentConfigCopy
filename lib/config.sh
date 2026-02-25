@@ -126,6 +126,85 @@ config_load() {
     return 0
 }
 
+# ============================================================================
+# Sync Marker Functions (Issue #41: Per-tool change detection)
+# ============================================================================
+
+# Get the path to a tool's sync marker file
+# Usage: config_get_sync_marker_path <tool>
+# Returns: Absolute path to the marker file
+config_get_sync_marker_path() {
+    local tool="$1"
+    local config_dir="${CAC_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/cac}"
+    echo "${config_dir}/.last_sync_${tool}"
+}
+
+# Update (touch) a tool's sync marker
+# Usage: config_update_sync_marker <tool>
+# Creates the marker file if it doesn't exist, updates mtime if it does
+config_update_sync_marker() {
+    local tool="$1"
+    local marker_path
+    marker_path=$(config_get_sync_marker_path "$tool")
+
+    local marker_dir
+    marker_dir=$(dirname "$marker_path")
+    [[ -d "$marker_dir" ]] || mkdir -p "$marker_dir"
+
+    touch "$marker_path"
+}
+
+# Get a tool's sync marker time as epoch seconds
+# Usage: config_get_sync_marker_time <tool>
+# Returns: Epoch seconds of marker mtime, or 0 if marker doesn't exist
+config_get_sync_marker_time() {
+    local tool="$1"
+    local marker_path
+    marker_path=$(config_get_sync_marker_path "$tool")
+
+    if [[ -f "$marker_path" ]]; then
+        stat -c '%Y' "$marker_path" 2>/dev/null || echo "0"
+    else
+        echo "0"
+    fi
+}
+
+# Check if a tool needs syncing (credentials newer than last sync)
+# Usage: config_needs_sync <tool> <home_dir>
+# Returns: "true" if sync needed, "false" if not
+# Note: Requires tools.sh to be sourced (for tools_get_files)
+config_needs_sync() {
+    local tool="$1"
+    local home_dir="$2"
+
+    local marker_time
+    marker_time=$(config_get_sync_marker_time "$tool")
+
+    # If no marker exists (time=0), always needs sync
+    if [[ "$marker_time" -eq 0 ]]; then
+        echo "true"
+        return 0
+    fi
+
+    # Check if any credential file for this tool is newer than the marker
+    local rel_path
+    while IFS= read -r rel_path; do
+        [[ -z "$rel_path" ]] && continue
+        local abs_path="${home_dir}/${rel_path}"
+        if [[ -f "$abs_path" ]]; then
+            local file_time
+            file_time=$(stat -c '%Y' "$abs_path" 2>/dev/null || echo "0")
+            if [[ "$file_time" -gt "$marker_time" ]]; then
+                echo "true"
+                return 0
+            fi
+        fi
+    done < <(tools_get_files "$tool")
+
+    echo "false"
+    return 0
+}
+
 # Validate required configuration for the selected backend
 config_validate() {
     case "$CAC_BACKEND" in

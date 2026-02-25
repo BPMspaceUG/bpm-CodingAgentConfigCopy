@@ -145,6 +145,14 @@ main() {
         echo ""
     fi
 
+    # Run update tests (Issue #47)
+    if $run_all || [[ "$filter" == "update" ]]; then
+        if ! run_test_suite "Update Tests" "test_update.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     echo "========================================"
     echo "Overall Summary"
     echo "========================================"

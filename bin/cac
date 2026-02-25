@@ -31,6 +31,8 @@ source "${LIB_DIR}/check.sh"
 source "${LIB_DIR}/env.sh"
 # shellcheck source=lib/skill.sh
 source "${LIB_DIR}/skill.sh"
+# shellcheck source=lib/update.sh
+source "${LIB_DIR}/update.sh"
 
 # ============================================================================
 # Help / Usage
@@ -48,11 +50,12 @@ USAGE:
 
 COMMANDS:
     push [--user USER] [--dry-run] [--skip-check]  Create and upload config bundle
-    pull [BUNDLE_ID] [--host HOST] [--user USER] [--dry-run] [--all]
+    pull [BUNDLE_ID] [--tool TOOL] [--user USER] [--dry-run] [--all]
                                     Download and apply bundle (newest or specific)
-    list [--host HOST] [--user USER]  List available bundles
+    list [--tool TOOL] [--user USER]  List available bundles
     check [TOOL] [--user USER]      Verify AI tool credentials work
     test [--user USER]              (Alias for check) Test API connectivity
+    update [--check]                Self-update cac to the latest version
     env install [TOOL] [--user|--global] [--tmux]  Install AI tool environments
     env update [TOOL] [--user|--global]   Update AI tool environments
     env status [--parseable] [--check-updates]  Show AI tool installation status
@@ -61,9 +64,15 @@ COMMANDS:
     skill list                              List installed skill libraries
     skill status                            Show libraries with update info
 
+SUPPORTED TOOLS:
+    claude          Claude Code (Anthropic)
+    codex           Codex CLI (OpenAI)
+    gemini          Gemini CLI (Google)
+    mistral         Mistral Vibe (Mistral AI)
+
 OPTIONS:
     --user USER     Operate on specified user (requires root for other users)
-    --host HOST     Filter bundles by hostname
+    --tool TOOL     Filter bundles by AI tool name (pull, list)
     --all           Pull to all users with AI tool configs (requires root)
     --dry-run       Preview what would happen without making changes
     --skip-check    Skip credential verification before push
@@ -79,7 +88,7 @@ EXAMPLES:
     cac push --skip-check       Skip credential verification before upload
     cac push --user ubuntu      Bundle ubuntu user's config (requires root)
     cac pull                    Apply globally newest bundle
-    cac pull --host mypc        Apply newest bundle from specific host
+    cac pull --tool claude      Apply newest bundle for Claude tool
     cac pull --user bob         Apply newest bundle to user bob (requires root)
     cac pull --dry-run          Preview what would be extracted
     cac pull CodingAgentConfig_myhost_user_250111-120000.zip
@@ -87,13 +96,19 @@ EXAMPLES:
     cac pull mybundle           Partial match on bundle name
     sudo cac pull --all         Pull config to all users with AI tool dirs
     cac list                    List all available bundles
-    cac list --host prod-01     List bundles from specific host
+    cac list --tool codex       List bundles for Codex tool
     cac check                   Verify all AI tool credentials work
     cac check claude            Verify only Claude credentials
+    cac check codex             Verify only Codex credentials
+    cac check gemini            Verify only Gemini credentials
+    cac check mistral           Verify only Mistral credentials
     cac check --user bob        Verify credentials for user bob (requires root)
+    cac update                  Update cac to the latest version
+    cac update --check          Check if an update is available
     cac env status              Show AI tool installation status
     cac env status --check-updates  Show status with update availability
     cac env install claude      Install Claude Code CLI
+    cac env install mistral     Install Mistral Vibe CLI
     cac env install --global    Install all AI tools system-wide (requires root)
     cac env update codex        Update Codex CLI
     cac env --help              Show full env subcommand help
@@ -216,12 +231,12 @@ cmd_push() {
 cmd_pull() {
     local pull_all="false"
     local dry_run="false"
-    local explicit_host=""
-    local host_provided="false"
+    local explicit_tool=""
+    local tool_provided="false"
     local bundle_id=""
     local args=()
 
-    # Pre-parse pull-specific flags (--all, --host need special handling)
+    # Pre-parse pull-specific flags (--all, --tool need special handling)
     # and capture optional positional BUNDLE_ID argument
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -229,13 +244,13 @@ cmd_pull() {
                 pull_all="true"
                 shift
                 ;;
-            --host)
+            --tool)
                 if [[ $# -lt 2 ]]; then
-                    utils_error "Option --host requires an argument"
+                    utils_error "Option --tool requires an argument"
                     return 1
                 fi
-                explicit_host="$2"
-                host_provided="true"
+                explicit_tool="$2"
+                tool_provided="true"
                 shift 2
                 ;;
             --dry-run)
@@ -302,8 +317,8 @@ cmd_pull() {
 
     # Build backend filter arguments (only pass explicitly provided filters)
     local filter_args=()
-    if [[ "$host_provided" == "true" ]]; then
-        filter_args+=(--host "$explicit_host")
+    if [[ "$tool_provided" == "true" ]]; then
+        filter_args+=(--tool "$explicit_tool")
     fi
     if [[ -n "$PARSED_USER" ]]; then
         filter_args+=(--user "$PARSED_USER")
@@ -364,9 +379,6 @@ cmd_pull_all() {
 
     echo "=== Pulling config to all AI tool users ==="
     echo ""
-
-    local target_host
-    target_host=$(hostname -s)
 
     # Find users with AI tool config directories or files
     local users_found=()
@@ -446,8 +458,8 @@ cmd_pull_all() {
 
         # Find newest bundle for this user
         local newest_bundle
-        if ! newest_bundle=$(backend_call get_newest --host "$target_host" --user "$username" 2>/dev/null); then
-            echo "  No bundle found for $username@$target_host, skipping"
+        if ! newest_bundle=$(backend_call get_newest --user "$username" 2>/dev/null); then
+            echo "  No bundle found for $username, skipping"
             echo ""
             continue
         fi
@@ -658,6 +670,11 @@ main() {
 
     if [[ "$command" == "skill" ]]; then
         skill_cmd_main "$@"
+        exit $?
+    fi
+
+    if [[ "$command" == "update" ]]; then
+        update_cmd_main "$@"
         exit $?
     fi
 
