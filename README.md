@@ -292,7 +292,7 @@ The `--tmux` flag configures Claude Code to display agent teammates as tmux pane
 | Codex CLI | npm | No |
 | Gemini CLI | npm | No |
 | continuous-claude | curl installer | Yes |
-| Mistral Vibe | npm | No |
+| Mistral Vibe | curl installer | No |
 
 **Automated installation with cac installer:**
 
