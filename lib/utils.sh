@@ -842,7 +842,7 @@ utils_preview_extraction() {
     security_init_temp_dir temp_dir "cac-dryrun"
     trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
 
-    local download_path="${temp_dir}/bundle.zip"
+    local download_path="${temp_dir}/$(basename "$bundle_id")"
 
     if ! backend_call download "$bundle_id" "$download_path" 2>/dev/null; then
         echo "  (unable to preview bundle contents)"
@@ -893,7 +893,7 @@ utils_download_and_extract() {
     security_init_temp_dir temp_dir "cac-download"
     trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
 
-    local download_path="${temp_dir}/bundle.zip"
+    local download_path="${temp_dir}/$(basename "$bundle_id")"
 
     if ! backend_call download "$bundle_id" "$download_path"; then
         return 1

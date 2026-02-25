@@ -352,6 +352,143 @@ test_bundle_extract_mistral_permissions() {
 }
 
 # ============================================================================
+# Issue #46: Settings Extraction Guard Tests
+# ============================================================================
+
+test_bundle_create_includes_settings() {
+    local fake_home="${TEST_TMPDIR}/settings_home"
+    local output_zip="${TEST_TMPDIR}/settings_output.zip"
+
+    # Create fake home with credential AND settings files
+    mkdir -p "${fake_home}/.claude"
+    echo '{"test": true}' > "${fake_home}/.claude.json"
+    echo '{"creds": "secret"}' > "${fake_home}/.claude/.credentials.json"
+    echo '{"teammateMode": "tmux"}' > "${fake_home}/.claude/settings.json"
+
+    # Create bundle (bundle_create always includes settings)
+    assert_success "bundle_create with settings" bundle_create "$fake_home" "$output_zip" "all"
+
+    # Verify ZIP contains settings file
+    local contents
+    contents=$(unzip -Z1 "$output_zip")
+
+    assert_contains ".claude/settings.json" "$contents" "ZIP contents"
+}
+
+test_bundle_extract_settings_host_match() {
+    local current_host
+    current_host=$(hostname -s)
+    local current_user
+    current_user=$(whoami)
+
+    local fake_home="${TEST_TMPDIR}/settings_match_src"
+    local target_home="${TEST_TMPDIR}/settings_match_dst"
+
+    # Create source home with settings
+    mkdir -p "${fake_home}/.claude"
+    echo '{"test": true}' > "${fake_home}/.claude.json"
+    echo '{"teammateMode": "tmux"}' > "${fake_home}/.claude/settings.json"
+
+    # Create bundle with matching host+user in filename
+    local bundle_zip="${TEST_TMPDIR}/CodingAgentConfig_${current_host}_${current_user}_250101-100000.zip"
+    (cd "$fake_home" && zip -q "$bundle_zip" .claude.json .claude/settings.json)
+
+    # Create target home
+    mkdir -p "$target_home"
+
+    # Extract — host+user match, settings should be extracted
+    bundle_extract "$bundle_zip" "$target_home" "$current_user" >/dev/null 2>&1
+
+    assert_file_exists "${target_home}/.claude/settings.json" "settings.json should be extracted on match"
+}
+
+test_bundle_extract_settings_lost_with_generic_filename() {
+    # Issue #46 regression test: proves that using a generic filename like
+    # "bundle.zip" (the old download path in utils_download_and_extract) causes
+    # settings to never be extracted, even when host+user should match.
+    local current_host
+    current_host=$(hostname -s)
+    local current_user
+    current_user=$(whoami)
+
+    local fake_home="${TEST_TMPDIR}/settings_generic_src"
+    local target_home="${TEST_TMPDIR}/settings_generic_dst"
+
+    # Create source home with settings
+    mkdir -p "${fake_home}/.claude"
+    echo '{"test": true}' > "${fake_home}/.claude.json"
+    echo '{"teammateMode": "tmux"}' > "${fake_home}/.claude/settings.json"
+
+    # Create bundle with GENERIC filename (simulating the old bug)
+    local bundle_zip="${TEST_TMPDIR}/bundle.zip"
+    (cd "$fake_home" && zip -q "$bundle_zip" .claude.json .claude/settings.json)
+
+    # Create target home
+    mkdir -p "$target_home"
+
+    # Extract — filename has no host/user metadata, so settings should be SKIPPED
+    local output
+    output=$(bundle_extract "$bundle_zip" "$target_home" "$current_user" 2>&1)
+
+    # Credential file should still be extracted
+    assert_file_exists "${target_home}/.claude.json" "credential file extracted"
+
+    # Settings file should NOT be extracted because bundle_get_host returns ""
+    if [[ -f "${target_home}/.claude/settings.json" ]]; then
+        echo "settings.json should NOT be extracted with generic filename 'bundle.zip'" >&2
+        return 1
+    fi
+
+    # Now verify that the SAME content with a proper filename DOES extract settings
+    local target_home2="${TEST_TMPDIR}/settings_generic_dst2"
+    mkdir -p "$target_home2"
+
+    local proper_zip="${TEST_TMPDIR}/CodingAgentConfig_${current_host}_${current_user}_250101-120000.zip"
+    cp "$bundle_zip" "$proper_zip"
+
+    bundle_extract "$proper_zip" "$target_home2" "$current_user" >/dev/null 2>&1
+
+    assert_file_exists "${target_home2}/.claude/settings.json" \
+        "settings.json SHOULD be extracted with proper bundle filename"
+}
+
+test_bundle_extract_settings_host_mismatch() {
+    local current_user
+    current_user=$(whoami)
+
+    local fake_home="${TEST_TMPDIR}/settings_mismatch_src"
+    local target_home="${TEST_TMPDIR}/settings_mismatch_dst"
+
+    # Create source home with settings
+    mkdir -p "${fake_home}/.claude"
+    echo '{"test": true}' > "${fake_home}/.claude.json"
+    echo '{"teammateMode": "tmux"}' > "${fake_home}/.claude/settings.json"
+
+    # Create bundle with DIFFERENT host in filename
+    local bundle_zip="${TEST_TMPDIR}/CodingAgentConfig_otherhost_${current_user}_250101-100000.zip"
+    (cd "$fake_home" && zip -q "$bundle_zip" .claude.json .claude/settings.json)
+
+    # Create target home
+    mkdir -p "$target_home"
+
+    # Extract — host mismatch, settings should be SKIPPED
+    local output
+    output=$(bundle_extract "$bundle_zip" "$target_home" "$current_user" 2>&1)
+
+    # Credential file should be extracted
+    assert_file_exists "${target_home}/.claude.json" "credential file should be extracted"
+
+    # Settings file should NOT be extracted
+    if [[ -f "${target_home}/.claude/settings.json" ]]; then
+        echo "settings.json should NOT be extracted on host mismatch" >&2
+        return 1
+    fi
+
+    # Output should mention skipping
+    assert_contains "skipped (host-specific)" "$output" "skip message"
+}
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -386,6 +523,13 @@ main() {
     run_test "bundle_extract creates backup" test_bundle_extract_creates_backup
     run_test "bundle_list_contents" test_bundle_list_contents
     run_test "bundle_list_contents nonexistent" test_bundle_list_contents_nonexistent
+    echo ""
+
+    echo "--- Issue #46: Settings Extraction Guard ---"
+    run_test "bundle_create includes settings" test_bundle_create_includes_settings
+    run_test "bundle_extract settings on host match" test_bundle_extract_settings_host_match
+    run_test "bundle_extract settings lost with generic filename" test_bundle_extract_settings_lost_with_generic_filename
+    run_test "bundle_extract settings skipped on host mismatch" test_bundle_extract_settings_host_mismatch
     echo ""
 
     echo "--- Mistral Bundle Tests (Issue #45) ---"

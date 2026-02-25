@@ -91,7 +91,7 @@ bpm-CodingAgentConfigCopy/
 CodingAgentConfig_<HOST>_<USER>_<YYMMDD-HHMMSS>.zip
 ```
 
-### Configuration Files Managed
+### Credential Files (portable across hosts)
 
 | Tool | Files |
 |------|-------|
@@ -99,6 +99,14 @@ CodingAgentConfig_<HOST>_<USER>_<YYMMDD-HHMMSS>.zip
 | Codex CLI | `.codex/auth.json` |
 | Gemini CLI | `.gemini/oauth_creds.json`, `.gemini/google_accounts.json`, `.gemini/settings.json`, `.gemini/state.json`, `.gemini/installation_id`, `.config/gcloud/application_default_credentials.json` |
 | Mistral Vibe | `.vibe/.env`, `.vibe/config.toml` |
+
+### Settings Files (host+user-specific, NOT portable)
+
+| Tool | Files |
+|------|-------|
+| Claude Code | `.claude/settings.json` |
+
+Settings are bundled with `cac push` but only extracted by `cac pull` when the bundle's hostname AND username match the target. This prevents host-specific config (e.g. `teammateMode: "tmux"`) from being overwritten by bundles from other hosts.
 
 ## Installation Paths
 

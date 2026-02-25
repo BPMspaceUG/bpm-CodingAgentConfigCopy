@@ -148,6 +148,51 @@ test_tools_is_valid() {
     assert_fails "invalid_tool is not valid" tools_is_valid "invalid_tool"
 }
 
+test_tools_get_files_without_settings() {
+    source "${PROJECT_ROOT}/lib/tools.sh"
+
+    local files
+    files=$(tools_get_files "claude")
+
+    # Should contain credentials
+    assert_contains ".claude.json" "$files" "claude credential files" || return 1
+    assert_contains ".claude/.credentials.json" "$files" "claude credential files" || return 1
+
+    # Should NOT contain settings
+    if [[ "$files" == *"settings.json"* ]]; then
+        echo "tools_get_files without flag should NOT contain settings.json, got: $files" >&2
+        return 1
+    fi
+}
+
+test_tools_get_files_with_settings() {
+    source "${PROJECT_ROOT}/lib/tools.sh"
+
+    local files
+    files=$(tools_get_files "claude" "--include-settings")
+
+    # Should contain credentials AND settings
+    assert_contains ".claude.json" "$files" "claude files with settings" &&
+    assert_contains ".claude/.credentials.json" "$files" "claude files with settings" &&
+    assert_contains ".claude/settings.json" "$files" "claude settings file"
+}
+
+test_tools_get_settings_files() {
+    source "${PROJECT_ROOT}/lib/tools.sh"
+
+    local files
+    files=$(tools_get_settings_files "claude")
+
+    # Should contain ONLY settings
+    assert_contains ".claude/settings.json" "$files" "claude settings file" || return 1
+
+    # Should NOT contain credentials
+    if [[ "$files" == *".credentials.json"* ]]; then
+        echo "tools_get_settings_files should NOT contain credentials, got: $files" >&2
+        return 1
+    fi
+}
+
 test_tools_collect_existing() {
     source "${PROJECT_ROOT}/lib/tools.sh"
 
@@ -908,6 +953,9 @@ main() {
     run_test "tools_get_files claude" test_tools_get_files_claude
     run_test "tools_get_files mistral" test_tools_get_files_mistral
     run_test "tools_get_files all" test_tools_get_files_all
+    run_test "tools_get_files without --include-settings" test_tools_get_files_without_settings
+    run_test "tools_get_files with --include-settings" test_tools_get_files_with_settings
+    run_test "tools_get_settings_files" test_tools_get_settings_files
     run_test "tools_is_valid" test_tools_is_valid
     run_test "tools_collect_existing" test_tools_collect_existing
     run_test "tools_collect_existing mistral" test_tools_collect_existing_mistral

@@ -28,6 +28,27 @@ framework_init
 # Helper
 # ============================================================================
 
+# Build a PATH string that includes all current PATH executables except tmux.
+# Stores result in _NO_TMUX_PATH. Creates symlinks in TEST_TMPDIR/no_tmux_bin.
+_build_no_tmux_path() {
+    local fake_bin="${TEST_TMPDIR}/no_tmux_bin"
+    if [[ ! -d "$fake_bin" ]]; then
+        mkdir -p "$fake_bin"
+        local dir
+        while IFS= read -r dir; do
+            [[ -d "$dir" ]] || continue
+            for f in "$dir"/*; do
+                [[ -x "$f" && ! -d "$f" ]] || continue
+                local name
+                name="$(basename "$f")"
+                [[ "$name" == "tmux" ]] && continue
+                [[ -e "$fake_bin/$name" ]] || ln -s "$f" "$fake_bin/$name"
+            done
+        done <<< "$(echo "$PATH" | tr ':' '\n')"
+    fi
+    _NO_TMUX_PATH="$fake_bin"
+}
+
 # Read a JSON key using python3
 _json_get() {
     local file="$1"
@@ -222,6 +243,66 @@ test_configure_tmux_sets_teammate_mode() {
     export HOME="$orig_home"
 }
 
+test_configure_tmux_missing_skips_teammate_mode() {
+    local orig_home="$HOME"
+    export HOME="${TEST_TMPDIR}/configure_tmux_missing_skip"
+    mkdir -p "${HOME}/.claude"
+
+    _build_no_tmux_path
+    PATH="$_NO_TMUX_PATH" _env_configure_claude_settings "true" 2>/dev/null
+
+    # teammateMode should NOT be present
+    if python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+if 'teammateMode' in d:
+    sys.exit(1)
+" "${HOME}/.claude/settings.json"; then
+        : # good — key absent
+    else
+        fail "teammateMode should not be set when tmux is missing"
+        export HOME="$orig_home"
+        return 1
+    fi
+
+    export HOME="$orig_home"
+}
+
+test_configure_tmux_missing_preserves_agent_teams() {
+    local orig_home="$HOME"
+    export HOME="${TEST_TMPDIR}/configure_tmux_missing_teams"
+    mkdir -p "${HOME}/.claude"
+
+    _build_no_tmux_path
+    PATH="$_NO_TMUX_PATH" _env_configure_claude_settings "true" 2>/dev/null
+
+    local val
+    val=$(_json_get "${HOME}/.claude/settings.json" "env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS")
+    assert_equals "1" "$val" "agent teams set even when tmux missing"
+
+    export HOME="$orig_home"
+}
+
+test_configure_tmux_missing_does_not_override_existing() {
+    local orig_home="$HOME"
+    export HOME="${TEST_TMPDIR}/configure_tmux_missing_existing"
+    mkdir -p "${HOME}/.claude"
+
+    # Pre-create settings with existing teammateMode
+    echo '{"teammateMode":"old"}' > "${HOME}/.claude/settings.json"
+    chmod 600 "${HOME}/.claude/settings.json"
+
+    _build_no_tmux_path
+    PATH="$_NO_TMUX_PATH" _env_configure_claude_settings "true" 2>/dev/null
+
+    local val
+    val=$(_json_get "${HOME}/.claude/settings.json" "teammateMode")
+    assert_equals "old" "$val" "existing teammateMode preserved when tmux missing"
+
+    export HOME="$orig_home"
+}
+
 # ============================================================================
 # Tests: --tmux flag parsing
 # ============================================================================
@@ -264,6 +345,9 @@ echo ""
 echo "--- Configure Claude Settings ---"
 run_test "always sets agent teams env var" test_configure_always_sets_agent_teams
 run_test "tmux flag sets teammateMode" test_configure_tmux_sets_teammate_mode
+run_test "tmux missing skips teammateMode" test_configure_tmux_missing_skips_teammate_mode
+run_test "tmux missing preserves agent teams" test_configure_tmux_missing_preserves_agent_teams
+run_test "tmux missing does not override existing teammateMode" test_configure_tmux_missing_does_not_override_existing
 
 echo ""
 echo "--- Flag Parsing ---"

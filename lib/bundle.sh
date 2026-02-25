@@ -112,7 +112,7 @@ bundle_create() {
             files+=("$rel_path")
             utils_verbose "Including file: $rel_path"
         fi
-    done < <(tools_get_files "$tool")
+    done < <(tools_get_files "$tool" "--include-settings")
 
     if [[ ${#files[@]} -eq 0 ]]; then
         utils_error "No configuration files found to bundle"
@@ -215,6 +215,9 @@ _bundle_extract_to_temp() {
 
 # Extract a bundle ZIP to user's home directory
 # Usage: bundle_extract <zip_file> <home_dir> <username>
+# Settings files (from _SETTINGS_REGISTRY) are only extracted when the bundle's
+# hostname+user match the current host+target user. This prevents host-specific
+# config (e.g. teammateMode) from being overwritten by bundles from other hosts.
 bundle_extract() {
     local zip_file="$1"
     local home_dir="$2"
@@ -228,6 +231,29 @@ bundle_extract() {
     if ! security_validate_zip "$zip_file" "$home_dir"; then
         return 1
     fi
+
+    # Determine if settings files should be extracted
+    # Only when bundle host+user matches current host+target user
+    local bundle_host bundle_user current_host
+    bundle_host=$(bundle_get_host "$zip_file")
+    bundle_user=$(bundle_get_user "$zip_file")
+    current_host=$(hostname -s)
+
+    local extract_settings="false"
+    if [[ "$bundle_host" == "$current_host" && "$bundle_user" == "$username" ]]; then
+        extract_settings="true"
+        utils_verbose "Host+user match — settings files will be extracted"
+    else
+        utils_verbose "Host+user mismatch (bundle=${bundle_host}/${bundle_user}, current=${current_host}/${username}) — skipping settings files"
+    fi
+
+    # Build list of settings file paths for skip check
+    local -A settings_files_map
+    local sf
+    while IFS= read -r sf; do
+        [[ -z "$sf" ]] && continue
+        settings_files_map["$sf"]=1
+    done < <(tools_get_settings_files "all")
 
     # Create secure temp directory for extraction
     # NOTE: Uses explicit cleanup instead of RETURN trap to avoid overwriting
@@ -250,6 +276,12 @@ bundle_extract() {
     while IFS= read -r entry; do
         [[ -z "$entry" ]] && continue
         [[ "$entry" == */ ]] && continue  # Skip directories
+
+        # Skip settings files when host+user don't match
+        if [[ "$extract_settings" == "false" && -n "${settings_files_map[$entry]+isset}" ]]; then
+            echo "  skipped (host-specific): $entry"
+            continue
+        fi
 
         local src_file="${temp_dir}/${entry}"
         local dst_file="${home_dir}/${entry}"

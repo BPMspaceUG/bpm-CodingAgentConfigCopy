@@ -139,7 +139,7 @@ cmd_push() {
 
     # Check if any config files exist
     local file_count
-    file_count=$(tools_count_existing "$home_dir" "all")
+    file_count=$(tools_count_existing "$home_dir" "all" "--include-settings")
     if [[ "$file_count" -eq 0 ]]; then
         utils_error "No AI tool configuration files found for user '$target_user'"
         return 1
@@ -166,7 +166,7 @@ cmd_push() {
         # Use process substitution to avoid pipe subshell masking errors
         while IFS= read -r file; do
             echo "  - $file"
-        done < <(tools_collect_existing "$home_dir" "all")
+        done < <(tools_collect_existing "$home_dir" "all" "--include-settings")
         utils_dryrun_footer
         return 0
     fi

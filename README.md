@@ -314,7 +314,7 @@ Example: `CodingAgentConfig_prod-server-01_ubuntu_250111-143022.zip`
 
 | Tool | Files |
 |------|-------|
-| Claude Code | `.claude.json`, `.claude/.credentials.json` |
+| Claude Code | `.claude.json`, `.claude/.credentials.json`, `.claude/settings.json` |
 | Codex CLI | `.codex/auth.json` |
 | Gemini CLI | `.gemini/oauth_creds.json`, `.gemini/google_accounts.json`, `.gemini/settings.json`, `.gemini/state.json`, `.gemini/installation_id`, `.config/gcloud/application_default_credentials.json` |
 | Mistral Vibe | `.vibe/.env`, `.vibe/config.toml` |
