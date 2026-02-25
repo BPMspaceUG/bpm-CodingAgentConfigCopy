@@ -48,7 +48,8 @@ bpm-CodingAgentConfigCopy/
 │   ├── run_tests.sh             # Test runner
 │   ├── test_bundle.sh           # Bundle tests
 │   ├── test_security.sh         # Security validation tests
-│   └── test_integration.sh      # End-to-end tests
+│   ├── test_integration.sh      # End-to-end tests
+│   └── test_env_settings.sh     # Claude Code settings.json merge tests
 ├── install.sh                   # Bootstrap installer
 ├── uninstall.sh                 # Clean removal script
 ├── cpaiagentconfig.sh           # Legacy single-host copy script
@@ -69,19 +70,19 @@ bpm-CodingAgentConfigCopy/
 | `cac check [TOOL] [--user USER]` | Verify AI tool credentials work (real API calls) |
 | `cac test [--user USER]` | Alias for check (backward compatibility) |
 | `cac env status [--parseable]` | Show AI tool installation status |
-| `cac env install [TOOL] [--global] [--yes]` | Install AI tool environments |
+| `cac env install [TOOL] [--global] [--yes] [--tmux]` | Install AI tool environments |
 | `cac env update [TOOL]` | Update installed AI tools |
 
 ### Library Modules
 
 - **config.sh**: Loads `.env` configuration, validates backend settings, checks file permissions
 - **security.sh**: User access checks, file permission validation, zip-slip protection, secure temp directories
-- **tools.sh**: Maps AI tools to their configuration files, collects/counts existing files
+- **tools.sh**: Maps AI tools to their configuration files (dual registry: credentials + settings), collects/counts existing files
 - **bundle.sh**: ZIP creation with correct naming convention, secure extraction with backups
 - **backend_local.sh**: Local filesystem storage operations (upload, download, list, get_newest)
 - **backend_gokapi.sh**: Gokapi REST API operations (upload, download, list, get_newest, delete); enforces 7-day max TTL
 - **check.sh**: Credential verification via real API calls; 5-minute cache, 10-second timeout per provider
-- **env.sh**: AI tool environment management; install/update/status for Claude, Codex, Gemini, continuous-claude
+- **env.sh**: AI tool environment management; install/update/status for Claude, Codex, Gemini, Mistral Vibe, continuous-claude; `--tmux` flag sets `teammateMode` in settings.json
 - **logging.sh**: Structured logging (info, warn, error, verbose, spinner)
 - **utils.sh**: Shared utilities (JSON field extraction, retry with backoff, filter parsing, command context)
 

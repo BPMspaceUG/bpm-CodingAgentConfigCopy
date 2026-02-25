@@ -211,6 +211,7 @@ cac check
 cac check claude
 cac check codex
 cac check gemini
+cac check mistral
 
 # Verify another user's credentials (requires root)
 sudo cac check --user ubuntu
@@ -250,10 +251,14 @@ cac env install
 cac env install claude
 cac env install codex
 cac env install gemini
+cac env install mistral
 cac env install continuous-claude
 
 # Install with --yes to skip confirmation prompts
 cac env install claude --yes
+
+# Install Claude Code with tmux teammate mode
+cac env install claude --tmux
 
 # Global scope (requires root)
 sudo cac env install --global             # Interactive tool selection
@@ -271,6 +276,11 @@ cac env update codex        # Update specific tool
 | `--user` | User-local install (default). npm tools use `~/.local` prefix |
 | `--global` | System-wide install (requires root). npm tools use global prefix |
 | `--yes`, `-y` | Skip confirmation prompts (for curl-based installers) |
+| `--tmux` | Set Claude Code `teammateMode: "tmux"` in `settings.json` (install only) |
+
+The `--tmux` flag configures Claude Code to display agent teammates as tmux panes instead of background processes. Requires tmux to be installed; logs a warning and skips `teammateMode` if tmux is missing.
+
+`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set in `settings.json` during Claude Code install (requires `python3` for JSON merge; logs a warning if unavailable).
 
 **Note:** Scope flags control npm install prefix. Curl-based installers (Claude, continuous-claude) use their own install logic and may install to different locations.
 
@@ -312,12 +322,24 @@ Example: `CodingAgentConfig_prod-server-01_ubuntu_250111-143022.zip`
 
 ## Configuration Files Managed
 
+### Credential Files (portable across hosts)
+
 | Tool | Files |
 |------|-------|
-| Claude Code | `.claude.json`, `.claude/.credentials.json`, `.claude/settings.json` |
+| Claude Code | `.claude.json`, `.claude/.credentials.json` |
 | Codex CLI | `.codex/auth.json` |
 | Gemini CLI | `.gemini/oauth_creds.json`, `.gemini/google_accounts.json`, `.gemini/settings.json`, `.gemini/state.json`, `.gemini/installation_id`, `.config/gcloud/application_default_credentials.json` |
 | Mistral Vibe | `.vibe/.env`, `.vibe/config.toml` |
+
+### Settings Files (host+user-specific, NOT portable)
+
+| Tool | Files |
+|------|-------|
+| Claude Code | `.claude/settings.json` |
+
+Settings are always included in `cac push` bundles but only extracted by `cac pull` when the bundle's hostname **AND** username match the target system. This prevents host-specific configuration (e.g. `teammateMode: "tmux"`, agent teams env vars) from being overwritten by bundles originating from different hosts.
+
+**Note:** Host+user matching relies on the bundle filename convention (`CodingAgentConfig_<HOST>_<USER>_<TIMESTAMP>.zip`). If a bundle is renamed or pulled by Gokapi file ID instead of its original filename, settings extraction is skipped as a safety measure.
 
 ## Security
 
@@ -327,6 +349,7 @@ Example: `CodingAgentConfig_prod-server-01_ubuntu_250111-143022.zip`
 - ZIP extraction validates against path traversal attacks (zip-slip protection)
 - Credentials are never logged or echoed
 - Temporary files use secure permissions and are cleaned up
+- Settings files are host+user-guarded: only extracted when bundle origin matches target
 
 ## Installation Paths
 
@@ -350,6 +373,7 @@ sudo apt-get install zip unzip
 ./tests/test_bundle.sh
 ./tests/test_security.sh
 ./tests/test_integration.sh
+./tests/test_env_settings.sh
 ```
 
 ### Linting
