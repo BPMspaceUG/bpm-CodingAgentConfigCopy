@@ -646,16 +646,20 @@ do_install() {
     echo "==================================="
     echo ""
 
-    local version
-    version=$(get_latest_version)
-    info "Latest version: ${version}"
+    local branch
+    branch=$(get_latest_version)
 
     local temp_dir=""
     trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' EXIT
     temp_dir=$(mktemp -d -t cac-install.XXXXXXXXXX)
 
-    download_project "$version" "$temp_dir"
-    verify_checksums "$version" "$temp_dir"
+    download_project "$branch" "$temp_dir"
+    verify_checksums "$branch" "$temp_dir"
+
+    # Extract actual version from downloaded binary (YYMMDD-HHMMSS format)
+    local version
+    version=$(grep -m1 '^VERSION=' "${temp_dir}/bin/cac" 2>/dev/null | cut -d'"' -f2) || version="$branch"
+    info "Installing cac v${version}"
 
     # Install based on mode flag
     case "$INSTALL_MODE_FLAG" in
@@ -695,13 +699,14 @@ do_install() {
 
     echo ""
     echo "==================================="
-    success "Installation complete!"
+    success "Installation complete! (cac v${version})"
     echo "==================================="
     echo ""
     echo "Usage:"
     echo "  cac push          - Bundle and upload your config"
     echo "  cac pull          - Download and apply newest config"
     echo "  cac list          - List available bundles"
+    echo "  cac update        - Update cac to latest version"
     echo "  cac test          - Test AI tool connectivity"
     echo "  cac --help        - Show all commands"
     echo ""

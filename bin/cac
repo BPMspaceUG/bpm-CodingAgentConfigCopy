@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="260203-122236"
+VERSION="260225-154233"
 
 # Determine script location and library path
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
