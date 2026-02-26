@@ -386,6 +386,45 @@ _env_npm_update_cmd() {
     esac
 }
 
+# Post-install symlink for curl-based tools installed as root (Issue #57)
+# When curl installers drop binaries into /root/.local/bin/, this creates
+# a symlink in /usr/local/bin/ so all users can access the tool.
+# Usage: _env_post_install_symlink <tool>
+_env_post_install_symlink() {
+    local tool="$1"
+
+    # Only relevant when running as root
+    [[ "${EUID:-$(id -u)}" -eq 0 ]] || return 0
+
+    # Map tool name to binary name
+    local binary
+    case "$tool" in
+        claude)            binary="claude" ;;
+        continuous-claude) binary="continuous-claude" ;;
+        mistral)           binary="vibe" ;;
+        *) return 0 ;;  # Unknown tool, nothing to do
+    esac
+
+    # Already in /usr/local/bin? Done.
+    if [[ -e "/usr/local/bin/$binary" ]]; then
+        utils_verbose "$binary already in /usr/local/bin — no symlink needed"
+        return 0
+    fi
+
+    # Search for the binary
+    local search_path
+    for search_path in "/root/.local/bin/$binary" "${HOME}/.local/bin/$binary"; do
+        if [[ -x "$search_path" ]]; then
+            ln -sf "$search_path" "/usr/local/bin/$binary"
+            utils_verbose "Created symlink /usr/local/bin/$binary -> $search_path"
+            return 0
+        fi
+    done
+
+    utils_verbose "Could not find $binary in expected paths — no symlink created"
+    return 0
+}
+
 # Install a single tool
 # Usage: env_install_tool <tool> <scope> [--yes]
 # Returns: 0 on success, 1 on failure
@@ -462,6 +501,11 @@ env_install_tool() {
             fi
 
             curl -fsSL "$url" | bash
+
+            # Issue #57: Symlink curl-installed binary into /usr/local/bin for global scope
+            if [[ "$scope" == "global" || "$scope" == "all" ]]; then
+                _env_post_install_symlink "$tool"
+            fi
             ;;
 
         npm)
@@ -570,6 +614,11 @@ env_update_tool() {
 
             echo "Re-running installer from: $url"
             curl -fsSL "$url" | bash || exit_code=$?
+
+            # Issue #57: Symlink curl-installed binary into /usr/local/bin for global scope
+            if [[ $exit_code -eq 0 ]] && [[ "$scope" == "global" || "$scope" == "all" ]]; then
+                _env_post_install_symlink "$tool"
+            fi
             ;;
 
         npm)

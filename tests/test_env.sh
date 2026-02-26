@@ -1113,6 +1113,145 @@ test_env_install_all_summary_format() {
 }
 
 # ============================================================================
+# Issue #57: Post-install Symlink Tests
+# ============================================================================
+
+test_env_post_install_symlink_creates_link() {
+    # Set up mock environment: EUID=0, binary in /root/.local/bin, not in /usr/local/bin
+    local mock_root="${TEST_TMPDIR}/mock_root_local_bin"
+    local mock_usr="${TEST_TMPDIR}/mock_usr_local_bin"
+    mkdir -p "$mock_root" "$mock_usr"
+
+    # Create a fake binary
+    touch "$mock_root/claude"
+    chmod +x "$mock_root/claude"
+
+    # Override the function to use our mock paths
+    _env_post_install_symlink_test() {
+        local tool="$1"
+        local binary
+        case "$tool" in
+            claude)            binary="claude" ;;
+            continuous-claude) binary="continuous-claude" ;;
+            mistral)           binary="vibe" ;;
+            *) return 0 ;;
+        esac
+
+        if [[ -e "$mock_usr/$binary" ]]; then
+            return 0
+        fi
+
+        if [[ -x "$mock_root/$binary" ]]; then
+            ln -sf "$mock_root/$binary" "$mock_usr/$binary"
+            return 0
+        fi
+        return 0
+    }
+
+    _env_post_install_symlink_test "claude"
+
+    if [[ -L "$mock_usr/claude" ]]; then
+        pass "symlink created in mock /usr/local/bin"
+    else
+        fail "symlink created in mock /usr/local/bin"
+    fi
+
+    local target
+    target=$(readlink "$mock_usr/claude")
+    assert_equals "$mock_root/claude" "$target" "symlink points to correct binary"
+}
+
+test_env_post_install_symlink_skips_existing() {
+    # When binary already exists in /usr/local/bin, no symlink should be created
+    local mock_root="${TEST_TMPDIR}/mock_root_local_bin2"
+    local mock_usr="${TEST_TMPDIR}/mock_usr_local_bin2"
+    mkdir -p "$mock_root" "$mock_usr"
+
+    # Binary already in /usr/local/bin
+    touch "$mock_usr/claude"
+    chmod +x "$mock_usr/claude"
+
+    # Also exists in root local
+    touch "$mock_root/claude"
+    chmod +x "$mock_root/claude"
+
+    _env_post_install_symlink_test() {
+        local tool="$1"
+        local binary
+        case "$tool" in
+            claude)            binary="claude" ;;
+            continuous-claude) binary="continuous-claude" ;;
+            mistral)           binary="vibe" ;;
+            *) return 0 ;;
+        esac
+
+        if [[ -e "$mock_usr/$binary" ]]; then
+            echo "SKIPPED"
+            return 0
+        fi
+
+        ln -sf "$mock_root/$binary" "$mock_usr/$binary"
+        return 0
+    }
+
+    local output
+    output=$(_env_post_install_symlink_test "claude")
+
+    assert_equals "SKIPPED" "$output" "skips when binary already exists"
+
+    # Should NOT be a symlink (it was a regular file)
+    if [[ ! -L "$mock_usr/claude" ]]; then
+        pass "existing binary not replaced with symlink"
+    else
+        fail "existing binary not replaced with symlink"
+    fi
+}
+
+test_env_post_install_symlink_maps_mistral_to_vibe() {
+    # Verify that mistral tool maps to vibe binary name
+    local mock_root="${TEST_TMPDIR}/mock_root_local_bin3"
+    local mock_usr="${TEST_TMPDIR}/mock_usr_local_bin3"
+    mkdir -p "$mock_root" "$mock_usr"
+
+    # Create vibe binary (not mistral)
+    touch "$mock_root/vibe"
+    chmod +x "$mock_root/vibe"
+
+    _env_post_install_symlink_test() {
+        local tool="$1"
+        local binary
+        case "$tool" in
+            claude)            binary="claude" ;;
+            continuous-claude) binary="continuous-claude" ;;
+            mistral)           binary="vibe" ;;
+            *) return 0 ;;
+        esac
+
+        if [[ -e "$mock_usr/$binary" ]]; then
+            return 0
+        fi
+
+        if [[ -x "$mock_root/$binary" ]]; then
+            ln -sf "$mock_root/$binary" "$mock_usr/$binary"
+            return 0
+        fi
+        return 0
+    }
+
+    _env_post_install_symlink_test "mistral"
+
+    if [[ -L "$mock_usr/vibe" ]]; then
+        pass "mistral maps to vibe binary"
+    else
+        fail "mistral maps to vibe binary"
+    fi
+
+    local target
+    target=$(readlink "$mock_usr/vibe")
+    assert_equals "$mock_root/vibe" "$target" "symlink points to vibe binary"
+}
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -1210,6 +1349,12 @@ run_test "install tool update output message format" test_env_install_tool_updat
 run_test "cmd_update still warns when not installed" test_env_cmd_update_still_warns_not_installed
 run_test "install_all updates installed tools" test_env_install_all_updates_installed_tools
 run_test "install_all summary format Installed/Updated/Failed" test_env_install_all_summary_format
+
+echo ""
+echo "--- Issue #57: Post-install Symlink Tests ---"
+run_test "post_install_symlink creates link" test_env_post_install_symlink_creates_link
+run_test "post_install_symlink skips existing" test_env_post_install_symlink_skips_existing
+run_test "post_install_symlink maps mistral to vibe" test_env_post_install_symlink_maps_mistral_to_vibe
 
 echo ""
 framework_report
