@@ -120,6 +120,10 @@ Settings are bundled with `cac push` but only extracted by `cac pull` when the b
 | System-wide (root) | `/usr/local/bin/cac` | `/usr/local/lib/cac/` | `/etc/cac/.env` |
 | User-local | `~/.local/bin/cac` | `~/.local/lib/cac/` | `~/.config/cac/.env` |
 
+## Banned Dependencies
+
+- **Bun is BANNED.** Do not use Bun anywhere in this project — no `bun add`, no `bun update`, no `bun install`, no `/opt/claude-code` bun-based paths. Use `npm` for package management and official `curl | bash` installers for tool installation. Existing Bun code (Issue #56) is legacy debt being removed.
+
 ## Security Requirements
 
 - `.env` must have 600 permissions; CLI refuses to run if too open
