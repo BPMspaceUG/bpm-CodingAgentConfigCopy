@@ -353,10 +353,23 @@ install_files() {
     # Stamp version into installed binary (uses source dir git state)
     stamp_version "${BIN_DIR}/cac" "${temp_dir}"
 
-    # Fallback: if VERSION is still "dev" (curl|bash with no git repo), stamp current date
+    # Fallback: if VERSION is still "dev" (curl|bash with no git repo), use commit date from GitHub API
     if grep -q '^VERSION="dev"' "${BIN_DIR}/cac" 2>/dev/null; then
-        local fallback_ver
-        fallback_ver=$(date '+%y%m%d-%H%M')
+        local fallback_ver=""
+        # Try GitHub API to get commit date (matches update_get_remote_version format)
+        local api_url="https://api.github.com/repos/BPMspaceUG/bpm-CodingAgentConfigCopy/commits/main"
+        local api_response=""
+        if api_response=$(curl -fsSL --max-time 10 "$api_url" 2>/dev/null); then
+            local commit_date=""
+            commit_date=$(echo "$api_response" | grep '"date"' | tail -1 | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}' | head -1) || true
+            if [[ -n "$commit_date" ]]; then
+                fallback_ver=$(echo "$commit_date" | sed 's/^20\([0-9][0-9]\)-\([0-9][0-9]\)-\([0-9][0-9]\)T\([0-9][0-9]\):\([0-9][0-9]\)/\1\2\3-\4\5/')
+            fi
+        fi
+        # Last resort: use current date (better than "dev")
+        if [[ -z "$fallback_ver" ]]; then
+            fallback_ver=$(date '+%y%m%d-%H%M')
+        fi
         if sed -i "0,/^VERSION=/{s/^VERSION=.*/VERSION=\"${fallback_ver}\"/}" "${BIN_DIR}/cac" 2>/dev/null; then
             : # GNU sed
         elif sed -i '' "s/^VERSION=\"dev\"/VERSION=\"${fallback_ver}\"/" "${BIN_DIR}/cac" 2>/dev/null; then
