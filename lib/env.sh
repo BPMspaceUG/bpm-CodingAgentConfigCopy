@@ -939,6 +939,8 @@ env_update_all() {
     local skipped=0
     # Issue #32: Track failed tool names for error reporting
     local -a failed_tools=()
+    # Issue #54: Track skipped tool names for user clarity
+    local -a skipped_tools=()
 
     echo "Updating all installed AI tools..."
     echo ""
@@ -946,6 +948,9 @@ env_update_all() {
     while IFS= read -r tool; do
         if ! env_is_installed "$tool"; then
             ((skipped++)) || true
+            local skip_name
+            skip_name=$(env_get_display_name "$tool")
+            skipped_tools+=("$skip_name")
             continue
         fi
 
@@ -962,7 +967,11 @@ env_update_all() {
 
     echo "=== Update Summary ==="
     echo "Updated: $success"
-    echo "Skipped (not installed): $skipped"
+    if [[ ${#skipped_tools[@]} -gt 0 ]]; then
+        echo "Skipped (not installed): ${skipped_tools[*]}"
+    else
+        echo "Skipped (not installed): 0"
+    fi
     echo "Failed: $failed"
     if [[ ${#failed_tools[@]} -gt 0 ]]; then
         echo "Failed tools: ${failed_tools[*]}"

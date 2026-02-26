@@ -1282,6 +1282,55 @@ test_env_update_all_shows_correct_failed_count() {
     source "${PROJECT_ROOT}/lib/env.sh"
 }
 
+test_env_update_all_shows_skipped_tools() {
+    # Issue #54: Skipped tools should be named, not just counted
+    env_get_all_tools() { printf "toolA\ntoolB\ntoolC\n"; }
+    env_is_installed() {
+        [[ "$1" != "toolC" ]]
+    }
+    env_get_version() { echo "mock-version"; }
+    env_get_display_name() {
+        case "$1" in
+            toolA) echo "Tool A" ;; toolB) echo "Tool B" ;; toolC) echo "Mistral Vibe" ;;
+        esac
+    }
+    env_update_tool() { return 0; }
+
+    local output
+    output=$(env_update_all "user" 2>&1) || true
+
+    assert_contains "Mistral Vibe" "$output" "skipped tool named in summary"
+    assert_contains "Skipped (not installed):" "$output" "skipped line present"
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
+test_env_update_all_skipped_line_format() {
+    # Issue #54: Multiple skipped tools should all appear on the skipped line
+    env_get_all_tools() { printf "toolA\ntoolB\ntoolC\n"; }
+    env_is_installed() {
+        [[ "$1" == "toolA" ]]
+    }
+    env_get_version() { echo "mock-version"; }
+    env_get_display_name() {
+        case "$1" in
+            toolA) echo "Tool A" ;; toolB) echo "Tool B" ;; toolC) echo "Tool C" ;;
+        esac
+    }
+    env_update_tool() { return 0; }
+
+    local output
+    output=$(env_update_all "user" 2>&1) || true
+
+    assert_contains "Tool B" "$output" "first skipped tool named"
+    assert_contains "Tool C" "$output" "second skipped tool named"
+    assert_contains "Updated: 1" "$output" "updated count correct"
+
+    # Restore
+    source "${PROJECT_ROOT}/lib/env.sh"
+}
+
 test_env_check_node_handles_empty_version() {
     # Mock node to exist but return empty version
     node() { echo ""; }
@@ -1870,6 +1919,8 @@ echo "--- Issue #31/#32: Update Error Isolation Tests ---"
 run_test "update_all continues after failure" test_env_update_all_continues_after_failure
 run_test "update_all shows failed tools" test_env_update_all_shows_failed_tools
 run_test "update_all shows correct failed count" test_env_update_all_shows_correct_failed_count
+run_test "update_all shows skipped tool names" test_env_update_all_shows_skipped_tools
+run_test "update_all skipped line lists multiple tools" test_env_update_all_skipped_line_format
 run_test "check_node handles empty version" test_env_check_node_handles_empty_version
 run_test "check_node handles non-numeric version" test_env_check_node_handles_nonnumeric_version
 
