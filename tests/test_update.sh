@@ -435,6 +435,124 @@ test_update_strip_suffix_dev() {
 }
 
 # ============================================================================
+# Normalize Version Tests
+# ============================================================================
+
+test_update_normalize_version_hhmmss() {
+    local result
+    result=$(_update_normalize_version "260225-154233")
+    assert_equals "260225-1542" "$result" "HHMMSS truncated to HHMM"
+}
+
+test_update_normalize_version_hhmm() {
+    local result
+    result=$(_update_normalize_version "260225-1542")
+    assert_equals "260225-1542" "$result" "HHMM passthrough"
+}
+
+test_update_normalize_version_dirty() {
+    local result
+    result=$(_update_normalize_version "260225-154233-dirty")
+    assert_equals "260225-1542" "$result" "dirty suffix stripped and HHMMSS truncated"
+}
+
+test_update_normalize_version_dev() {
+    local result
+    result=$(_update_normalize_version "dev")
+    assert_equals "dev" "$result" "dev passthrough"
+}
+
+# ============================================================================
+# Version Greater-or-Equal Tests
+# ============================================================================
+
+test_update_version_ge_newer() {
+    _update_version_ge "260301-1500" "260225-1542" || { echo "Expected local > remote to return 0" >&2; return 1; }
+    return 0
+}
+
+test_update_version_ge_equal() {
+    _update_version_ge "260225-1542" "260225-1542" || { echo "Expected local == remote to return 0" >&2; return 1; }
+    return 0
+}
+
+test_update_version_ge_older() {
+    if _update_version_ge "260225-1542" "260301-1500"; then
+        echo "Expected local < remote to return 1" >&2
+        return 1
+    fi
+    return 0
+}
+
+test_update_version_ge_dev_local() {
+    if _update_version_ge "dev" "260301-1500"; then
+        echo "Expected dev local vs real remote to return 1" >&2
+        return 1
+    fi
+    return 0
+}
+
+test_update_version_ge_dev_remote() {
+    _update_version_ge "260301-1500" "dev" || { echo "Expected real local vs dev remote to return 0" >&2; return 1; }
+    return 0
+}
+
+test_update_version_ge_both_dev() {
+    _update_version_ge "dev" "dev" || { echo "Expected both dev to return 0" >&2; return 1; }
+    return 0
+}
+
+# ============================================================================
+# Downgrade Prevention Tests
+# ============================================================================
+
+test_update_check_downgrade_prevented() {
+    # Local is NEWER than remote — should report "Already up to date"
+    update_get_local_version() { echo "260301-1500"; }
+    update_get_remote_version() { echo "260225-1542"; }
+
+    local output
+    output=$(update_check 2>/dev/null)
+    local rc=$?
+
+    unset -f update_get_local_version update_get_remote_version
+
+    [[ $rc -eq 1 ]] || { echo "Expected rc=1 (up-to-date) when local newer, got $rc" >&2; return 1; }
+    assert_contains "Already up to date" "$output" "downgrade prevented"
+}
+
+test_update_check_hhmmss_matches_hhmm() {
+    # Local has HHMMSS format, remote has HHMM — same base = up to date
+    update_get_local_version() { echo "260225-154233"; }
+    update_get_remote_version() { echo "260225-1542"; }
+
+    local output
+    output=$(update_check 2>/dev/null)
+    local rc=$?
+
+    unset -f update_get_local_version update_get_remote_version
+
+    [[ $rc -eq 1 ]] || { echo "Expected rc=1 for HHMMSS matching HHMM, got $rc" >&2; return 1; }
+    assert_contains "Already up to date" "$output" "HHMMSS matches HHMM"
+}
+
+test_update_self_downgrade_prevented() {
+    # Local is NEWER than remote — update_self should say "Already up to date"
+    update_detect_scope() { echo "user"; }
+    update_get_local_version() { echo "260301-1500"; }
+    update_get_remote_version() { echo "260225-1542"; }
+
+    local output
+    output=$(update_self 2>/dev/null)
+    local rc=$?
+
+    unset -f update_detect_scope update_get_local_version update_get_remote_version
+
+    [[ $rc -eq 0 ]] || { echo "Expected rc=0 for up-to-date in update_self, got $rc" >&2; return 1; }
+    assert_contains "Already up to date" "$output" "update_self downgrade prevented"
+}
+
+# ============================================================================
 # Version Extraction with Live Detection Block
 # ============================================================================
 
@@ -614,6 +732,28 @@ main() {
     run_test "strip_suffix: -draft" test_update_strip_suffix_draft
     run_test "strip_suffix: clean passthrough" test_update_strip_suffix_clean
     run_test "strip_suffix: dev passthrough" test_update_strip_suffix_dev
+    echo ""
+
+    echo "--- Normalize Version ---"
+    run_test "normalize: HHMMSS to HHMM" test_update_normalize_version_hhmmss
+    run_test "normalize: HHMM passthrough" test_update_normalize_version_hhmm
+    run_test "normalize: dirty + HHMMSS" test_update_normalize_version_dirty
+    run_test "normalize: dev passthrough" test_update_normalize_version_dev
+    echo ""
+
+    echo "--- Version Greater-or-Equal ---"
+    run_test "version_ge: newer" test_update_version_ge_newer
+    run_test "version_ge: equal" test_update_version_ge_equal
+    run_test "version_ge: older" test_update_version_ge_older
+    run_test "version_ge: dev local" test_update_version_ge_dev_local
+    run_test "version_ge: dev remote" test_update_version_ge_dev_remote
+    run_test "version_ge: both dev" test_update_version_ge_both_dev
+    echo ""
+
+    echo "--- Downgrade Prevention ---"
+    run_test "check: downgrade prevented" test_update_check_downgrade_prevented
+    run_test "check: HHMMSS matches HHMM" test_update_check_hhmmss_matches_hhmm
+    run_test "self: downgrade prevented" test_update_self_downgrade_prevented
     echo ""
 
     echo "--- Version File Parsing (live block) ---"

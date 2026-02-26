@@ -188,21 +188,46 @@ env_validate_scope() {
 # ============================================================================
 
 # Check if Node.js is installed and meets minimum version
+# Issue #53: Try 'node' first, fall back to 'nodejs' (Debian/Ubuntu name)
+# to handle cases where Bun's node wrapper shadows real Node.js.
 # Usage: env_check_node
 # Returns: 0 if OK, 1 if missing/too old
 env_check_node() {
-    if ! command -v node &>/dev/null; then
-        utils_error "Node.js not found. Required for npm-based tools."
+    local version="" node_bin=""
+
+    # Try 'node --version' first.
+    # Check exit code separately from sed to catch wrappers (e.g. Bun) that
+    # print junk to stdout AND exit non-zero — a pipeline would mask the failure
+    # because the exit code of a pipeline is the LAST command (sed), not node.
+    local raw=""
+    if command -v node &>/dev/null; then
+        if raw=$(node --version 2>/dev/null); then
+            version="${raw#v}"
+            node_bin="node"
+        fi
+    fi
+
+    # Issue #53: Fall back to 'nodejs' (Debian/Ubuntu binary name) if 'node'
+    # failed or returned empty (e.g. Bun's node wrapper doesn't support --version)
+    if [[ -z "$version" ]] && command -v nodejs &>/dev/null; then
+        if raw=$(nodejs --version 2>/dev/null); then
+            version="${raw#v}"
+            node_bin="nodejs"
+        fi
+    fi
+
+    # No working binary found at all
+    if [[ -z "$version" ]]; then
+        if command -v node &>/dev/null || command -v nodejs &>/dev/null; then
+            utils_error "Node.js version could not be determined"
+        else
+            utils_error "Node.js not found. Required for npm-based tools."
+        fi
         return 1
     fi
 
-    local version
-    version=$(node --version 2>/dev/null | sed 's/^v//') || version=""
-    # Issue #32: Handle empty or undetermined version gracefully
-    if [[ -z "$version" ]]; then
-        utils_error "Node.js version could not be determined"
-        return 1
-    fi
+    utils_verbose "Node.js detected via '${node_bin}' ($(command -v "$node_bin"))"
+
     local major
     major="${version%%.*}"
 

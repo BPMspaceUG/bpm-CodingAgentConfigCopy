@@ -99,6 +99,61 @@ _update_strip_suffix() {
     echo "$version"
 }
 
+# Normalize a version string for comparison:
+#   1. Strip -dirty / -draft suffixes
+#   2. Truncate to YYMMDD-HHMM (11 chars) to handle old HHMMSS installs
+#   3. Pass through "dev" unchanged
+# Usage: _update_normalize_version "260225-154233" → "260225-1542"
+_update_normalize_version() {
+    local version="$1"
+
+    # "dev" is a special sentinel — pass through unchanged
+    if [[ "$version" == "dev" ]]; then
+        echo "dev"
+        return 0
+    fi
+
+    # Strip suffixes first
+    version=$(_update_strip_suffix "$version")
+
+    # Truncate to 11 chars (YYMMDD-HHMM) to normalize HHMMSS → HHMM
+    if [[ ${#version} -gt 11 ]]; then
+        version="${version:0:11}"
+    fi
+
+    echo "$version"
+}
+
+# Check if local version is >= remote version (lexicographic comparison).
+# YYMMDD-HHMM format sorts correctly with string comparison.
+# Special cases:
+#   - "dev" local is never >= a real version (always needs update)
+#   - any real version is >= "dev" remote (never downgrade to dev)
+# Usage: _update_version_ge "260301-1500" "260225-1542" → returns 0 (true)
+# Returns: 0 if local >= remote, 1 otherwise
+_update_version_ge() {
+    local local_ver="$1"
+    local remote_ver="$2"
+
+    # dev local is never >= a real version
+    if [[ "$local_ver" == "dev" && "$remote_ver" != "dev" ]]; then
+        return 1
+    fi
+
+    # Any real version is >= dev remote
+    if [[ "$local_ver" != "dev" && "$remote_ver" == "dev" ]]; then
+        return 0
+    fi
+
+    # Both dev — equal
+    if [[ "$local_ver" == "dev" && "$remote_ver" == "dev" ]]; then
+        return 0
+    fi
+
+    # Lexicographic comparison (works for YYMMDD-HHMM)
+    [[ ! "$local_ver" < "$remote_ver" ]]
+}
+
 # Get the version of the locally installed cac binary.
 # Usage: update_get_local_version
 # Returns: version string on stdout, 1 on failure
@@ -187,13 +242,13 @@ update_check() {
     fi
 
     local local_clean remote_clean
-    local_clean=$(_update_strip_suffix "$local_version")
-    remote_clean=$(_update_strip_suffix "$remote_version")
+    local_clean=$(_update_normalize_version "$local_version")
+    remote_clean=$(_update_normalize_version "$remote_version")
 
     echo "Installed version: $local_version"
     echo "Available version: $remote_version"
 
-    if [[ "$local_clean" == "$remote_clean" ]]; then
+    if _update_version_ge "$local_clean" "$remote_clean"; then
         echo ""
         echo "Already up to date."
         return 1
@@ -240,10 +295,10 @@ update_self() {
     fi
 
     local old_clean remote_clean
-    old_clean=$(_update_strip_suffix "$old_version")
-    remote_clean=$(_update_strip_suffix "$remote_version")
+    old_clean=$(_update_normalize_version "$old_version")
+    remote_clean=$(_update_normalize_version "$remote_version")
 
-    if [[ "$old_clean" == "$remote_clean" ]]; then
+    if _update_version_ge "$old_clean" "$remote_clean"; then
         echo "Already up to date (version: $old_version)."
         return 0
     fi

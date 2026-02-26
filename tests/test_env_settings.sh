@@ -304,6 +304,151 @@ test_configure_tmux_missing_does_not_override_existing() {
 }
 
 # ============================================================================
+# Tests: env_check_node (Issue #53 — Bun node wrapper fallback)
+# ============================================================================
+
+# Helper: build a PATH where our fake bin dir comes first, shadowing any
+# real node/nodejs, but system utilities (sed etc.) remain available.
+_build_node_test_path() {
+    local fake_bin="$1"
+    # Prepend fake_bin so our mock node/nodejs are found first
+    echo "${fake_bin}:${PATH}"
+}
+
+test_node_check_with_working_node() {
+    local fake_bin="${TEST_TMPDIR}/node_ok/bin"
+    mkdir -p "$fake_bin"
+
+    # Create a fake 'node' that outputs a valid version
+    cat > "$fake_bin/node" << 'SCRIPT'
+#!/usr/bin/env bash
+echo "v20.11.0"
+SCRIPT
+    chmod +x "$fake_bin/node"
+
+    PATH="$(_build_node_test_path "$fake_bin")" env_check_node 2>/dev/null
+}
+
+test_node_check_falls_back_to_nodejs() {
+    local fake_bin="${TEST_TMPDIR}/node_bun/bin"
+    mkdir -p "$fake_bin"
+
+    # Create a fake 'node' that fails like Bun's wrapper
+    cat > "$fake_bin/node" << 'SCRIPT'
+#!/usr/bin/env bash
+echo "error: node wrapper does not support --version" >&2
+exit 1
+SCRIPT
+    chmod +x "$fake_bin/node"
+
+    # Create a fake 'nodejs' that works (Debian/Ubuntu real Node.js)
+    cat > "$fake_bin/nodejs" << 'SCRIPT'
+#!/usr/bin/env bash
+echo "v20.11.0"
+SCRIPT
+    chmod +x "$fake_bin/nodejs"
+
+    PATH="$(_build_node_test_path "$fake_bin")" env_check_node 2>/dev/null
+}
+
+test_node_check_fails_when_neither_works() {
+    local fake_bin="${TEST_TMPDIR}/node_none/bin"
+    mkdir -p "$fake_bin"
+
+    # Only provide sed (needed by env_check_node), but NO node or nodejs
+    ln -sf "$(command -v sed)" "$fake_bin/sed"
+
+    local stderr_output
+    stderr_output=$(PATH="$fake_bin" env_check_node 2>&1) && return 1
+    assert_contains "not found" "$stderr_output" "error mentions not found"
+}
+
+test_node_check_rejects_old_version() {
+    local fake_bin="${TEST_TMPDIR}/node_old/bin"
+    mkdir -p "$fake_bin"
+
+    # Create a fake 'node' that outputs an old version
+    cat > "$fake_bin/node" << 'SCRIPT'
+#!/usr/bin/env bash
+echo "v16.20.0"
+SCRIPT
+    chmod +x "$fake_bin/node"
+
+    local stderr_output
+    stderr_output=$(PATH="$(_build_node_test_path "$fake_bin")" env_check_node 2>&1) && return 1
+    assert_contains "too old" "$stderr_output" "error mentions too old"
+}
+
+test_node_check_verbose_logs_binary() {
+    local fake_bin="${TEST_TMPDIR}/node_verbose/bin"
+    mkdir -p "$fake_bin"
+
+    cat > "$fake_bin/node" << 'SCRIPT'
+#!/usr/bin/env bash
+echo "v20.11.0"
+SCRIPT
+    chmod +x "$fake_bin/node"
+
+    local old_verbose="$CAC_VERBOSE"
+    CAC_VERBOSE=true
+
+    local stderr_output
+    stderr_output=$(PATH="$(_build_node_test_path "$fake_bin")" env_check_node 2>&1 >/dev/null) || true
+
+    CAC_VERBOSE="$old_verbose"
+
+    assert_contains "node" "$stderr_output" "verbose output mentions node binary"
+}
+
+test_node_check_bun_node_then_nodejs_version_reported() {
+    # Verify the version comes from nodejs, not from the broken node
+    local fake_bin="${TEST_TMPDIR}/node_bun_ver/bin"
+    mkdir -p "$fake_bin"
+
+    # Bun's node wrapper — fails
+    cat > "$fake_bin/node" << 'SCRIPT'
+#!/usr/bin/env bash
+exit 1
+SCRIPT
+    chmod +x "$fake_bin/node"
+
+    # Real nodejs — old version, should be rejected
+    cat > "$fake_bin/nodejs" << 'SCRIPT'
+#!/usr/bin/env bash
+echo "v16.5.0"
+SCRIPT
+    chmod +x "$fake_bin/nodejs"
+
+    local stderr_output
+    stderr_output=$(PATH="$(_build_node_test_path "$fake_bin")" env_check_node 2>&1) && return 1
+    assert_contains "too old" "$stderr_output" "old nodejs version rejected"
+}
+
+test_node_check_junk_stdout_nonzero_exit_falls_back() {
+    # Codex review: node prints junk to stdout AND exits non-zero (e.g. Bun).
+    # Must fall back to nodejs, not treat junk as a version string.
+    local fake_bin="${TEST_TMPDIR}/node_junk/bin"
+    mkdir -p "$fake_bin"
+
+    # Bun's node wrapper — prints garbage to stdout AND exits non-zero
+    cat > "$fake_bin/node" << 'SCRIPT'
+#!/usr/bin/env bash
+echo "Bun v1.2.3 (node compatibility layer)"
+exit 1
+SCRIPT
+    chmod +x "$fake_bin/node"
+
+    # Real nodejs — should be used instead
+    cat > "$fake_bin/nodejs" << 'SCRIPT'
+#!/usr/bin/env bash
+echo "v20.11.0"
+SCRIPT
+    chmod +x "$fake_bin/nodejs"
+
+    PATH="$(_build_node_test_path "$fake_bin")" env_check_node 2>/dev/null
+}
+
+# ============================================================================
 # Tests: --tmux flag parsing
 # ============================================================================
 
@@ -348,6 +493,16 @@ run_test "tmux flag sets teammateMode" test_configure_tmux_sets_teammate_mode
 run_test "tmux missing skips teammateMode" test_configure_tmux_missing_skips_teammate_mode
 run_test "tmux missing preserves agent teams" test_configure_tmux_missing_preserves_agent_teams
 run_test "tmux missing does not override existing teammateMode" test_configure_tmux_missing_does_not_override_existing
+
+echo ""
+echo "--- Node.js Detection (Issue #53) ---"
+run_test "working node binary detected" test_node_check_with_working_node
+run_test "falls back to nodejs when node fails (Bun scenario)" test_node_check_falls_back_to_nodejs
+run_test "fails when neither node nor nodejs available" test_node_check_fails_when_neither_works
+run_test "rejects old Node.js version" test_node_check_rejects_old_version
+run_test "verbose logs which binary was found" test_node_check_verbose_logs_binary
+run_test "fallback nodejs version still validated" test_node_check_bun_node_then_nodejs_version_reported
+run_test "junk stdout + nonzero exit falls back to nodejs" test_node_check_junk_stdout_nonzero_exit_falls_back
 
 echo ""
 echo "--- Flag Parsing ---"
