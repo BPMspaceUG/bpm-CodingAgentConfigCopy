@@ -145,6 +145,14 @@ main() {
         echo ""
     fi
 
+    # Run env check/repair tests (Issue #59)
+    if $run_all || [[ "$filter" == "env_check" ]] || [[ "$filter" == "env" ]]; then
+        if ! run_test_suite "Environment Check/Repair Tests" "test_env_check.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run update tests (Issue #47)
     if $run_all || [[ "$filter" == "update" ]]; then
         if ! run_test_suite "Update Tests" "test_update.sh"; then

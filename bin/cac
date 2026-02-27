@@ -74,6 +74,8 @@ COMMANDS:
     env install [TOOL] [--user|--global] [--tmux]  Install AI tool environments
     env update [TOOL] [--user|--global]   Update AI tool environments
     env status [--parseable] [--check-updates]  Show AI tool installation status
+    env check [TOOL] [--parseable]        Health-check installed AI tool environments
+    env repair [TOOL] [--yes]             Repair detected environment issues
     skill install <URL> [--global] [--yes]  Install a skill library from Git
     skill update [LIBRARY] [--yes]          Update installed skill libraries
     skill list                              List installed skill libraries
@@ -126,6 +128,8 @@ EXAMPLES:
     cac env install mistral     Install Mistral Vibe CLI
     cac env install --global    Install all AI tools system-wide (requires root)
     cac env update codex        Update Codex CLI
+    cac env check                   Health-check all installed tools
+    cac env repair --yes            Auto-repair all detected issues
     cac env --help              Show full env subcommand help
     cac skill install https://github.com/BPMspaceUG/bpm-claude-global-agent-skill-library.git
                                     Install BPM skill library
@@ -583,6 +587,12 @@ cmd_env() {
         status)
             env_cmd_status "${resolved_args[@]+"${resolved_args[@]}"}"
             ;;
+        check)
+            env_cmd_check "${resolved_args[@]+"${resolved_args[@]}"}"
+            ;;
+        repair)
+            env_cmd_repair "${resolved_args[@]+"${resolved_args[@]}"}"
+            ;;
         --help|-h)
             cat <<EOF
 cac env - Manage AI tool environments
@@ -594,6 +604,8 @@ SUBCOMMANDS:
     install [TOOL] [--user|--global] [--yes] [--tmux]  Install AI tool environments
     update [TOOL] [--user|--global]           Update AI tool environments
     status [--parseable] [--check-updates]    Show installation status
+    check [TOOL] [--parseable]               Health-check installed tools
+    repair [TOOL] [--yes]                    Repair detected health issues
 
 TOOLS:
     claude            Claude Code CLI
@@ -618,6 +630,12 @@ EXAMPLES:
     cac env update codex              Update Codex CLI
     cac env status --parseable        Machine-readable status output
     cac env status --check-updates    Show status with update availability
+    cac env check                     Health-check all installed AI tools
+    cac env check claude              Check only Claude Code health
+    cac env check --parseable         Machine-readable check output
+    cac env repair                    Repair all detected issues (interactive)
+    cac env repair --yes              Repair without confirmation prompts
+    cac env repair codex              Repair only Codex CLI
 
 EOF
             ;;
