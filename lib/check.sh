@@ -332,9 +332,9 @@ check_tool_claude() {
 
     local cmd
     if [[ "$use_sudo" == "true" ]]; then
-        cmd=(sudo -u "$target_user" claude -p "Respond only with: CLAUDE_OK" --dangerously-skip-permissions)
+        cmd=(sudo -u "$target_user" env -u CLAUDECODE claude -p "Respond only with: CLAUDE_OK" --dangerously-skip-permissions)
     else
-        cmd=(claude -p "Respond only with: CLAUDE_OK" --dangerously-skip-permissions)
+        cmd=(env -u CLAUDECODE claude -p "Respond only with: CLAUDE_OK" --dangerously-skip-permissions)
     fi
 
     utils_verbose "Running: ${cmd[*]}"
