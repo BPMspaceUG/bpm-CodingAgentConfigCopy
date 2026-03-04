@@ -64,7 +64,8 @@ USAGE:
     cac <command> [options]
 
 COMMANDS:
-    push [--user USER] [--dry-run] [--skip-check]  Create and upload config bundle
+    push [--tool TOOL] [--user USER] [--dry-run] [--skip-check]
+                                    Create and upload config bundle
     pull [BUNDLE_ID] [--tool TOOL] [--user USER] [--dry-run] [--all]
                                     Download and apply bundle (newest or specific)
     list [--tool TOOL] [--user USER]  List available bundles
@@ -100,7 +101,9 @@ OPTIONS:
     --version, -v   Show version information
 
 EXAMPLES:
-    cac push                    Bundle and upload current user's config
+    cac push                    Bundle and upload current user's config (all tools)
+    cac push --tool claude      Bundle and upload only Claude credentials
+    cac push --tool codex       Bundle and upload only Codex credentials
     cac push --dry-run          Preview what would be bundled
     cac push --skip-check       Skip credential verification before upload
     cac push --user ubuntu      Bundle ubuntu user's config (requires root)
@@ -162,8 +165,34 @@ show_version() {
 # ============================================================================
 
 cmd_push() {
-    # Parse arguments including --skip-check, validate user access, and resolve home directory
-    if ! utils_init_push_context --strict "$@"; then
+    local explicit_tool="all"
+    local args=()
+
+    # Pre-parse push-specific --tool flag (same pattern as cmd_pull)
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tool)
+                if [[ $# -lt 2 ]]; then
+                    utils_error "Option --tool requires an argument"
+                    return 1
+                fi
+                explicit_tool="$(_resolve_tool_alias "$2")"
+                if ! tools_is_valid "$explicit_tool"; then
+                    utils_error "Unknown tool: $2"
+                    echo "Valid tools: claude codex gemini mistral" >&2
+                    return 1
+                fi
+                shift 2
+                ;;
+            *)
+                args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # Parse remaining arguments including --skip-check, validate user access, and resolve home directory
+    if ! utils_init_push_context --strict "${args[@]+"${args[@]}"}"; then
         return 1
     fi
     local target_user="$PARSED_TARGET_USER"
@@ -171,21 +200,26 @@ cmd_push() {
     local skip_check="$PARSED_SKIP_CHECK"
     local home_dir="$PARSED_HOME_DIR"
 
-    # Check if any config files exist
+    # Check if any config files exist for the selected tool
     local file_count
-    file_count=$(tools_count_existing "$home_dir" "all" "--include-settings")
+    file_count=$(tools_count_existing "$home_dir" "$explicit_tool" "--include-settings")
     if [[ "$file_count" -eq 0 ]]; then
-        utils_error "No AI tool configuration files found for user '$target_user'"
+        if [[ "$explicit_tool" != "all" ]]; then
+            utils_error "No configuration files found for tool '$explicit_tool' (user '$target_user')"
+        else
+            utils_error "No AI tool configuration files found for user '$target_user'"
+        fi
         return 1
     fi
 
     # Generate bundle filename for display
     local bundle_name
-    bundle_name=$(bundle_generate_filename "$target_user")
+    bundle_name=$(bundle_generate_filename "$target_user" "$explicit_tool")
 
     # Show what would happen (always shown, dry-run stops here)
     if [[ "$dry_run" == "true" ]]; then
         utils_dryrun "Would create bundle for user: $target_user"
+        [[ "$explicit_tool" != "all" ]] && utils_dryrun "Tool filter: $explicit_tool"
         utils_dryrun "Home directory: $home_dir"
         utils_dryrun "Files to include: $file_count"
         utils_dryrun "Bundle name: $bundle_name"
@@ -200,7 +234,7 @@ cmd_push() {
         # Use process substitution to avoid pipe subshell masking errors
         while IFS= read -r file; do
             echo "  - $file"
-        done < <(tools_collect_existing "$home_dir" "all" "--include-settings")
+        done < <(tools_collect_existing "$home_dir" "$explicit_tool" "--include-settings")
         utils_dryrun_footer
         return 0
     fi
@@ -215,14 +249,23 @@ cmd_push() {
             use_sudo="true"
         fi
 
-        if ! check_all_tools "$use_sudo" "$target_user" "$home_dir"; then
-            utils_error "Credential check failed. Use --skip-check to bypass."
-            return 1
+        if [[ "$explicit_tool" != "all" ]]; then
+            # Check only the specific tool being pushed
+            if ! check_single_tool "$explicit_tool" "$use_sudo" "$target_user" "$home_dir"; then
+                utils_error "Credential check failed for $explicit_tool. Use --skip-check to bypass."
+                return 1
+            fi
+        else
+            if ! check_all_tools "$use_sudo" "$target_user" "$home_dir"; then
+                utils_error "Credential check failed. Use --skip-check to bypass."
+                return 1
+            fi
         fi
         echo ""
     fi
 
     echo "Creating bundle for user: $target_user"
+    [[ "$explicit_tool" != "all" ]] && echo "Tool: $explicit_tool"
     echo "Home directory: $home_dir"
     echo "Files found: $file_count"
     echo ""
@@ -234,7 +277,7 @@ cmd_push() {
 
     local bundle_path="${temp_dir}/${bundle_name}"
 
-    if ! bundle_create "$home_dir" "$bundle_path" "all"; then
+    if ! bundle_create "$home_dir" "$bundle_path" "$explicit_tool"; then
         return 1
     fi
 

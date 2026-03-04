@@ -339,8 +339,7 @@ check_tool_claude() {
 
     utils_verbose "Running: ${cmd[*]}"
 
-    output=$(_check_with_timeout $CHECK_TIMEOUT "${cmd[@]}" 2>&1)
-    exit_code=$?
+    output=$(_check_with_timeout $CHECK_TIMEOUT "${cmd[@]}" 2>&1) && exit_code=0 || exit_code=$?
 
     if [[ $exit_code -eq $CHECK_EXIT_TIMEOUT ]]; then
         return $CHECK_EXIT_TIMEOUT
@@ -376,8 +375,7 @@ check_tool_codex() {
 
     utils_verbose "Running: ${cmd[*]}"
 
-    output=$(_check_with_timeout $CHECK_TIMEOUT "${cmd[@]}" 2>&1)
-    exit_code=$?
+    output=$(_check_with_timeout $CHECK_TIMEOUT "${cmd[@]}" 2>&1) && exit_code=0 || exit_code=$?
 
     if [[ $exit_code -eq $CHECK_EXIT_TIMEOUT ]]; then
         return $CHECK_EXIT_TIMEOUT
@@ -413,8 +411,7 @@ check_tool_gemini() {
 
     utils_verbose "Running: ${cmd[*]}"
 
-    output=$(_check_with_timeout $CHECK_TIMEOUT "${cmd[@]}" 2>&1)
-    exit_code=$?
+    output=$(_check_with_timeout $CHECK_TIMEOUT "${cmd[@]}" 2>&1) && exit_code=0 || exit_code=$?
 
     if [[ $exit_code -eq $CHECK_EXIT_TIMEOUT ]]; then
         return $CHECK_EXIT_TIMEOUT
@@ -471,8 +468,7 @@ check_tool_mistral() {
 
     output=$(_check_with_timeout 10 curl -s --max-time 10 \
         -H "Authorization: Bearer ${api_key}" \
-        "https://api.mistral.ai/v1/models" 2>&1)
-    exit_code=$?
+        "https://api.mistral.ai/v1/models" 2>&1) && exit_code=0 || exit_code=$?
 
     if [[ $exit_code -eq $CHECK_EXIT_TIMEOUT ]]; then
         return $CHECK_EXIT_TIMEOUT
@@ -533,20 +529,16 @@ check_single_tool() {
     # Run actual check
     case "$tool" in
         claude)
-            check_tool_claude "$use_sudo" "$target_user"
-            exit_code=$?
+            check_tool_claude "$use_sudo" "$target_user" && exit_code=0 || exit_code=$?
             ;;
         codex)
-            check_tool_codex "$use_sudo" "$target_user"
-            exit_code=$?
+            check_tool_codex "$use_sudo" "$target_user" && exit_code=0 || exit_code=$?
             ;;
         gemini)
-            check_tool_gemini "$use_sudo" "$target_user"
-            exit_code=$?
+            check_tool_gemini "$use_sudo" "$target_user" && exit_code=0 || exit_code=$?
             ;;
         mistral)
-            check_tool_mistral "$use_sudo" "$target_user" "$home_dir"
-            exit_code=$?
+            check_tool_mistral "$use_sudo" "$target_user" "$home_dir" && exit_code=0 || exit_code=$?
             ;;
     esac
 
@@ -585,8 +577,7 @@ check_all_tools() {
     local exit_code
 
     for tool in "${tools[@]}"; do
-        check_single_tool "$tool" "$use_sudo" "$target_user" "$home_dir"
-        exit_code=$?
+        check_single_tool "$tool" "$use_sudo" "$target_user" "$home_dir" && exit_code=0 || exit_code=$?
 
         case $exit_code in
             100)

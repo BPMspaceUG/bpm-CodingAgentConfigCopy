@@ -14,17 +14,17 @@ $ARGUMENTS
 ## Step 1 — Identify Repository
 
 ```bash
-git remote -v
+git remote -v | head -1
 ```
 
-Extract the **OWNER** and **REPO** from the remote URL. Use these for ALL GitHub MCP calls.
+Extract the **OWNER** and **REPO** from the remote URL. Use these for ALL subsequent calls.
 
 ## Step 2 — Check Milestones in GitHub Repo
 
-List existing milestones:
+List existing milestone titles (compact output):
 
 ```bash
-gh api repos/{OWNER}/{REPO}/milestones --paginate
+gh api 'repos/{OWNER}/{REPO}/milestones?per_page=100&state=all' --jq '.[].title' | sort
 ```
 
 The full lifecycle requires these milestones:
@@ -83,32 +83,44 @@ The full lifecycle requires these milestones:
 
 3. **Report what was done:**
    ```
-   ✓ Created milestones: new, planned, plan-approved, ... (list only the ones created)
-   ✓ CLAUDE.md updated with mandatory milestone lifecycle section
+   Created milestones: new, planned, plan-approved, ... (list only the ones created)
+   CLAUDE.md updated with mandatory milestone lifecycle section
    ```
 
 ### If ALL milestones already exist:
 
 Display:
 ```
-✓ All lifecycle milestones exist in the repo.
+All lifecycle milestones exist in the repo.
 ```
 
-## Step 3 — Fetch Open Issues
+## Step 3 — Fetch Open Issues (compact)
 
-Using GitHub MCP `list_issues` with `state: "OPEN"`, fetch all open issues for this repository. Use pagination if needed (batches of 25).
+**IMPORTANT**: Do NOT use GitHub MCP `list_issues` — it returns full issue bodies and wastes context.
+
+Use `gh api` with `--jq` to fetch ONLY the fields needed for the table:
+
+```bash
+gh api 'repos/{OWNER}/{REPO}/issues?state=open&per_page=100' \
+  --jq '.[] | select(.pull_request == null) | [.number, .title, (.labels | map(.name) | join(",")), (.milestone.title // "—")] | @tsv'
+```
+
+This returns one TSV line per issue with: number, title, labels, milestone.
+
+If more than 100 issues, paginate with `&page=2`, `&page=3`, etc.
+
+**NEVER use `-f` flags with GET endpoints** — `-f` triggers a POST request. Always pass parameters as URL query strings for GET requests.
 
 ## Step 4 — Display Table
 
 Render a markdown table with these columns:
 
-| # | Title | State | Type | Milestone |
-|---|-------|-------|------|-----------|
+| # | Title | Type | Milestone |
+|---|-------|------|-----------|
 
-- **#** — Issue number (e.g., `#7`)
+- **#** — Issue number (e.g., `#33`)
 - **Title** — Issue title as plain text (NOT a URL link)
-- **State** — `OPEN` (all will be open, but include for completeness)
-- **Type** — Issue type if set (BUG, FEATURE, ENHANCEMENT, etc.), or `—` if none
+- **Type** — From labels: `bug`, `enhancement`, etc. — or `—` if none
 - **Milestone** — Current milestone name, or `—` if none
 
 Sort by issue number ascending.
@@ -122,12 +134,12 @@ N open issue(s) | M with milestones | K without milestones
 
 ### If ALL issues have milestones:
 ```
-✓ All open issues have milestones assigned. Lifecycle is on track.
+All open issues have milestones assigned. Lifecycle is on track.
 ```
 
 ### If ANY issues lack milestones:
 ```
-⚠ {K} issue(s) have no milestone assigned.
+{K} issue(s) have no milestone assigned.
 Milestones are available — assign them via GitHub or `/my-bpm-team-milestones`.
 ```
 
@@ -137,3 +149,5 @@ Milestones are available — assign them via GitHub or `/my-bpm-team-milestones`
 - If there are no open issues, say: "No open issues found for OWNER/REPO."
 - The command creates milestones and updates CLAUDE.md only when milestones don't exist yet
 - It does NOT auto-assign milestones to individual issues — that's a Team Lead decision
+- **All data fetching uses `gh api` with `--jq`** — never GitHub MCP (too verbose)
+- **All GET requests use URL query params** — never `-f` flags (which trigger POST)
