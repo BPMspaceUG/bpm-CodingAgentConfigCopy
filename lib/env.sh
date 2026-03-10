@@ -2096,3 +2096,114 @@ env_cmd_status() {
 
     return $ENV_EXIT_SUCCESS
 }
+
+# ============================================================================
+# Predefined Skills Installation
+# ============================================================================
+
+# Predefined Claude Code skills installed via 'npx skills add'
+# Format: skills_id|display_name|description
+# skills_id = owner/repo@skill as used by 'npx skills add'
+readonly -a _ENV_SKILLS_REGISTRY=(
+    "aktsmm/agent-skills@skill-finder|Skill Finder|Discover and install agent skills"
+    "askyourpdf/ai-pdf-filler@ai-pdf-filler-cli|PDF Filler|Fill, read, merge, split, and OCR PDF files"
+    "willem4130/claude-code-skills@elite-powerpoint-designer|PowerPoint|Create and edit PowerPoint presentations"
+    "aktsmm/agent-skills@powerpoint-automation|PowerPoint Auto|Automate PowerPoint slide creation"
+    "dnvriend/pdf-to-pptx-tool@skill-pdf-to-pptx-tool|PDF-to-PPTX|Convert PDF files to PowerPoint"
+    "promptadvisers/claude-code-polished-documents-skills@docx|DOCX|Create and edit Word documents"
+    "promptadvisers/claude-code-polished-documents-skills@document-polisher|Doc Polisher|Polish and format documents"
+)
+
+# Check if a skill is already installed
+# Usage: _env_skill_is_installed <skills_id>
+_env_skill_is_installed() {
+    local skills_id="$1"
+    local skill_name="${skills_id##*@}"
+    [[ -d "${HOME}/.claude/skills/${skill_name}" ]] || \
+    [[ -d "${HOME}/.claude/commands/${skill_name}" ]]
+}
+
+# Handle 'cac env skills' command
+# Usage: env_cmd_skills "$@"
+env_cmd_skills() {
+    local yes_flag="false"
+    local list_only="false"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --yes|-y) yes_flag="true"; shift ;;
+            --list) list_only="true"; shift ;;
+            --help|-h)
+                echo "cac env skills - Install predefined Claude Code skills"
+                echo ""
+                echo "USAGE: cac env skills [--yes] [--list]"
+                echo ""
+                echo "OPTIONS:"
+                echo "    --yes, -y   Skip confirmation prompt"
+                echo "    --list      Show predefined skills without installing"
+                echo ""
+                echo "PREDEFINED SKILLS (via 'npx skills add'):"
+                local entry
+                for entry in "${_ENV_SKILLS_REGISTRY[@]}"; do
+                    local pkg disp desc
+                    IFS='|' read -r pkg disp desc <<< "$entry"
+                    printf "    %-16s  %s\n" "$disp" "$desc"
+                done
+                return 0
+                ;;
+            *)
+                utils_error "Unknown option: $1"
+                echo "Run 'cac env skills --help' for usage." >&2
+                return 1
+                ;;
+        esac
+    done
+
+    if ! command -v npx &>/dev/null; then
+        utils_error "npx is not installed. Install Node.js first: cac env install claude"
+        return $ENV_EXIT_MISSING_DEP
+    fi
+
+    echo "Predefined Claude Code skills:"
+    echo ""
+
+    local entry pkg disp desc
+    for entry in "${_ENV_SKILLS_REGISTRY[@]}"; do
+        IFS='|' read -r pkg disp desc <<< "$entry"
+        local status="not installed"
+        _env_skill_is_installed "$pkg" && status="installed"
+        printf "  %-16s  %-45s  [%s]\n" "$disp" "$desc" "$status"
+    done
+    echo ""
+
+    [[ "$list_only" == "true" ]] && return 0
+
+    if [[ "$yes_flag" != "true" && -t 0 ]]; then
+        read -r -p "Install missing skills? [y/N] " confirm
+        [[ "$confirm" == "y" || "$confirm" == "Y" ]] || { echo "Skipped."; return 0; }
+    fi
+
+    echo ""
+    local installed=0 skipped=0 failed=0
+
+    for entry in "${_ENV_SKILLS_REGISTRY[@]}"; do
+        IFS='|' read -r pkg disp desc <<< "$entry"
+        if _env_skill_is_installed "$pkg"; then
+            echo "  [skip] $disp — already installed"
+            ((skipped++)) || true
+        else
+            echo "  Installing $disp ($pkg)..."
+            if npx skills add "$pkg" -g -y 2>&1 | tail -3; then
+                ((installed++)) || true
+            else
+                utils_error "  Failed to install $disp"
+                ((failed++)) || true
+            fi
+        fi
+    done
+
+    echo ""
+    echo "Skills: $installed installed, $skipped already present, $failed failed"
+    [[ $failed -gt 0 ]] && return $ENV_EXIT_PARTIAL
+    return $ENV_EXIT_SUCCESS
+}

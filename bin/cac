@@ -168,12 +168,12 @@ cmd_push() {
     local explicit_tool="all"
     local args=()
 
-    # Pre-parse push-specific --tool flag (same pattern as cmd_pull)
+    # Pre-parse push-specific --tool/-t flag or positional tool argument
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --tool)
+            --tool|-t)
                 if [[ $# -lt 2 ]]; then
-                    utils_error "Option --tool requires an argument"
+                    utils_error "Option $1 requires an argument"
                     return 1
                 fi
                 explicit_tool="$(_resolve_tool_alias "$2")"
@@ -184,8 +184,19 @@ cmd_push() {
                 fi
                 shift 2
                 ;;
-            *)
+            -*)
                 args+=("$1")
+                shift
+                ;;
+            *)
+                # Positional arg: tool name if valid, otherwise pass through
+                local resolved
+                resolved="$(_resolve_tool_alias "$1")"
+                if tools_is_valid "$resolved"; then
+                    explicit_tool="$resolved"
+                else
+                    args+=("$1")
+                fi
                 shift
                 ;;
         esac
@@ -636,6 +647,9 @@ cmd_env() {
         repair)
             env_cmd_repair "${resolved_args[@]+"${resolved_args[@]}"}"
             ;;
+        skills)
+            env_cmd_skills "$@"
+            ;;
         --help|-h)
             cat <<EOF
 cac env - Manage AI tool environments
@@ -649,6 +663,7 @@ SUBCOMMANDS:
     status [--parseable] [--check-updates]    Show installation status
     check [TOOL] [--parseable]               Health-check installed tools
     repair [TOOL] [--yes]                    Repair detected health issues
+    skills [--yes] [--list]                  Install predefined Claude Code skills
 
 TOOLS:
     claude            Claude Code CLI
@@ -679,6 +694,8 @@ EXAMPLES:
     cac env repair                    Repair all detected issues (interactive)
     cac env repair --yes              Repair without confirmation prompts
     cac env repair codex              Repair only Codex CLI
+    cac env skills                    Install predefined Claude Code skills
+    cac env skills --list             List predefined skills without installing
 
 EOF
             ;;
