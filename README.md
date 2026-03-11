@@ -149,8 +149,16 @@ Every command prints a version banner (`cac v<VERSION>`) as the first line of ou
 ### Push (Upload) Configuration
 
 ```bash
-# Bundle and upload current user's config
+# Bundle and upload current user's config (all tools)
 cac push
+
+# Bundle only a specific tool's config
+cac push claude                 # Positional argument
+cac push --tool codex           # Flag syntax
+cac push -t gemini              # Short flag
+
+# Preview what would be bundled (no upload)
+cac push --dry-run
 
 # Bundle another user's config (requires root)
 sudo cac push --user ubuntu
@@ -175,7 +183,7 @@ sudo cac pull --all
 
 Without `--tool` or `--user` flags, `cac pull` fetches the **globally newest** bundle across all hosts and users. Use `--tool` and/or `--user` to narrow the search.
 
-The `--all` flag scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`) or files (`.claude.json`) and pulls the matching bundle for each.
+The `--all` flag scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`, `.vibe`) or files (`.claude.json`) and pulls the matching bundle for each.
 
 ### List Bundles
 
@@ -193,7 +201,7 @@ cac list --tool claude --user deploy
 
 ```bash
 # By name or partial match
-cac pull CodingAgentConfig_myhost_user_250111-120000.zip
+cac pull CodingAgentConfig_myhost_user_all_250111-120000.zip
 cac pull mybundle
 ```
 
@@ -239,8 +247,11 @@ sudo cac update
 By default, `cac push` runs credential verification before uploading. Use `--skip-check` to bypass:
 
 ```bash
-# Normal push (runs check first, aborts if any fail)
+# Normal push (runs check first, aborts if any tool fails)
 cac push
+
+# Push only Claude, with credential check
+cac push --tool claude
 
 # Skip credential verification (for emergency uploads)
 cac push --skip-check
@@ -295,6 +306,38 @@ The `--tmux` flag configures Claude Code to display agent teammates as tmux pane
 
 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set in `settings.json` during Claude Code install (requires `python3` for JSON merge; logs a warning if unavailable).
 
+#### Health Check and Repair
+
+```bash
+# Health-check all installed AI tools
+cac env check
+
+# Health-check a specific tool
+cac env check claude
+
+# Machine-readable output
+cac env check --parseable
+
+# Repair all detected issues (prompts for confirmation)
+cac env repair
+
+# Auto-repair without prompts
+cac env repair --yes
+
+# Repair a specific tool only
+cac env repair codex
+```
+
+#### Predefined Skills
+
+```bash
+# Install predefined Claude Code skills
+cac env skills
+
+# List predefined skills without installing
+cac env skills --list
+```
+
 **Note:** Scope flags control npm install prefix. Curl-based installers (Claude, continuous-claude) use their own install logic and may install to different locations.
 
 **Tools registry:**
@@ -317,6 +360,33 @@ curl -fsSL URL | CAC_ENV_INSTALL=user bash
 curl -fsSL URL | CAC_ENV_INSTALL=global sudo bash
 ```
 
+### Manage Skill Libraries
+
+The `skill` subcommand installs, updates, and lists Claude Code skill libraries from Git repositories.
+
+```bash
+# Install a skill library from a Git URL
+cac skill install https://github.com/BPMspaceUG/bpm-claude-global-agent-skill-library.git
+
+# Install system-wide (requires root)
+sudo cac skill install https://github.com/example/skills.git --global
+
+# List installed skill libraries
+cac skill list
+
+# Show libraries with update info
+cac skill status
+
+# Update all installed skill libraries
+cac skill update
+
+# Update a specific library
+cac skill update my-library
+
+# Skip confirmation prompts
+cac skill update --yes
+```
+
 ### Help
 
 ```bash
@@ -326,12 +396,17 @@ cac --version
 
 ## Bundle Naming Convention
 
-Bundles follow the naming pattern:
+Bundles follow a 5-segment naming pattern:
 ```
-CodingAgentConfig_<HOST>_<USER>_<YYMMDD-HHMMSS>.zip
+CodingAgentConfig_<HOST>_<USER>_<TOOL>_<YYMMDD-HHMMSS>.zip
 ```
 
-Example: `CodingAgentConfig_prod-server-01_ubuntu_250111-143022.zip`
+- `TOOL` is the tool filter used during push (e.g., `claude`, `codex`, `gemini`, `mistral`, or `all` for all tools).
+- Hostnames, usernames, and tool names must not contain underscores, as underscores are field delimiters.
+
+Example: `CodingAgentConfig_prod-server-01_ubuntu_all_250111-143022.zip`
+
+Old 4-segment bundles (without the TOOL field) are still recognized during pull and list operations for backward compatibility.
 
 ## Configuration Files Managed
 
@@ -352,7 +427,7 @@ Example: `CodingAgentConfig_prod-server-01_ubuntu_250111-143022.zip`
 
 Settings are always included in `cac push` bundles but only extracted by `cac pull` when the bundle's hostname **AND** username match the target system. This prevents host-specific configuration (e.g. `teammateMode: "tmux"`, agent teams env vars) from being overwritten by bundles originating from different hosts.
 
-**Note:** Host+user matching relies on the bundle filename convention (`CodingAgentConfig_<HOST>_<USER>_<TIMESTAMP>.zip`). If a bundle is renamed or pulled by Gokapi file ID instead of its original filename, settings extraction is skipped as a safety measure.
+**Note:** Host+user matching relies on the bundle filename convention (`CodingAgentConfig_<HOST>_<USER>_<TOOL>_<TIMESTAMP>.zip`). If a bundle is renamed or pulled by Gokapi file ID instead of its original filename, settings extraction is skipped as a safety measure.
 
 ## Security
 

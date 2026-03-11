@@ -1116,44 +1116,50 @@ test_env_install_all_summary_format() {
 # Issue #57: Post-install Symlink Tests
 # ============================================================================
 
-test_env_post_install_symlink_creates_link() {
-    # Set up mock environment: EUID=0, binary in /root/.local/bin, not in /usr/local/bin
-    local mock_root="${TEST_TMPDIR}/mock_root_local_bin"
-    local mock_usr="${TEST_TMPDIR}/mock_usr_local_bin"
-    mkdir -p "$mock_root" "$mock_usr"
+# Extract the REAL _env_post_install_symlink() from lib/env.sh, then use sed to
+# rewrite the hardcoded paths (/usr/local/bin, /root/.local/bin, ${HOME}/.local/bin)
+# and the EUID root guard so we can test the real logic against temp directories.
+_load_real_symlink_func() {
+    local mock_usr="$1"    # replaces /usr/local/bin
+    local mock_root="$2"   # replaces /root/.local/bin
+    local mock_home="$3"   # replaces ${HOME}/.local/bin
 
-    # Create a fake binary
+    local body
+    body=$(sed -n '/^_env_post_install_symlink()/,/^}/p' "${PROJECT_ROOT}/lib/env.sh")
+
+    # Rewrite hardcoded paths to temp dirs
+    body=$(echo "$body" | sed \
+        -e "s|/usr/local/bin|${mock_usr}|g" \
+        -e "s|/root/.local/bin|${mock_root}|g" \
+        -e 's|\${HOME}/\.local/bin|'"${mock_home}"'|g')
+
+    # Bypass EUID root guard (replace the guard line with true so function always proceeds)
+    body=$(echo "$body" | sed 's|\[\[ "${EUID:-\$(id -u)}" -eq 0 \]\]|true|')
+
+    eval "$body"
+}
+
+test_env_post_install_symlink_creates_link() {
+    # Binary exists in mock /root/.local/bin, not in mock /usr/local/bin
+    local mock_usr="${TEST_TMPDIR}/symlink_usr1"
+    local mock_root="${TEST_TMPDIR}/symlink_root1"
+    local mock_home="${TEST_TMPDIR}/symlink_home1"
+    mkdir -p "$mock_usr" "$mock_root" "$mock_home"
+
+    # Create a fake binary in the root path
     touch "$mock_root/claude"
     chmod +x "$mock_root/claude"
 
-    # Override the function to use our mock paths
-    _env_post_install_symlink_test() {
-        local tool="$1"
-        local binary
-        case "$tool" in
-            claude)            binary="claude" ;;
-            continuous-claude) binary="continuous-claude" ;;
-            mistral)           binary="vibe" ;;
-            *) return 0 ;;
-        esac
+    _load_real_symlink_func "$mock_usr" "$mock_root" "$mock_home"
 
-        if [[ -e "$mock_usr/$binary" ]]; then
-            return 0
-        fi
+    _env_post_install_symlink "claude"
 
-        if [[ -x "$mock_root/$binary" ]]; then
-            ln -sf "$mock_root/$binary" "$mock_usr/$binary"
-            return 0
-        fi
-        return 0
-    }
-
-    _env_post_install_symlink_test "claude"
-
+    # Verify symlink was created
     if [[ -L "$mock_usr/claude" ]]; then
         pass "symlink created in mock /usr/local/bin"
     else
-        fail "symlink created in mock /usr/local/bin"
+        fail "symlink created in mock /usr/local/bin" "expected symlink at $mock_usr/claude"
+        return 1
     fi
 
     local target
@@ -1162,12 +1168,13 @@ test_env_post_install_symlink_creates_link() {
 }
 
 test_env_post_install_symlink_skips_existing() {
-    # When binary already exists in /usr/local/bin, no symlink should be created
-    local mock_root="${TEST_TMPDIR}/mock_root_local_bin2"
-    local mock_usr="${TEST_TMPDIR}/mock_usr_local_bin2"
-    mkdir -p "$mock_root" "$mock_usr"
+    # Binary already exists as a regular file in mock /usr/local/bin -> should short-circuit
+    local mock_usr="${TEST_TMPDIR}/symlink_usr2"
+    local mock_root="${TEST_TMPDIR}/symlink_root2"
+    local mock_home="${TEST_TMPDIR}/symlink_home2"
+    mkdir -p "$mock_usr" "$mock_root" "$mock_home"
 
-    # Binary already in /usr/local/bin
+    # Binary already in destination
     touch "$mock_usr/claude"
     chmod +x "$mock_usr/claude"
 
@@ -1175,80 +1182,263 @@ test_env_post_install_symlink_skips_existing() {
     touch "$mock_root/claude"
     chmod +x "$mock_root/claude"
 
-    _env_post_install_symlink_test() {
-        local tool="$1"
-        local binary
-        case "$tool" in
-            claude)            binary="claude" ;;
-            continuous-claude) binary="continuous-claude" ;;
-            mistral)           binary="vibe" ;;
-            *) return 0 ;;
-        esac
+    _load_real_symlink_func "$mock_usr" "$mock_root" "$mock_home"
 
-        if [[ -e "$mock_usr/$binary" ]]; then
-            echo "SKIPPED"
-            return 0
-        fi
+    _env_post_install_symlink "claude"
 
-        ln -sf "$mock_root/$binary" "$mock_usr/$binary"
-        return 0
-    }
-
-    local output
-    output=$(_env_post_install_symlink_test "claude")
-
-    assert_equals "SKIPPED" "$output" "skips when binary already exists"
-
-    # Should NOT be a symlink (it was a regular file)
+    # Should NOT be a symlink (original regular file preserved)
     if [[ ! -L "$mock_usr/claude" ]]; then
         pass "existing binary not replaced with symlink"
     else
         fail "existing binary not replaced with symlink"
+        return 1
     fi
 }
 
 test_env_post_install_symlink_maps_mistral_to_vibe() {
-    # Verify that mistral tool maps to vibe binary name
-    local mock_root="${TEST_TMPDIR}/mock_root_local_bin3"
-    local mock_usr="${TEST_TMPDIR}/mock_usr_local_bin3"
-    mkdir -p "$mock_root" "$mock_usr"
+    # mistral tool should map to vibe binary name via _env_tool_to_binary
+    local mock_usr="${TEST_TMPDIR}/symlink_usr3"
+    local mock_root="${TEST_TMPDIR}/symlink_root3"
+    local mock_home="${TEST_TMPDIR}/symlink_home3"
+    mkdir -p "$mock_usr" "$mock_root" "$mock_home"
 
     # Create vibe binary (not mistral)
     touch "$mock_root/vibe"
     chmod +x "$mock_root/vibe"
 
-    _env_post_install_symlink_test() {
-        local tool="$1"
-        local binary
-        case "$tool" in
-            claude)            binary="claude" ;;
-            continuous-claude) binary="continuous-claude" ;;
-            mistral)           binary="vibe" ;;
-            *) return 0 ;;
-        esac
+    _load_real_symlink_func "$mock_usr" "$mock_root" "$mock_home"
 
-        if [[ -e "$mock_usr/$binary" ]]; then
-            return 0
-        fi
-
-        if [[ -x "$mock_root/$binary" ]]; then
-            ln -sf "$mock_root/$binary" "$mock_usr/$binary"
-            return 0
-        fi
-        return 0
-    }
-
-    _env_post_install_symlink_test "mistral"
+    _env_post_install_symlink "mistral"
 
     if [[ -L "$mock_usr/vibe" ]]; then
         pass "mistral maps to vibe binary"
     else
-        fail "mistral maps to vibe binary"
+        fail "mistral maps to vibe binary" "expected symlink at $mock_usr/vibe"
+        return 1
     fi
 
     local target
     target=$(readlink "$mock_usr/vibe")
     assert_equals "$mock_root/vibe" "$target" "symlink points to vibe binary"
+}
+
+test_env_post_install_symlink_prefers_root_over_home() {
+    # Binary exists in BOTH /root/.local/bin AND ${HOME}/.local/bin
+    # The loop in the real function checks /root/.local/bin first, so the
+    # symlink should point to the root path, not the home path.
+    local mock_usr="${TEST_TMPDIR}/symlink_usr4"
+    local mock_root="${TEST_TMPDIR}/symlink_root4"
+    local mock_home="${TEST_TMPDIR}/symlink_home4"
+    mkdir -p "$mock_usr" "$mock_root" "$mock_home"
+
+    # Binary in both locations
+    touch "$mock_root/claude"
+    chmod +x "$mock_root/claude"
+    touch "$mock_home/claude"
+    chmod +x "$mock_home/claude"
+
+    _load_real_symlink_func "$mock_usr" "$mock_root" "$mock_home"
+
+    _env_post_install_symlink "claude"
+
+    if [[ ! -L "$mock_usr/claude" ]]; then
+        fail "symlink was not created" "expected symlink at $mock_usr/claude"
+        return 1
+    fi
+
+    local target
+    target=$(readlink "$mock_usr/claude")
+    # Must point to root path, not home path (root is checked first in the loop)
+    assert_equals "$mock_root/claude" "$target" "prefers /root/.local/bin over HOME/.local/bin"
+}
+
+# ============================================================================
+# Issue #63: Playwright Registry Tests
+# ============================================================================
+
+test_env_playwright_is_optional() {
+    if env_is_optional "playwright"; then
+        pass "playwright is optional"
+    else
+        fail "playwright is optional"
+    fi
+}
+
+test_env_playwright_display_name() {
+    local name
+    name=$(env_get_display_name "playwright")
+    assert_equals "Playwright" "$name" "playwright display name"
+}
+
+test_env_playwright_install_type() {
+    local itype
+    itype=$(env_get_install_type "playwright")
+    assert_equals "npm" "$itype" "playwright install type"
+}
+
+test_env_playwright_npm_package() {
+    local pkg="${_ENV_NPM_PACKAGES[playwright]:-}"
+    assert_equals "@playwright/test" "$pkg" "playwright npm package"
+}
+
+test_env_playwright_npm_lookup() {
+    local lookup="${_ENV_NPM_LOOKUP[playwright]:-}"
+    assert_equals "@playwright/test" "$lookup" "playwright npm lookup"
+}
+
+test_env_playwright_binary_mapping() {
+    local binary
+    binary=$(_env_tool_to_binary "playwright")
+    assert_equals "playwright" "$binary" "playwright binary mapping"
+}
+
+test_env_playwright_validates() {
+    if env_validate_tool "playwright"; then
+        pass "playwright validates as known tool"
+    else
+        fail "playwright validates as known tool"
+    fi
+}
+
+test_env_playwright_not_in_core() {
+    local core
+    core=$(env_get_core_tools)
+    if echo "$core" | grep -q "playwright"; then
+        fail "playwright should not be in core tools"
+    else
+        pass "playwright is not in core tools"
+    fi
+}
+
+test_env_post_install_playwright_calls_browser_install() {
+    # Mock playwright command to verify correct arguments are passed
+    local mock_dir="${TEST_TMPDIR}/mock_pw_bin"
+    mkdir -p "$mock_dir"
+
+    # Create mock playwright that records its arguments
+    cat > "$mock_dir/playwright" << 'MOCK'
+#!/usr/bin/env bash
+echo "playwright $*" >> "${MOCK_PW_LOG}"
+MOCK
+    chmod +x "$mock_dir/playwright"
+
+    local log_file="${TEST_TMPDIR}/pw_install.log"
+    export MOCK_PW_LOG="$log_file"
+
+    # Run with mock in PATH
+    PATH="$mock_dir:$PATH" _env_post_install_playwright >/dev/null 2>&1
+
+    if [[ -f "$log_file" ]] && grep -q "install --with-deps chromium" "$log_file"; then
+        pass "post-install calls playwright install --with-deps chromium"
+    else
+        fail "post-install calls playwright install --with-deps chromium"
+    fi
+
+    unset MOCK_PW_LOG
+}
+
+test_env_playwright_post_install_augments_path() {
+    # Verify that _env_post_install_playwright finds playwright even when
+    # it is NOT on the default PATH — only reachable via augmented PATH.
+    local hidden_dir="${TEST_TMPDIR}/hidden_npm_bin"
+    mkdir -p "$hidden_dir"
+
+    # Create mock playwright in the hidden directory
+    cat > "$hidden_dir/playwright" << 'MOCK'
+#!/usr/bin/env bash
+echo "playwright $*" >> "${MOCK_PW_LOG}"
+MOCK
+    chmod +x "$hidden_dir/playwright"
+
+    local log_file="${TEST_TMPDIR}/pw_augment.log"
+    export MOCK_PW_LOG="$log_file"
+
+    # Mock npm to report hidden_dir as global bin
+    local mock_npm_dir="${TEST_TMPDIR}/mock_npm_cmd"
+    mkdir -p "$mock_npm_dir"
+    cat > "$mock_npm_dir/npm" << NPMSCRIPT
+#!/usr/bin/env bash
+if [[ "\$1" == "bin" && "\$2" == "-g" ]]; then
+    echo "$hidden_dir"
+else
+    command npm "\$@"
+fi
+NPMSCRIPT
+    chmod +x "$mock_npm_dir/npm"
+
+    # Run with a minimal PATH that does NOT include hidden_dir,
+    # but does include mock npm so npm bin -g can report it
+    local minimal_path="$mock_npm_dir:/usr/bin:/bin"
+    PATH="$minimal_path" _env_post_install_playwright >/dev/null 2>&1
+
+    if [[ -f "$log_file" ]] && grep -q "install --with-deps chromium" "$log_file"; then
+        pass "post-install finds playwright via augmented PATH (npm bin -g)"
+    else
+        fail "post-install finds playwright via augmented PATH (npm bin -g)"
+    fi
+
+    unset MOCK_PW_LOG
+}
+
+test_env_playwright_browser_install_on_update_redirect() {
+    # Simulate scenario: playwright npm package is already installed (so
+    # env_is_installed returns true), but browsers are missing.
+    # Verify that env_install_tool still calls _env_post_install_playwright.
+
+    local mock_dir="${TEST_TMPDIR}/mock_pw_update"
+    mkdir -p "$mock_dir"
+
+    # Create mock playwright binary so env_is_installed detects it
+    cat > "$mock_dir/playwright" << 'MOCK'
+#!/usr/bin/env bash
+if [[ "$1" == "--version" ]]; then
+    echo "1.40.0"
+elif [[ "$1" == "install" ]]; then
+    echo "playwright $*" >> "${MOCK_PW_LOG}"
+fi
+MOCK
+    chmod +x "$mock_dir/playwright"
+
+    # Create mock npm so dependency checks pass
+    cat > "$mock_dir/npm" << 'NPMSCRIPT'
+#!/usr/bin/env bash
+if [[ "$1" == "bin" && "$2" == "-g" ]]; then
+    echo "/usr/local/bin"
+elif [[ "$1" == "update" || "$1" == "install" ]]; then
+    exit 0
+fi
+NPMSCRIPT
+    chmod +x "$mock_dir/npm"
+
+    # Create mock node so version checks pass
+    cat > "$mock_dir/node" << 'NODESCRIPT'
+#!/usr/bin/env bash
+echo "v20.0.0"
+NODESCRIPT
+    chmod +x "$mock_dir/node"
+
+    local log_file="${TEST_TMPDIR}/pw_update_redirect.log"
+    export MOCK_PW_LOG="$log_file"
+
+    # Save original env_update_tool so we can restore it after the test
+    local original_fn
+    original_fn=$(declare -f env_update_tool)
+
+    # Override env_update_tool to be a no-op (we only care about post-install)
+    env_update_tool() { return 0; }
+
+    # Run with mock PATH so playwright is "installed"
+    PATH="$mock_dir:/usr/bin:/bin" env_install_tool "playwright" "global" --yes >/dev/null 2>&1
+
+    if [[ -f "$log_file" ]] && grep -q "install --with-deps chromium" "$log_file"; then
+        pass "browser install runs on update-redirect path"
+    else
+        fail "browser install runs on update-redirect path"
+    fi
+
+    unset MOCK_PW_LOG
+    # Restore original env_update_tool
+    eval "$original_fn"
 }
 
 # ============================================================================
@@ -1355,6 +1545,21 @@ echo "--- Issue #57: Post-install Symlink Tests ---"
 run_test "post_install_symlink creates link" test_env_post_install_symlink_creates_link
 run_test "post_install_symlink skips existing" test_env_post_install_symlink_skips_existing
 run_test "post_install_symlink maps mistral to vibe" test_env_post_install_symlink_maps_mistral_to_vibe
+run_test "post_install_symlink prefers root over home" test_env_post_install_symlink_prefers_root_over_home
+
+echo ""
+echo "--- Issue #63: Playwright Registry Tests ---"
+run_test "playwright is optional" test_env_playwright_is_optional
+run_test "playwright display name" test_env_playwright_display_name
+run_test "playwright install type" test_env_playwright_install_type
+run_test "playwright npm package" test_env_playwright_npm_package
+run_test "playwright npm lookup" test_env_playwright_npm_lookup
+run_test "playwright binary mapping" test_env_playwright_binary_mapping
+run_test "playwright validates as known tool" test_env_playwright_validates
+run_test "playwright not in core tools" test_env_playwright_not_in_core
+run_test "playwright post-install calls browser install" test_env_post_install_playwright_calls_browser_install
+run_test "playwright post-install augments PATH" test_env_playwright_post_install_augments_path
+run_test "playwright browser install on update-redirect" test_env_playwright_browser_install_on_update_redirect
 
 echo ""
 framework_report

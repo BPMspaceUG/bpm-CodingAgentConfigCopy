@@ -786,8 +786,226 @@ main() {
     run_test "cmd_main --check" test_update_cmd_main_check_flag
     echo ""
 
+    echo "--- stamp_version (Issue #58) ---"
+    run_test "stamp_version: commit date in clean repo" test_stamp_version_clean_commit
+    run_test "stamp_version: dirty uses commit date not wall-clock" test_stamp_version_dirty_uses_commit_date
+    run_test "stamp_version: draft uses commit date" test_stamp_version_draft_uses_commit_date
+    run_test "stamp_version: no git repo is noop" test_stamp_version_no_git_noop
+    run_test "stamp_version: replaces VERSION line in target" test_stamp_version_replaces_version_line
+    run_test "stamp_version: format is YYMMDD-HHMM" test_stamp_version_format_hhmm
+    run_test "stamp_version: date fallback when git-log fails" test_stamp_version_date_fallback_when_git_log_fails
+    echo ""
+
     framework_report
     exit $?
+}
+
+# ============================================================================
+# stamp_version Tests (Issue #58)
+# ============================================================================
+
+# Extract the REAL stamp_version() from install.sh so we can test it in isolation.
+# install.sh calls main "$@" at the bottom, so we cannot source it directly.
+# We use sed to extract the function body and eval it into the current shell.
+_load_stamp_version() {
+    local install_sh="${PROJECT_ROOT}/install.sh"
+    # Extract the function body from "stamp_version()" to the next closing brace at column 0
+    eval "$(sed -n '/^stamp_version()/,/^}/p' "$install_sh")"
+    # Provide a warn() stub since stamp_version references it in an error path
+    warn() { echo "WARN: $*" >&2; }
+}
+
+# Helper: create a git repo with a single commit at a fixed date
+_stamp_create_repo() {
+    local repo="$1"
+    local commit_date="$2"
+    mkdir -p "$repo"
+    git -C "$repo" init -q -b main
+    git -C "$repo" config user.email "test@test.com"
+    git -C "$repo" config user.name "Test"
+    echo "hello" > "$repo/file.txt"
+    git -C "$repo" add file.txt
+    GIT_COMMITTER_DATE="$commit_date" git -C "$repo" commit -q -m "initial" --date="$commit_date"
+}
+
+# Helper: set up a fake remote so diff HEAD @{upstream} shows no diff (clean state)
+_stamp_setup_upstream() {
+    local repo="$1"
+    git -C "$repo" remote add origin "$repo" 2>/dev/null || true
+    git -C "$repo" fetch -q origin 2>/dev/null || true
+    git -C "$repo" branch --set-upstream-to=origin/main main 2>/dev/null || true
+}
+
+test_stamp_version_clean_commit() {
+    _load_stamp_version
+
+    local repo="${TEST_TMPDIR}/stamp_clean_repo"
+    _stamp_create_repo "$repo" "2026-02-15T10:30:00"
+    _stamp_setup_upstream "$repo"
+
+    local target="${TEST_TMPDIR}/stamp_clean_target"
+    echo 'VERSION="dev"' > "$target"
+
+    stamp_version "$target" "$repo"
+
+    local stamped
+    stamped=$(grep '^VERSION=' "$target" | head -1)
+
+    # Should contain commit date 260215-1030, no suffix
+    assert_contains "260215-1030" "$stamped" "stamp_version uses commit date"
+    # Should NOT have -dirty or -draft suffix
+    if [[ "$stamped" == *"-dirty"* || "$stamped" == *"-draft"* ]]; then
+        echo "Expected clean version (no suffix), got: $stamped" >&2
+        return 1
+    fi
+}
+
+test_stamp_version_dirty_uses_commit_date() {
+    _load_stamp_version
+
+    local repo="${TEST_TMPDIR}/stamp_dirty_repo"
+    _stamp_create_repo "$repo" "2026-03-10T08:45:00"
+
+    # Make it dirty (uncommitted change)
+    echo "dirty change" > "$repo/file.txt"
+
+    local target="${TEST_TMPDIR}/stamp_dirty_target"
+    echo 'VERSION="dev"' > "$target"
+
+    stamp_version "$target" "$repo"
+
+    local stamped
+    stamped=$(grep '^VERSION=' "$target" | head -1)
+
+    # After the fix, dirty should use HEAD commit date, not wall-clock
+    assert_contains "260310-0845" "$stamped" "dirty uses HEAD commit date (not wall-clock)"
+    assert_contains "-dirty" "$stamped" "dirty repo gets -dirty suffix"
+}
+
+test_stamp_version_draft_uses_commit_date() {
+    _load_stamp_version
+
+    local repo="${TEST_TMPDIR}/stamp_draft_repo"
+    _stamp_create_repo "$repo" "2026-04-20T16:15:00"
+
+    # No upstream configured, so diff HEAD @{upstream} will fail -> draft
+    # (git init creates no remote by default)
+
+    local target="${TEST_TMPDIR}/stamp_draft_target"
+    echo 'VERSION="dev"' > "$target"
+
+    stamp_version "$target" "$repo"
+
+    local stamped
+    stamped=$(grep '^VERSION=' "$target" | head -1)
+
+    assert_contains "260420-1615" "$stamped" "draft uses commit date"
+    assert_contains "-draft" "$stamped" "unpushed commit gets -draft suffix"
+}
+
+test_stamp_version_no_git_noop() {
+    _load_stamp_version
+
+    local target="${TEST_TMPDIR}/stamp_nogit_target"
+    echo 'VERSION="dev"' > "$target"
+
+    local no_git="${TEST_TMPDIR}/not_a_repo"
+    mkdir -p "$no_git"
+
+    stamp_version "$target" "$no_git"
+
+    local stamped
+    stamped=$(grep '^VERSION=' "$target" | head -1)
+    assert_equals 'VERSION="dev"' "$stamped" "no git repo leaves VERSION unchanged"
+}
+
+test_stamp_version_replaces_version_line() {
+    _load_stamp_version
+
+    local repo="${TEST_TMPDIR}/stamp_replace_repo"
+    _stamp_create_repo "$repo" "2026-06-15T14:22:00"
+    _stamp_setup_upstream "$repo"
+
+    local target="${TEST_TMPDIR}/stamp_replace_target"
+    cat > "$target" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+VERSION="dev"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MOCK
+
+    stamp_version "$target" "$repo"
+
+    local ver_line
+    ver_line=$(grep '^VERSION=' "$target" | head -1)
+    assert_contains "260615-1422" "$ver_line" "VERSION line replaced with commit date"
+
+    # Surrounding content must be intact
+    assert_contains 'set -euo pipefail' "$(cat "$target")" "surrounding content preserved"
+    assert_contains 'SCRIPT_DIR=' "$(cat "$target")" "SCRIPT_DIR line preserved"
+}
+
+test_stamp_version_format_hhmm() {
+    _load_stamp_version
+
+    local repo="${TEST_TMPDIR}/stamp_format_repo"
+    _stamp_create_repo "$repo" "2026-11-03T09:07:00"
+    _stamp_setup_upstream "$repo"
+
+    local target="${TEST_TMPDIR}/stamp_format_target"
+    echo 'VERSION="dev"' > "$target"
+
+    stamp_version "$target" "$repo"
+
+    local stamped
+    stamped=$(grep '^VERSION=' "$target" | head -1)
+
+    # Must match YYMMDD-HHMM (4-digit time), NOT YYMMDD-HHMMSS (6-digit)
+    assert_match '^VERSION="[0-9]{6}-[0-9]{4}"$' "$stamped" "version format is YYMMDD-HHMM"
+}
+
+test_stamp_version_date_fallback_when_git_log_fails() {
+    _load_stamp_version
+
+    local repo="${TEST_TMPDIR}/stamp_fallback_repo"
+    _stamp_create_repo "$repo" "2026-01-01T00:00:00"
+
+    # Make repo dirty so we enter the dirty branch
+    echo "dirty" > "$repo/file.txt"
+
+    # Create a git wrapper that succeeds for rev-parse and diff but fails for log
+    local mock_bin="${TEST_TMPDIR}/stamp_fallback_bin"
+    mkdir -p "$mock_bin"
+    cat > "$mock_bin/git" <<'WRAPPER'
+#!/usr/bin/env bash
+# Pass through rev-parse and diff commands; fail on log
+for arg in "$@"; do
+    if [[ "$arg" == "log" ]]; then
+        exit 1
+    fi
+done
+command git "$@"
+WRAPPER
+    chmod +x "$mock_bin/git"
+
+    local target="${TEST_TMPDIR}/stamp_fallback_target"
+    echo 'VERSION="dev"' > "$target"
+
+    # Run stamp_version with our git wrapper first on PATH
+    PATH="${mock_bin}:${PATH}" stamp_version "$target" "$repo"
+
+    local stamped
+    stamped=$(grep '^VERSION=' "$target" | head -1)
+
+    # git log fails, so the || date fallback fires. VERSION should NOT be "dev".
+    if [[ "$stamped" == 'VERSION="dev"' ]]; then
+        echo "Expected date fallback to fire, but VERSION is still dev: $stamped" >&2
+        return 1
+    fi
+    # Should still have -dirty suffix
+    assert_contains "-dirty" "$stamped" "fallback still gets -dirty suffix"
+    # Should match YYMMDD-HHMM format (from date command)
+    assert_match '^VERSION="[0-9]{6}-[0-9]{4}-dirty"$' "$stamped" "fallback format is YYMMDD-HHMM-dirty"
 }
 
 main "$@"

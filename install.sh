@@ -264,7 +264,7 @@ stamp_version() {
     local ver="" suffix=""
     if [[ -n "$src_dir" ]] && git -C "$src_dir" rev-parse --git-dir &>/dev/null; then
         if ! git -C "$src_dir" diff --quiet HEAD 2>/dev/null || ! git -C "$src_dir" diff --cached --quiet HEAD 2>/dev/null; then
-            ver=$(date '+%y%m%d-%H%M')
+            ver=$(git -C "$src_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || date '+%y%m%d-%H%M')
             suffix="-dirty"
         elif ! git -C "$src_dir" diff --quiet HEAD "@{upstream}" 2>/dev/null; then
             ver=$(git -C "$src_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")

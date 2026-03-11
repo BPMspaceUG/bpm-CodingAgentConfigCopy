@@ -35,6 +35,7 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
         "gemini|Gemini CLI|command -v gemini|gemini --version|npm|no"
         "continuous-claude|continuous-claude|command -v continuous-claude|continuous-claude --version|curl|yes"
         "mistral|Mistral Vibe|command -v vibe|vibe --version|curl|no"
+        "playwright|Playwright|command -v playwright|playwright --version|npm|yes"
     )
 
     # Install URLs for curl-based tools
@@ -48,6 +49,7 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
     declare -A _ENV_NPM_PACKAGES=(
         [codex]="@openai/codex"
         [gemini]="@google/gemini-cli"
+        [playwright]="@playwright/test"
     )
 
     # Minimum Node.js version required for npm tools
@@ -59,6 +61,7 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
         [codex]="@openai/codex"
         [gemini]="@google/gemini-cli"
         [continuous-claude]="continuous-claude"
+        [playwright]="@playwright/test"
     )
 
     # Cache TTL for latest version lookups (seconds) - 5 minutes
@@ -396,6 +399,7 @@ _env_tool_to_binary() {
         gemini)            echo "gemini" ;;
         continuous-claude) echo "continuous-claude" ;;
         mistral)           echo "vibe" ;;
+        playwright)        echo "playwright" ;;
         *) return 1 ;;
     esac
 }
@@ -471,6 +475,13 @@ env_install_tool() {
         if ! env_update_tool "$tool" "$scope"; then
             utils_warn "Update failed, but $display_name is still installed (version: $version)"
         fi
+
+        # Post-install hooks must run even on update-redirect (Issue #63)
+        # Playwright browsers may be missing even when npm package exists
+        if [[ "$tool" == "playwright" ]]; then
+            _env_post_install_playwright
+        fi
+
         return $ENV_EXIT_SUCCESS
     fi
 
@@ -562,6 +573,11 @@ env_install_tool() {
         # Post-install: configure Claude Code settings.json (Issues #39, #40)
         if [[ "$tool" == "claude" ]]; then
             _env_configure_claude_settings "$tmux_flag"
+        fi
+
+        # Post-install: install Playwright browser binaries (Issue #63)
+        if [[ "$tool" == "playwright" ]]; then
+            _env_post_install_playwright
         fi
 
         return $ENV_EXIT_SUCCESS
@@ -1883,6 +1899,32 @@ with open(temp_file, 'w') as f:
     # Atomic rename
     mv "$temp_merge" "$settings_file"
     return 0
+}
+
+# Post-install hook for Playwright: install browser binaries (Issue #63)
+# Runs 'playwright install --with-deps chromium' to install Chromium and its system deps.
+# Augments PATH to find freshly installed playwright binary (npm global bin may not
+# be on the current shell's PATH yet).
+# Usage: _env_post_install_playwright
+_env_post_install_playwright() {
+    echo "Installing Playwright browser binaries (Chromium)..."
+
+    # Augment PATH to find freshly installed playwright binary
+    local pw_path="$PATH"
+    [[ -d "$HOME/.local/bin" ]] && pw_path="$HOME/.local/bin:$pw_path"
+    [[ -d "/usr/local/bin" ]] && pw_path="/usr/local/bin:$pw_path"
+    local npm_global_bin
+    npm_global_bin=$(npm bin -g 2>/dev/null) || true
+    [[ -n "$npm_global_bin" && -d "$npm_global_bin" ]] && pw_path="$npm_global_bin:$pw_path"
+
+    # Clear bash command cache so freshly installed binaries are found
+    hash -r
+
+    if PATH="$pw_path" playwright install --with-deps chromium; then
+        utils_success "Playwright Chromium browser installed successfully"
+    else
+        utils_warn "Playwright browser install failed — you may need to run: sudo playwright install --with-deps chromium"
+    fi
 }
 
 # Configure Claude Code settings.json after install
