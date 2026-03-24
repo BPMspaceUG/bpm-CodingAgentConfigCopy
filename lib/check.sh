@@ -8,6 +8,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/logging.sh
 source "${SCRIPT_DIR}/logging.sh"
+# shellcheck source=lib/platform.sh
+source "${SCRIPT_DIR}/platform.sh"
 # shellcheck source=lib/tools.sh
 source "${SCRIPT_DIR}/tools.sh"
 
@@ -65,7 +67,7 @@ _check_generate_cache_key() {
     local cred_path cred_mtime
     cred_path=$(_check_get_primary_cred_file "$tool" "$home_dir")
     if [[ -f "$cred_path" ]]; then
-        cred_mtime=$(stat -c "%Y" "$cred_path" 2>/dev/null || stat -f "%m" "$cred_path" 2>/dev/null || echo "0")
+        cred_mtime=$(platform_get_file_mtime "$cred_path")
     else
         cred_mtime="0"
     fi
@@ -117,7 +119,7 @@ _check_cache_set() {
     # Create cache directory if needed
     if [[ ! -d "$cache_dir" ]]; then
         mkdir -p "$cache_dir"
-        chmod 700 "$cache_dir"
+        platform_chmod 700 "$cache_dir"
     fi
 
     # Remove old entries for this tool and add new one
@@ -130,7 +132,7 @@ _check_cache_set() {
         echo "${tool}:${cache_key}:${timestamp}:${result}" > "$cache_file"
     fi
 
-    chmod 600 "$cache_file"
+    platform_chmod 600 "$cache_file"
 }
 
 # ============================================================================
@@ -141,12 +143,10 @@ _check_cache_set() {
 # Usage: _check_get_timeout_cmd
 # Returns: Path to timeout command, or exits with code 4 if not found
 _check_get_timeout_cmd() {
-    if command -v timeout &>/dev/null; then
-        echo "timeout"
-    elif command -v gtimeout &>/dev/null; then
-        echo "gtimeout"
+    local cmd
+    if cmd=$(platform_get_timeout_cmd); then
+        echo "$cmd"
     else
-        utils_error "Required command 'timeout' not found. On macOS, install with: brew install coreutils"
         return $CHECK_EXIT_MISSING_DEP
     fi
 }
@@ -188,7 +188,7 @@ _check_with_timeout() {
     local tmpfile exitfile
     tmpfile=$(mktemp)
     exitfile=$(mktemp)
-    chmod 600 "$tmpfile" "$exitfile"
+    platform_chmod 600 "$tmpfile" "$exitfile"
 
     # Run command in subshell, save exit code (capture before echo overwrites $?)
     (

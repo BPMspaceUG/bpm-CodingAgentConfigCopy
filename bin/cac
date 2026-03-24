@@ -444,6 +444,12 @@ cmd_pull() {
 cmd_pull_all() {
     local dry_run="${1:-false}"
 
+    # Cross-user operations are not supported on Windows (no sudo / POSIX users)
+    if platform_is_windows; then
+        utils_error "--all is not supported on Windows Git Bash. Run as the target user without --all."
+        return 1
+    fi
+
     # Require root
     if [[ "$EUID" -ne 0 ]]; then
         utils_error "Root required for --all (pulls to all users)"
@@ -458,7 +464,7 @@ cmd_pull_all() {
     local tool_dirs=(".claude" ".codex" ".gemini" ".vibe")
     local tool_files=(".claude.json")
 
-    for user_home in /home/*; do
+    while IFS= read -r user_home; do
         [[ -d "$user_home" ]] || continue
         local username
         username=$(basename "$user_home")
@@ -485,27 +491,7 @@ cmd_pull_all() {
         if [[ "$found" == "true" && ! " ${users_found[*]} " =~ \ ${username}\  ]]; then
             users_found+=("$username")
         fi
-    done
-
-    # Also check root
-    local root_found=false
-    for tool_dir in "${tool_dirs[@]}"; do
-        if [[ -d "/root/${tool_dir}" ]]; then
-            root_found=true
-            break
-        fi
-    done
-    if [[ "$root_found" != "true" ]]; then
-        for tool_file in "${tool_files[@]}"; do
-            if [[ -f "/root/${tool_file}" ]]; then
-                root_found=true
-                break
-            fi
-        done
-    fi
-    if [[ "$root_found" == "true" ]]; then
-        users_found+=("root")
-    fi
+    done < <(platform_list_user_homes)
 
     if [[ ${#users_found[@]} -eq 0 ]]; then
         echo "No users with AI tool configs found (.claude, .codex, .gemini, .claude.json)"

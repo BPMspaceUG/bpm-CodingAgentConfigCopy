@@ -16,6 +16,20 @@ REPO_NAME="bpm-CodingAgentConfigCopy"
 GITHUB_RAW_BASE="https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}"
 GITHUB_API_BASE="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}"
 
+# Inline platform detection (lib/platform.sh is not available at install time)
+_detect_install_platform() {
+    if [[ "${OSTYPE:-}" == msys || "${OSTYPE:-}" == mingw* || "${OSTYPE:-}" == cygwin ]]; then
+        echo "gitbash"
+    elif uname -r 2>/dev/null | grep -qi microsoft; then
+        echo "wsl"
+    elif [[ "$(uname -s 2>/dev/null)" == "Darwin" ]]; then
+        echo "macos"
+    else
+        echo "linux"
+    fi
+}
+_INSTALL_PLATFORM=$(_detect_install_platform)
+
 # Installation paths
 SYS_BIN_DIR="/usr/local/bin"
 SYS_LIB_DIR="/usr/local/lib/cac"
@@ -61,6 +75,9 @@ set_user_local_paths() {
 
 # Set installation directories for system-wide install
 set_system_wide_paths() {
+    if [[ "$_INSTALL_PLATFORM" == "gitbash" ]]; then
+        die "System-wide installation is not supported on Windows Git Bash. Use --user instead."
+    fi
     BIN_DIR="$SYS_BIN_DIR"
     LIB_DIR="$SYS_LIB_DIR"
     CONFIG_DIR="$SYS_CONFIG_DIR"
@@ -128,7 +145,21 @@ check_dependencies() {
     done
 
     if [[ ${#missing[@]} -gt 0 ]]; then
-        die "Missing required dependencies: ${missing[*]}"
+        error "Missing required dependencies: ${missing[*]}"
+        case "$_INSTALL_PLATFORM" in
+            gitbash|windows)
+                echo "On Windows Git Bash, install missing tools via:" >&2
+                echo "  winget install Git.Git     # includes curl, zip, unzip" >&2
+                echo "  winget install GnuWin32.Zip" >&2
+                ;;
+            macos)
+                echo "On macOS, install with: brew install ${missing[*]}" >&2
+                ;;
+            *)
+                echo "On Debian/Ubuntu: sudo apt-get install ${missing[*]}" >&2
+                ;;
+        esac
+        exit 1
     fi
 }
 
@@ -172,7 +203,7 @@ download_project() {
     chmod +x "${temp_dir}/bin/cac"
 
     # Download library modules
-    local libs=(config.sh security.sh tools.sh bundle.sh backend_local.sh backend_gokapi.sh utils.sh logging.sh check.sh env.sh skill.sh update.sh)
+    local libs=(config.sh security.sh platform.sh tools.sh bundle.sh backend_local.sh backend_gokapi.sh utils.sh logging.sh check.sh env.sh skill.sh update.sh)
     for lib in "${libs[@]}"; do
         download_file "${base_url}/lib/${lib}" "${temp_dir}/lib/${lib}"
     done
@@ -334,19 +365,20 @@ install_files() {
 
     # System config (/etc/cac) needs 755 so all users can access it
     # User config (~/.config/cac) stays 700 (private)
+    # On Windows NTFS chmod is a no-op — swallow errors
     if [[ "$CONFIG_DIR" == "/etc/cac" ]]; then
-        chmod 755 "$CONFIG_DIR"
+        chmod 755 "$CONFIG_DIR" 2>/dev/null || true
     else
-        chmod 700 "$CONFIG_DIR"
+        chmod 700 "$CONFIG_DIR" 2>/dev/null || true
     fi
 
     cp "${temp_dir}/bin/cac" "${BIN_DIR}/cac"
-    chmod 755 "${BIN_DIR}/cac"
+    chmod 755 "${BIN_DIR}/cac" 2>/dev/null || true
 
     for lib_file in "${temp_dir}/lib/"*; do
         cp "$lib_file" "${LIB_DIR}/"
     done
-    chmod 644 "${LIB_DIR}/"*
+    chmod 644 "${LIB_DIR}/"* 2>/dev/null || true
 
     update_cli_lib_path "${BIN_DIR}/cac" "${LIB_DIR}"
 
@@ -560,9 +592,9 @@ write_config_file() {
     # token, not a user-private secret. See lib/config.sh:config_check_permissions().
     # User config (~/.config/cac/.env) stays 600 (private).
     if [[ "$env_file" == "/etc/cac/.env" ]]; then
-        chmod 644 "$env_file"
+        chmod 644 "$env_file" 2>/dev/null || true
     else
-        chmod 600 "$env_file"
+        chmod 600 "$env_file" 2>/dev/null || true
     fi
     success "Created configuration: ${env_file}"
 }

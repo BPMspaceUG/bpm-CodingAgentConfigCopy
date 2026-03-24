@@ -24,7 +24,11 @@ CAC_GOKAPI_ALLOWED_DOWNLOADS="${CAC_GOKAPI_ALLOWED_DOWNLOADS:-0}"
 # Warns if user config overrides existing system config
 config_find_env_path() {
     local user_config=""
-    local system_config="/etc/cac/.env"
+    # System config path only applies on Linux/macOS/WSL — not on Windows
+    local system_config=""
+    if ! platform_is_windows; then
+        system_config="/etc/cac/.env"
+    fi
 
     # Check explicit CAC_CONFIG_DIR first
     if [[ -n "${CAC_CONFIG_DIR:-}" && -f "${CAC_CONFIG_DIR}/.env" ]]; then
@@ -70,10 +74,15 @@ config_check_permissions() {
         return 1
     fi
 
+    # Skip permission enforcement on Windows NTFS (chmod is a no-op)
+    if platform_is_windows; then
+        return 0
+    fi
+
     # System config (/etc/cac/.env) allows 644 for shared access
     if [[ "$env_path" == "/etc/cac/.env" ]]; then
         local perms
-        perms=$(stat -c '%a' "$env_path" 2>/dev/null)
+        perms=$(platform_get_file_perms "$env_path")
         if [[ "$perms" != "600" && "$perms" != "644" ]]; then
             utils_error "System config '$env_path' has invalid permissions ($perms). Use 600 or 644."
             return 1
@@ -163,7 +172,7 @@ config_get_sync_marker_time() {
     marker_path=$(config_get_sync_marker_path "$tool")
 
     if [[ -f "$marker_path" ]]; then
-        stat -c '%Y' "$marker_path" 2>/dev/null || echo "0"
+        platform_get_file_mtime "$marker_path"
     else
         echo "0"
     fi
@@ -193,7 +202,7 @@ config_needs_sync() {
         local abs_path="${home_dir}/${rel_path}"
         if [[ -f "$abs_path" ]]; then
             local file_time
-            file_time=$(stat -c '%Y' "$abs_path" 2>/dev/null || echo "0")
+            file_time=$(platform_get_file_mtime "$abs_path")
             if [[ "$file_time" -gt "$marker_time" ]]; then
                 echo "true"
                 return 0

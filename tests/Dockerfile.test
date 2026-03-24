@@ -1,0 +1,53 @@
+# Dockerfile.test - Sandboxed test environment for cac
+#
+# Builds a minimal Debian image with required dependencies and runs
+# the full test suite including the new platform tests.
+#
+# Build & run:
+#   docker build -f tests/Dockerfile.test -t cac-test .
+#   docker run --rm cac-test
+
+FROM debian:bookworm-slim
+
+# Install runtime and test dependencies
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends \
+        bash \
+        curl \
+        zip \
+        unzip \
+        git \
+        coreutils \
+        procps \
+        dos2unix \
+        python3 \
+        jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root test user (mirrors real usage)
+RUN useradd -m -s /bin/bash testuser
+
+# Set USER env var so $USER-dependent code works in tests
+ENV USER=testuser
+
+WORKDIR /cac
+
+# Copy project files
+COPY bin/           ./bin/
+COPY lib/           ./lib/
+COPY tests/         ./tests/
+COPY install.sh     ./
+COPY uninstall.sh   ./
+COPY .env.example   ./
+
+# Convert Windows CRLF line endings to Unix LF
+RUN find . -name "*.sh" -exec dos2unix {} \; && dos2unix bin/cac install.sh uninstall.sh
+
+# Make scripts executable
+RUN chmod +x bin/cac tests/*.sh lib/*.sh
+
+# Run as non-root by default (matches normal user install)
+USER testuser
+
+# Run the full test suite
+CMD ["bash", "tests/run_tests.sh"]

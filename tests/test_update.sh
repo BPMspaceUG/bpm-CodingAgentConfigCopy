@@ -976,15 +976,18 @@ test_stamp_version_date_fallback_when_git_log_fails() {
     # Create a git wrapper that succeeds for rev-parse and diff but fails for log
     local mock_bin="${TEST_TMPDIR}/stamp_fallback_bin"
     mkdir -p "$mock_bin"
-    cat > "$mock_bin/git" <<'WRAPPER'
+    # Capture real git path before creating the mock to avoid PATH recursion
+    local real_git
+    real_git=$(command -v git)
+    cat > "$mock_bin/git" <<WRAPPER
 #!/usr/bin/env bash
 # Pass through rev-parse and diff commands; fail on log
-for arg in "$@"; do
-    if [[ "$arg" == "log" ]]; then
+for arg in "\$@"; do
+    if [[ "\$arg" == "log" ]]; then
         exit 1
     fi
 done
-command git "$@"
+"${real_git}" "\$@"
 WRAPPER
     chmod +x "$mock_bin/git"
 

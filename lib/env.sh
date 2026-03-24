@@ -8,6 +8,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/logging.sh
 source "${SCRIPT_DIR}/logging.sh"
+# shellcheck source=lib/platform.sh
+source "${SCRIPT_DIR}/platform.sh"
 
 # ============================================================================
 # Constants
@@ -892,10 +894,10 @@ env_get_latest_version() {
 
     # Query npm registry with timeout
     local latest
-    if command -v timeout &>/dev/null; then
-        latest=$(timeout 10 npm view "$package" version 2>/dev/null) || latest=""
-    elif command -v gtimeout &>/dev/null; then
-        latest=$(gtimeout 10 npm view "$package" version 2>/dev/null) || latest=""
+    local _timeout_cmd
+    _timeout_cmd=$(platform_get_timeout_cmd 2>/dev/null) || _timeout_cmd=""
+    if [[ -n "$_timeout_cmd" ]]; then
+        latest=$("$_timeout_cmd" 10 npm view "$package" version 2>/dev/null) || latest=""
     else
         latest=$(npm view "$package" version 2>/dev/null) || latest=""
     fi
@@ -1138,6 +1140,8 @@ _env_chk_ownership() {
 
     # Check ownership of the target (GNU stat dereferences symlinks by default)
     local owner
+    # Ownership check is Linux/macOS only — not meaningful on Windows NTFS
+    if platform_is_windows; then return 0; fi
     owner=$(stat -c '%U:%G' "$binary_path" 2>/dev/null) || return 0
 
     if [[ "$owner" != "root:root" ]]; then
@@ -1183,7 +1187,10 @@ _env_chk_runs() {
         return 1
     }
 
-    if ! eval "timeout 10 $version_cmd" &>/dev/null; then
+    local _tc
+    _tc=$(platform_get_timeout_cmd 2>/dev/null) || _tc=""
+    local _run_cmd="${_tc:+$_tc 10 }$version_cmd"
+    if ! eval "$_run_cmd" &>/dev/null; then
         _CHECK_REASON="'$version_cmd' failed or timed out"
         return 1
     fi
@@ -1940,7 +1947,7 @@ _env_configure_claude_settings() {
             snippet='{"env":{"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS":"1"},"teammateMode":"tmux"}'
         else
             log_warn "tmux is not installed — skipping teammateMode configuration"
-            log_warn "Install with: sudo apt install tmux"
+            log_warn "Install with: $(platform_install_hint tmux)"
         fi
     fi
 
@@ -2146,6 +2153,7 @@ env_cmd_status() {
 # Predefined Claude Code skills installed via 'npx skills add'
 # Format: skills_id|display_name|description
 # skills_id = owner/repo@skill as used by 'npx skills add'
+if [[ ! -v _ENV_SKILLS_REGISTRY ]]; then
 readonly -a _ENV_SKILLS_REGISTRY=(
     "aktsmm/agent-skills@skill-finder|Skill Finder|Discover and install agent skills"
     "askyourpdf/ai-pdf-filler@ai-pdf-filler-cli|PDF Filler|Fill, read, merge, split, and OCR PDF files"
@@ -2155,6 +2163,7 @@ readonly -a _ENV_SKILLS_REGISTRY=(
     "promptadvisers/claude-code-polished-documents-skills@docx|DOCX|Create and edit Word documents"
     "promptadvisers/claude-code-polished-documents-skills@document-polisher|Doc Polisher|Polish and format documents"
 )
+fi
 
 # Check if a skill is already installed
 # Usage: _env_skill_is_installed <skills_id>

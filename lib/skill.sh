@@ -8,6 +8,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/logging.sh
 source "${SCRIPT_DIR}/logging.sh"
+# shellcheck source=lib/platform.sh
+source "${SCRIPT_DIR}/platform.sh"
 # shellcheck source=lib/utils.sh
 source "${SCRIPT_DIR}/utils.sh"
 
@@ -284,7 +286,7 @@ skill_install() {
 
     # Check git is installed
     if ! command -v git &>/dev/null; then
-        utils_error "git is not installed. Install it with: sudo apt-get install git"
+        utils_error "git is not installed. Install it with: $(platform_install_hint git)"
         return "$SKILL_EXIT_FAILURE"
     fi
 
@@ -365,7 +367,7 @@ skill_update() {
 
     # Check git is installed
     if ! command -v git &>/dev/null; then
-        utils_error "git is not installed. Install it with: sudo apt-get install git"
+        utils_error "git is not installed. Install it with: $(platform_install_hint git)"
         return "$SKILL_EXIT_FAILURE"
     fi
 
@@ -587,7 +589,7 @@ skill_status() {
 
     # Check git is installed
     if ! command -v git &>/dev/null; then
-        utils_error "git is not installed. Install it with: sudo apt-get install git"
+        utils_error "git is not installed. Install it with: $(platform_install_hint git)"
         return "$SKILL_EXIT_FAILURE"
     fi
 

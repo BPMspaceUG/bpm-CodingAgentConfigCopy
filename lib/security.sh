@@ -5,6 +5,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/logging.sh
 source "${SCRIPT_DIR}/logging.sh"
+# shellcheck source=lib/platform.sh
+source "${SCRIPT_DIR}/platform.sh"
 
 # Maximum allowed ZIP file size (100MB = 100 * 1024 * 1024 = 104857600 bytes)
 SECURITY_MAX_ZIP_SIZE=${SECURITY_MAX_ZIP_SIZE:-104857600}
@@ -48,18 +50,16 @@ fi
 # Works on both Linux (stat -c) and macOS (stat -f)
 security_get_file_perms() {
     local path="$1"
-
-    stat -c "%a" "$path" 2>/dev/null || stat -f "%Lp" "$path" 2>/dev/null
+    platform_get_file_perms "$path"
 }
 
 # Get file size in bytes (cross-platform)
 # Usage: security_get_file_size <path>
 # Returns: File size in bytes
-# Works on both Linux (stat -c) and macOS (stat -f)
+# Works on Linux (stat -c), macOS (stat -f), and Windows Git Bash
 security_get_file_size() {
     local path="$1"
-
-    stat -c "%s" "$path" 2>/dev/null || stat -f "%z" "$path" 2>/dev/null
+    platform_get_file_size "$path"
 }
 
 # ============================================================================
@@ -92,12 +92,7 @@ security_resolve_user_home() {
     local username="$1"
     local home_dir
 
-    home_dir=$(getent passwd "$username" 2>/dev/null | cut -d: -f6)
-
-    if [[ -z "$home_dir" ]]; then
-        utils_error "User '$username' does not exist"
-        return 1
-    fi
+    home_dir=$(platform_resolve_home "$username") || return 1
 
     if [[ ! -d "$home_dir" ]]; then
         utils_error "Home directory for user '$username' does not exist: $home_dir"
@@ -117,6 +112,11 @@ security_check_file_permissions() {
 
     if [[ ! -f "$file" ]]; then
         return 0  # File doesn't exist, nothing to check
+    fi
+
+    # NTFS does not enforce POSIX permissions; skip enforcement on Windows
+    if platform_is_windows; then
+        return 0
     fi
 
     local perms
@@ -247,7 +247,7 @@ security_mktemp_dir() {
     if ! tmpdir=$(mktemp -d -t "${prefix}.XXXXXXXXXX"); then
         return 1
     fi
-    if ! chmod "$PERM_SECURE_DIR" "$tmpdir"; then
+    if ! platform_chmod "$PERM_SECURE_DIR" "$tmpdir"; then
         rm -rf "$tmpdir" 2>/dev/null
         return 1
     fi
@@ -269,12 +269,12 @@ security_secure_path() {
     local owner="$2"
     local mode="$3"
 
-    if ! chmod "$mode" "$path"; then
+    if ! platform_chmod "$mode" "$path"; then
         return 1
     fi
 
     if [[ -n "$owner" && "$EUID" -eq 0 ]]; then
-        if ! chown "$owner:$owner" "$path"; then
+        if ! platform_chown "$owner:$owner" "$path"; then
             return 1
         fi
     fi

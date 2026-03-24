@@ -57,6 +57,14 @@ main() {
 
     local exit_code=0
 
+    # Run platform tests (Windows/cross-platform compatibility)
+    if $run_all || [[ "$filter" == "platform" ]]; then
+        if ! run_test_suite "Platform Tests" "test_platform.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run bundle tests
     if $run_all || [[ "$filter" == "bundle" ]]; then
         if ! run_test_suite "Bundle Tests" "test_bundle.sh"; then
