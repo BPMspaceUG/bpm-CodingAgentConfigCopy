@@ -406,9 +406,108 @@ _env_tool_to_binary() {
     esac
 }
 
+# Detect whether a system-wide install of a tool exists (Issue #71)
+# Used to refuse user-scope updates that would create dual-install drift.
+# Returns 0 if global install detected, 1 otherwise.
+# Usage: _env_global_install_exists <tool>
+_env_global_install_exists() {
+    local tool="$1"
+    local binary
+    binary=$(_env_tool_to_binary "$tool" 2>/dev/null) || return 1
+
+    # Direct check: file or symlink in /usr/local/bin
+    if [[ -e "/usr/local/bin/$binary" ]] || [[ -L "/usr/local/bin/$binary" ]]; then
+        return 0
+    fi
+
+    # Fallback: resolve via PATH stripped of all user-local dirs
+    # (catches /opt/* style globals)
+    local sanitized_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    local resolved
+    resolved=$(PATH="$sanitized_path" command -v "$binary" 2>/dev/null || true)
+    [[ -n "$resolved" ]]
+}
+
+# Iterate candidate user homes for multi-user symlink propagation (Issue #71)
+# Yields one path per line: /root and every /home/* that is a directory.
+# Used by _env_propagate_user_symlinks.
+# Usage: _env_iter_user_homes
+_env_iter_user_homes() {
+    [[ -d /root ]] && echo /root
+    local d
+    for d in /home/*/; do
+        # Guard against the literal '/home/*/' when /home is empty
+        [[ -d "$d" ]] || continue
+        echo "${d%/}"
+    done
+}
+
+# Propagate a global binary into every user's ~/.local/bin via symlink (Issue #71)
+# Walks /home/* and /root, creates ~/.local/bin/<binary> -> /usr/local/bin/<binary>
+# only where ~/.local/bin already exists (never auto-creates the directory) and
+# where no entry is already present (never overwrites).
+# Usage: _env_propagate_user_symlinks <binary>
+# Returns 0 always (per-home failures are non-fatal).
+_env_propagate_user_symlinks() {
+    local binary="$1"
+    local target="/usr/local/bin/$binary"
+
+    [[ -e "$target" ]] || return 0  # nothing to symlink to
+
+    local home user_local_bin link_path home_owner
+    while IFS= read -r home; do
+        user_local_bin="$home/.local/bin"
+        # Don't auto-create the directory — respect the user's setup.
+        [[ -d "$user_local_bin" ]] || continue
+        # Skip if we cannot read/write the directory (e.g. chmod 000).
+        [[ -r "$user_local_bin" && -w "$user_local_bin" ]] || continue
+
+        link_path="$user_local_bin/$binary"
+        # Respect any existing entry (file, symlink, broken symlink).
+        if [[ -L "$link_path" || -e "$link_path" ]]; then
+            continue
+        fi
+
+        if ln -sf "$target" "$link_path" 2>/dev/null; then
+            home_owner=$(stat -c '%U:%G' "$home" 2>/dev/null || true)
+            if [[ -n "$home_owner" ]]; then
+                chown -h "$home_owner" "$link_path" 2>/dev/null || true
+            fi
+            utils_verbose "Created symlink $link_path -> $target"
+        fi
+    done < <(_env_iter_user_homes)
+
+    return 0
+}
+
+# Compare two version strings semver-style (Issue #71)
+# Returns 0 iff a < b (i.e. "a" is older than "b" -> a regression when a is post).
+# Returns 1 if a == b, a > b, or either side cannot be normalised to semver.
+# Conservative: equal-after-normalisation (e.g. prerelease tags stripped) is NOT a regression.
+# Usage: _env_version_lt <a> <b>
+_env_version_lt() {
+    local a_norm b_norm
+    a_norm=$(_env_normalize_version "$1")
+    b_norm=$(_env_normalize_version "$2")
+
+    # Bail out conservatively if either side is non-semver (e.g. "unknown").
+    if [[ ! "$a_norm" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || \
+       [[ ! "$b_norm" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        return 1
+    fi
+
+    [[ "$a_norm" == "$b_norm" ]] && return 1
+
+    local first
+    first=$(printf '%s\n%s\n' "$a_norm" "$b_norm" | sort -V | head -1)
+    [[ "$first" == "$a_norm" ]]
+}
+
 # Post-install symlink for curl-based tools installed as root (Issue #57)
 # When curl installers drop binaries into /root/.local/bin/, this creates
 # a symlink in /usr/local/bin/ so all users can access the tool.
+# Issue #71 extension: after the global symlink is in place, propagate it
+# into every user's ~/.local/bin so the tool is reachable for all users.
 # Usage: _env_post_install_symlink <tool>
 _env_post_install_symlink() {
     local tool="$1"
@@ -420,9 +519,10 @@ _env_post_install_symlink() {
     local binary
     binary=$(_env_tool_to_binary "$tool") || return 0
 
-    # Already in /usr/local/bin? Done.
+    # Already in /usr/local/bin? Skip the search but still propagate to user homes.
     if [[ -e "/usr/local/bin/$binary" ]]; then
         utils_verbose "$binary already in /usr/local/bin — no symlink needed"
+        _env_propagate_user_symlinks "$binary"
         return 0
     fi
 
@@ -432,6 +532,7 @@ _env_post_install_symlink() {
         if [[ -x "$search_path" ]]; then
             ln -sf "$search_path" "/usr/local/bin/$binary"
             utils_verbose "Created symlink /usr/local/bin/$binary -> $search_path"
+            _env_propagate_user_symlinks "$binary"
             return 0
         fi
     done
@@ -627,6 +728,15 @@ env_update_tool() {
         curl)
             local url="${_ENV_INSTALL_URLS[$tool]}"
 
+            # Issue #71: Pre-existing global install + non-root user-scope update -> hard refuse
+            # Extends Issue #29's exclusivity rule from install to update.
+            if [[ "$scope" == "user" ]] && [[ "$EUID" -ne 0 ]] \
+               && _env_global_install_exists "$tool"; then
+                utils_error "$display_name has a system-wide install. User-scope update is refused to prevent dual-install drift."
+                echo "Remediation: run with sudo for a global update, or remove the global install first if you really want a per-user version." >&2
+                return 1
+            fi
+
             # Global scope requires root
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
                 if [[ "$EUID" -ne 0 ]]; then
@@ -641,6 +751,10 @@ env_update_tool() {
 
             echo "Re-running installer from: $url"
             curl -fsSL "$url" | bash || exit_code=$?
+
+            # Issue #71: Refresh bash hash so subsequent same-process probes
+            # don't return a stale path (parity with env_install_tool).
+            hash -r 2>/dev/null || true
 
             # Issue #57: Symlink curl-installed binary into /usr/local/bin for global scope
             if [[ $exit_code -eq 0 ]] && [[ "$scope" == "global" || "$scope" == "all" ]]; then
@@ -668,6 +782,50 @@ env_update_tool() {
             eval "$cmd" || exit_code=$?
             ;;
     esac
+
+    # Issue #71: Curl-path post-install verification.
+    # Use a sanitised PATH so we don't probe via stale bash hash or shadowed dirs.
+    if [[ "$install_type" == "curl" ]]; then
+        if [[ $exit_code -ne 0 ]]; then
+            utils_error "Failed to update $display_name"
+            return 1
+        fi
+
+        local check_path="/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin"
+        local binary
+        binary=$(_env_tool_to_binary "$tool" 2>/dev/null || true)
+
+        # Binary must be reachable on a clean PATH after install.
+        if [[ -n "$binary" ]]; then
+            local resolved
+            resolved=$(PATH="$check_path" command -v "$binary" 2>/dev/null || true)
+            if [[ -z "$resolved" ]]; then
+                utils_error "$display_name update reported success but binary '$binary' is not on PATH after install."
+                echo "Old version: $old_version. Investigate the upstream installer." >&2
+                return 1
+            fi
+        fi
+
+        local new_version
+        new_version=$(PATH="$check_path" env_get_version "$tool")
+
+        # Regression detection: refuse to print SUCCESS on a downgrade.
+        if [[ "$old_version" != "unknown" ]] && [[ "$new_version" != "unknown" ]] \
+           && _env_version_lt "$new_version" "$old_version"; then
+            utils_error "$display_name update produced a version regression: $old_version -> $new_version"
+            echo "Refusing to report SUCCESS on a downgrade." >&2
+            return 1
+        fi
+
+        if [[ "$old_version" != "$new_version" ]]; then
+            utils_success "$display_name updated: $old_version -> $new_version"
+        else
+            echo "$display_name is already at latest version ($new_version)"
+        fi
+        return $ENV_EXIT_SUCCESS
+    fi
+
+    # npm path: behaviour unchanged from pre-#71 (Issue #71 scope: do not touch npm).
     local new_version
     new_version=$(env_get_version "$tool")
 
