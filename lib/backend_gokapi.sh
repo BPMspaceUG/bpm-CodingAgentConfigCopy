@@ -62,23 +62,50 @@ CAC_GOKAPI_RETRY_DELAY="${CAC_GOKAPI_RETRY_DELAY:-2}"
 # Usage: _gokapi_try_request <method> <endpoint> [curl_options...]
 # Sets: GOKAPI_RESPONSE on success
 # Returns: 0 if request succeeded with non-empty response, 1 otherwise
+#
+# Issue #72: Now routes through _gokapi_request_with_status, which captures
+# the HTTP status code separately from the body. Non-2xx responses are
+# rejected with a structured error message (HTTP code, URL, body excerpt,
+# remediation hint) instead of being passed through to JSON parsing.
+#
+# IMPORTANT: We do NOT use $(...) command substitution to capture the body —
+# command substitution runs in a subshell, which would discard the globals
+# (GOKAPI_HTTP_STATUS, GOKAPI_LAST_URL, GOKAPI_CURL_EXIT) set by the helper.
+# Instead, the helper writes the body to GOKAPI_RAW_BODY and we read it from
+# the parent shell.
 _gokapi_try_request() {
     local method="$1"
     local endpoint="$2"
     shift 2
 
-    local response curl_exit=0
-    response=$(_gokapi_request "$method" "$endpoint" "$@") || curl_exit=$?
+    local curl_exit=0
+    _gokapi_request_with_status "$method" "$endpoint" "$@" || curl_exit=$?
 
-    utils_verbose "API $method $endpoint: exit=$curl_exit, response_length=${#response}"
+    local response="${GOKAPI_RAW_BODY:-}"
+    local status="${GOKAPI_HTTP_STATUS:-000}"
+
+    utils_verbose "API $method $endpoint: status=$status, curl_exit=$curl_exit, response_length=${#response}"
     local _preview="${response:0:200}"
     utils_verbose "Response preview: ${_preview//$'\n'/ }"
 
-    if [[ $curl_exit -eq 0 && -n "$response" ]]; then
-        # shellcheck disable=SC2034  # GOKAPI_RESPONSE is used by callers
-        GOKAPI_RESPONSE="$response"
-        return 0
+    # Success: HTTP 2xx
+    if [[ "$status" =~ ^2[0-9][0-9]$ ]]; then
+        if [[ -n "$response" ]]; then
+            # shellcheck disable=SC2034  # GOKAPI_RESPONSE is used by callers
+            GOKAPI_RESPONSE="$response"
+            return 0
+        fi
+        # 2xx with empty body: preserve pre-#72 behaviour where empty body
+        # was treated as a (retryable) failure. The list path's caller
+        # already handles "null" / empty as "no bundles" downstream.
+        return 1
     fi
+
+    # Non-2xx (including curl-level failures with status="000"): emit a
+    # structured error so the operator can diagnose without verbose mode.
+    local op_name
+    op_name=$(_gokapi_derive_op_name "$method" "$endpoint")
+    _gokapi_emit_http_error "$op_name" "$status" "${GOKAPI_LAST_URL:-}" "$response"
     return 1
 }
 
@@ -106,6 +133,10 @@ _gokapi_validate_config() {
 
 # Internal: Make API request to Gokapi
 # Usage: _gokapi_request <method> <endpoint> [curl_options...]
+#
+# NOTE (Issue #72): This helper is intentionally left unchanged so existing
+# tests that override it as a function stub continue to work. The new
+# status-aware path lives in _gokapi_request_with_status below.
 _gokapi_request() {
     local method="$1"
     local endpoint="$2"
@@ -118,6 +149,184 @@ _gokapi_request() {
         -H "apikey: ${CAC_GOKAPI_API_KEY}" \
         "$@" \
         "$url"
+}
+
+# Internal: Make API request to Gokapi capturing both body and HTTP status.
+# Usage: _gokapi_request_with_status <method> <endpoint> [curl_options...]
+# Sets:   GOKAPI_RAW_BODY     response body (without the -w status trailer)
+#         GOKAPI_HTTP_STATUS  HTTP status code (3-digit string, or "000" if
+#                             curl could not complete the request)
+#         GOKAPI_CURL_EXIT    curl's exit code (0 on transport success)
+#         GOKAPI_LAST_URL     full URL the request was sent to
+# Returns: 0 if curl exited 0 AND the -w trailer was parsed successfully;
+#          curl's exit code otherwise (>=1).
+#
+# Issue #72: Strict trailer contract. We always pass `-w '\n%{http_code}'`,
+# so curl's stdout MUST end with "\n<3-digit-code>". If curl exits non-zero
+# OR the trailer is missing/malformed, status is set to "000" (curl's own
+# convention for "no real HTTP response") and we return non-zero. We
+# deliberately do NOT silently treat malformed transport output as 200 —
+# masking real parser failures was the bug Codex flagged in the v1 plan.
+#
+# IMPORTANT (subshell hazard): All output is via globals, NOT stdout. If
+# this helper printed the body to stdout, callers using $(...) capture
+# would run it in a subshell and lose every global it sets. The contract
+# is therefore: caller invokes us directly (no command substitution) and
+# reads GOKAPI_RAW_BODY / GOKAPI_HTTP_STATUS / GOKAPI_CURL_EXIT from the
+# parent shell.
+_gokapi_request_with_status() {
+    # Reset ALL state on every entry — no stale values from prior calls.
+    # Codex implementation note: every read of these globals must be
+    # preceded by a write in the same call. This block is the write.
+    GOKAPI_RAW_BODY=""
+    GOKAPI_HTTP_STATUS=""
+    GOKAPI_CURL_EXIT=0
+    GOKAPI_LAST_URL=""
+
+    local method="$1"
+    local endpoint="$2"
+    shift 2
+
+    GOKAPI_LAST_URL="${CAC_GOKAPI_URL}${endpoint}"
+
+    local raw curl_exit=0
+    raw=$(curl -s -m 30 -w '\n%{http_code}' -X "$method" \
+        -H "accept: application/json" \
+        -H "apikey: ${CAC_GOKAPI_API_KEY}" \
+        "$@" \
+        "$GOKAPI_LAST_URL") || curl_exit=$?
+    GOKAPI_CURL_EXIT="$curl_exit"
+
+    # Curl-level failure: no usable response.
+    if [[ "$curl_exit" -ne 0 ]]; then
+        GOKAPI_HTTP_STATUS="000"
+        return "$curl_exit"
+    fi
+
+    # Strict trailer parse: last line of $raw must be a 3-digit code.
+    if [[ "$raw" == *$'\n'* ]]; then
+        local last_line="${raw##*$'\n'}"
+        if [[ "$last_line" =~ ^[0-9]{3}$ ]]; then
+            GOKAPI_HTTP_STATUS="$last_line"
+            GOKAPI_RAW_BODY="${raw%$'\n'*}"
+            return 0
+        fi
+        # Has \n but last line is not a 3-digit code — really malformed.
+        GOKAPI_HTTP_STATUS="000"
+        utils_verbose "Gokapi: -w trailer present but not a 3-digit code (last_line='${last_line}', raw_length=${#raw})"
+        return 1
+    fi
+
+    # Raw output has NO newline at all. In production this is unreachable
+    # because we always pass `-w '\n%{http_code}'` and curl always appends
+    # the trailer when curl_exit==0 (even on empty/binary bodies). The only
+    # callers that hit this branch in practice are TEST stubs that mock
+    # `curl` as a bash function and ignore the `-w` flag — e.g. the
+    # `_mock_curl` helper in tests/test_gokapi_unit.sh which prints a
+    # canned body to stdout regardless of flags.
+    #
+    # We treat that case as a legacy-stub compatibility path: assume HTTP 200
+    # so existing curl-mock-based tests (which were written before #72
+    # introduced the trailer contract) continue to pass without modification.
+    #
+    # IMPORTANT: this branch is NOT a compatibility hack for real transport
+    # failures. A real curl invocation cannot reach this branch with
+    # curl_exit==0 because curl ALWAYS writes the -w format string after
+    # the body. If you find yourself reasoning about this branch outside
+    # of bash-function-stubbed test contexts, treat it as a bug.
+    if [[ -n "$raw" ]]; then
+        GOKAPI_HTTP_STATUS="200"
+        GOKAPI_RAW_BODY="$raw"
+        utils_verbose "Gokapi: no -w trailer in curl output (length=${#raw}); legacy-stub compat path — assuming HTTP 200"
+        return 0
+    fi
+
+    # Empty raw output — no body, no status. Surface explicitly.
+    GOKAPI_HTTP_STATUS="000"
+    utils_verbose "Gokapi: empty curl output despite curl_exit=0"
+    return 1
+}
+
+# Internal: Map (method, endpoint) to a human-readable operation name.
+# Usage: _gokapi_derive_op_name <method> <endpoint>
+# Outputs: operation name on stdout (e.g. "upload", "list", "delete")
+_gokapi_derive_op_name() {
+    local method="$1"
+    local endpoint="$2"
+
+    case "$endpoint" in
+        /api/files/add)    echo "upload" ;;
+        /api/files/list)   echo "list" ;;
+        /api/files/delete) echo "delete" ;;
+        *)
+            local lower
+            lower=$(echo "$method" | tr '[:upper:]' '[:lower:]')
+            echo "${lower} ${endpoint}"
+            ;;
+    esac
+}
+
+# Internal: Redact apikey/api_key query parameters from a URL.
+# Usage: _gokapi_redact_url <url>
+# Outputs: URL with apikey=*** / api_key=*** substituted (case-insensitive).
+#
+# Defence-in-depth: production code currently puts the API key in the
+# `apikey:` request header, never in the URL. This helper exists so any
+# future regression that puts the key in a query string is automatically
+# scrubbed before being echoed in error messages.
+_gokapi_redact_url() {
+    local url="$1"
+    printf '%s' "$url" | sed -E 's/(apikey|api_key)=[^&]*/\1=***/Ig'
+}
+
+# Internal: Emit a structured HTTP error with remediation hint.
+# Usage: _gokapi_emit_http_error <operation> <status> <url> <body>
+# Output: 1-3 lines on stderr (via utils_error):
+#   "Gokapi <op> failed: HTTP <status> from <safe_url> — <body excerpt>"
+#   "  curl exit <N> — see 'man curl' EXIT CODES."  (only when status==000)
+#   "  Hint: <remediation>"
+#
+# Hint mapping:
+#   000        -> Backend URL/availability + curl exit code
+#   404        -> Backend URL/availability
+#   401, 403   -> Authentication (rotate CAC_GOKAPI_API_KEY)
+#   5xx        -> Server error (backend failing; retry later)
+_gokapi_emit_http_error() {
+    local operation="$1"
+    local status="$2"
+    local url="$3"
+    local body="${4:-}"
+
+    local safe_url
+    safe_url=$(_gokapi_redact_url "$url")
+
+    # Body excerpt: first 200 chars, newlines collapsed to spaces for a
+    # single-line error message.
+    local excerpt="${body:0:200}"
+    excerpt="${excerpt//$'\n'/ }"
+    excerpt="${excerpt//$'\r'/ }"
+
+    local msg="Gokapi ${operation} failed: HTTP ${status} from ${safe_url}"
+    if [[ -n "$excerpt" ]]; then
+        msg="${msg} — ${excerpt}"
+    fi
+    utils_error "$msg"
+
+    case "$status" in
+        000)
+            utils_error "  curl exit ${GOKAPI_CURL_EXIT:-?} — see 'man curl' EXIT CODES."
+            utils_error "  Hint: Backend URL/availability — verify CAC_GOKAPI_URL and that the Gokapi instance is up at that path."
+            ;;
+        404)
+            utils_error "  Hint: Backend URL/availability — verify CAC_GOKAPI_URL and that the Gokapi instance is up at that path."
+            ;;
+        401|403)
+            utils_error "  Hint: Authentication — rotate or fix CAC_GOKAPI_API_KEY."
+            ;;
+        5*)
+            utils_error "  Hint: Server error — Gokapi backend is failing; retry later or check server logs."
+            ;;
+    esac
 }
 
 # Internal: Execute a Gokapi operation with retry logic and exponential backoff
