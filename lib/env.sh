@@ -40,7 +40,10 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
         "playwright|Playwright|command -v playwright|playwright --version|npm|yes"
     )
 
-    # Install URLs for curl-based tools
+    # Install URLs for curl-based tools.
+    # Issue #73 INVARIANT: each URL listed here MUST resolve to a plain shell
+    # installer compatible with download-then-execute. See _ENV_CURL_TARGET_DIR
+    # below for the full invariant statement.
     declare -A _ENV_INSTALL_URLS=(
         [claude]="https://claude.ai/install.sh"
         [continuous-claude]="https://raw.githubusercontent.com/AnandChowdhary/continuous-claude/main/install.sh"
@@ -68,6 +71,28 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
 
     # Cache TTL for latest version lookups (seconds) - 5 minutes
     readonly _ENV_LATEST_CACHE_TTL=300
+
+    # Issue #73 — INVARIANT: every curl-installed tool listed in this registry
+    # (and every URL in _ENV_INSTALL_URLS) MUST be a plain shell installer that
+    # works under download-then-execute, i.e. the semantics of
+    #   curl -fsSL "$url" -o foo.sh && bash foo.sh
+    # is equivalent to
+    #   curl -fsSL "$url" | bash
+    # Self-extracting tarballs piped into bash do NOT work under this scheme and
+    # MUST NOT be added to either registry. Before adding a new curl tool,
+    # verify with `curl -fsSL "$url" | head -50` — the output must be a plain
+    # shell script. If a tool requires piped self-extraction, document it as
+    # unsupported by `cac env update` until a separate stream-execute path is
+    # added.
+    #
+    # Each entry maps tool -> well-known install target dir, used by
+    # _env_diag_preflight_curl for writability + free-space pre-flight checks.
+    # Tools not listed here skip the pre-flight (safe default).
+    declare -A _ENV_CURL_TARGET_DIR=(
+        [continuous-claude]="/opt/continuous-claude"
+        [claude]="$HOME/.local/bin"
+        [mistral]="$HOME/.vibe"
+    )
 fi
 
 # ============================================================================
@@ -690,6 +715,186 @@ env_install_tool() {
     fi
 }
 
+# ============================================================================
+# Issue #73 — env update upstream-installer diagnostics
+# ============================================================================
+
+# _env_diag_target_dir <tool>
+# Echo the pre-flight target directory for a curl tool, or empty if unknown.
+_env_diag_target_dir() {
+    local tool="$1"
+    echo "${_ENV_CURL_TARGET_DIR[$tool]:-}"
+}
+
+# _env_diag_preflight_curl <tool>
+# Issue #73: writability + free-space pre-flight BEFORE invoking the upstream
+# installer. Echoes failure message to stderr and returns 1 on block; returns 0
+# if the install may proceed. Returns 0 unconditionally for tools without a
+# registered target dir (safe default — never block on unknowns).
+_env_diag_preflight_curl() {
+    local tool="$1"
+    local target
+    target=$(_env_diag_target_dir "$tool")
+    [[ -n "$target" ]] || return 0
+
+    # Probe the closest existing ancestor of the target.
+    local probe_dir="$target"
+    while [[ -n "$probe_dir" && ! -d "$probe_dir" ]]; do
+        probe_dir="$(dirname "$probe_dir")"
+        [[ "$probe_dir" == "/" || "$probe_dir" == "." ]] && break
+    done
+    [[ -d "$probe_dir" ]] || probe_dir="/"
+
+    # Writability gate: only block when the probe dir is a system path AND we
+    # are non-root AND the dir isn't writable. Per-user paths under $HOME skip.
+    case "$probe_dir" in
+        /opt*|/usr*|/etc*|/var*|/srv*)
+            if [[ ! -w "$probe_dir" ]] && [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+                utils_error "Target $target is not writable by EUID=$EUID — needs sudo."
+                echo "Remediation: sudo cac env update $tool" >&2
+                return 1
+            fi
+            ;;
+    esac
+
+    # Free-space gate: < 50 MiB on the target's filesystem -> abort.
+    local free_kib
+    free_kib=$(df -Pk "$probe_dir" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [[ -n "$free_kib" && "$free_kib" =~ ^[0-9]+$ ]] && [[ "$free_kib" -lt 51200 ]]; then
+        utils_error "Low disk space at $probe_dir: $((free_kib / 1024)) MiB free (need >= 50 MiB)."
+        echo "Remediation: free disk space on the filesystem holding $probe_dir, then retry." >&2
+        return 1
+    fi
+
+    return 0
+}
+
+# _env_diag_classify_failure <log_file> <stage> <exit_code>
+# Issue #73: classify an installer failure based on WHICH stage failed.
+#   stage="download" -> curl was the primary actor; classify by curl exit
+#   stage="execute"  -> bash script ran and broke; check for *embedded* curl
+#                       errors inside the upstream installer (the original #73
+#                       repro: upstream's own 'curl: (23)' lives in the log).
+# Always exits 0; emits exactly one line on stdout.
+_env_diag_classify_failure() {
+    local log_file="$1" stage="$2" rc="$3"
+    local code=""
+    if [[ -f "$log_file" ]]; then
+        # Upstream installers that retry internally may emit multiple
+        # 'curl: (NN)' lines; the last one is typically the proximate cause.
+        code=$(grep -oE 'curl: \([0-9]+\)' "$log_file" 2>/dev/null \
+               | tail -1 | grep -oE '[0-9]+' || true)
+    fi
+
+    if [[ "$stage" == "download" ]]; then
+        # Curl is the primary actor: classify directly by curl exit code.
+        case "$code" in
+            6|7)  echo "network/DNS — cannot resolve or reach the upstream URL" ;;
+            22)   echo "HTTP error from upstream — install URL returned non-2xx (auth or moved)" ;;
+            23)   echo "write failure — local disk full or permission denied at install target" ;;
+            28)   echo "timeout — upstream slow or unreachable" ;;
+            35)   echo "TLS handshake failure — verify certificate / proxy / system clock" ;;
+            52)   echo "empty reply from upstream" ;;
+            56)   echo "network receive failure mid-transfer" ;;
+            60)   echo "TLS certificate problem — check CA bundle / proxy MITM" ;;
+            "")   echo "download failed (curl exit $rc); see log excerpt below" ;;
+            *)    echo "download failed (curl exit $code); see log excerpt below" ;;
+        esac
+    else
+        # stage == execute: bash script is the primary actor.
+        # An embedded 'curl: (NN)' in the log means upstream's own curl failed.
+        if [[ -n "$code" ]]; then
+            case "$code" in
+                23)    echo "installer script: write failure inside upstream installer (curl exit $code) — disk/perm at upstream's target" ;;
+                6|7)   echo "installer script: network/DNS failure inside upstream (curl exit $code)" ;;
+                22)    echo "installer script: HTTP error inside upstream (curl exit $code)" ;;
+                28)    echo "installer script: timeout inside upstream (curl exit $code)" ;;
+                35|60) echo "installer script: TLS failure inside upstream (curl exit $code)" ;;
+                *)     echo "installer script: failed with embedded curl error (curl exit $code); see log excerpt below" ;;
+            esac
+        else
+            # Pure-script error — never claim "curl exit".
+            echo "installer script exited with status $rc (no curl error in log); see log excerpt below"
+        fi
+    fi
+}
+
+# _env_diag_print_log_tail <log_file>
+# Print the last 40 lines of the captured installer log to stderr, framed by
+# markers. Silent if the log is missing/empty.
+_env_diag_print_log_tail() {
+    local log_file="$1"
+    [[ -s "$log_file" ]] || return 0
+    {
+        echo "--- upstream installer log (last 40 lines) ---"
+        tail -n 40 "$log_file"
+        echo "--- end log ---"
+    } >&2
+}
+
+# _env_curl_update_with_capture <tool> <url> <display_name>
+# Issue #73: download upstream installer to a tempfile, execute it, capture
+# all output to a log tempfile, and on failure surface a stage-classified
+# cause plus log tail. Returns:
+#   0  installer ran cleanly (post-install verification still done by caller)
+#   1  curl download failed OR installer exited non-zero
+# Cleans up both tempfiles on every return path (no trap chaining).
+#
+# Caller contract: stash the cause one-liner into ENV_DIAG_CAUSE_FILE if set
+# (used by env_update_all for the batch summary).
+_env_curl_update_with_capture() {
+    local tool="$1"
+    local url="$2"
+    local display_name="$3"
+
+    local _installer _diag_log
+
+    _installer=$(mktemp -t "cac-env-update-${tool}-installer-XXXXXX.sh") \
+        || { utils_error "Failed to allocate temp file for installer"; return 1; }
+
+    _diag_log=$(mktemp -t "cac-env-update-${tool}-XXXXXX.log") \
+        || { rm -f "$_installer"; utils_error "Failed to allocate temp log"; return 1; }
+
+    # ----- Stage 1: download -----
+    # Capture curl's stderr (where 'curl: (NN)' lives) into the diag log.
+    # Explicit exit-code check — no pipefail reliance.
+    local _curl_rc=0
+    if ! curl -fsSL "$url" -o "$_installer" 2>"$_diag_log"; then
+        _curl_rc=$?
+        local _cause
+        _cause=$(_env_diag_classify_failure "$_diag_log" "download" "$_curl_rc")
+        utils_error "Failed to update $display_name: $_cause"
+        _env_diag_print_log_tail "$_diag_log"
+        if [[ -n "${ENV_DIAG_CAUSE_FILE:-}" ]]; then
+            printf '%s\n' "$_cause" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
+        fi
+        rm -f "$_installer" "$_diag_log"
+        return 1
+    fi
+
+    # ----- Stage 2: execute -----
+    # Live output via tee; capture bash's exit via PIPESTATUS[0].
+    # tee -a appends so stage-1 curl-stderr (already in log) is preserved.
+    bash "$_installer" 2>&1 | tee -a "$_diag_log"
+    local _bash_rc=${PIPESTATUS[0]}
+
+    if [[ "$_bash_rc" -ne 0 ]]; then
+        local _cause
+        _cause=$(_env_diag_classify_failure "$_diag_log" "execute" "$_bash_rc")
+        utils_error "Failed to update $display_name: $_cause"
+        _env_diag_print_log_tail "$_diag_log"
+        if [[ -n "${ENV_DIAG_CAUSE_FILE:-}" ]]; then
+            printf '%s\n' "$_cause" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
+        fi
+        rm -f "$_installer" "$_diag_log"
+        return 1
+    fi
+
+    # Success path: clean up and return 0. Caller handles post-install verify.
+    rm -f "$_installer" "$_diag_log"
+    return 0
+}
+
 # Update a single tool
 # Usage: env_update_tool <tool> <scope>
 # Returns: 0 on success, 1 on failure
@@ -745,14 +950,27 @@ env_update_tool() {
                 fi
             fi
 
+            # Issue #73: ordering is load-bearing.
+            # 1. Issue #71 user-scope refusal already fired ABOVE this point.
+            #    No mutating side effects, no tempfiles, no probes have run.
+            # 2. Issue #73 pre-flight: writability + disk-space.
+            if ! _env_diag_preflight_curl "$tool"; then
+                return 1
+            fi
+
             if ! env_check_curl; then
                 return $ENV_EXIT_MISSING_DEP
             fi
 
             echo "Re-running installer from: $url"
-            curl -fsSL "$url" | bash || exit_code=$?
 
-            # Issue #71: Refresh bash hash so subsequent same-process probes
+            # 3+4+5. Download + execute via capture helper (mktemp, curl,
+            # bash via PIPESTATUS). Stage-classified diagnostics on failure.
+            if ! _env_curl_update_with_capture "$tool" "$url" "$display_name"; then
+                exit_code=1
+            fi
+
+            # 6. Issue #71: Refresh bash hash so subsequent same-process probes
             # don't return a stale path (parity with env_install_tool).
             hash -r 2>/dev/null || true
 
@@ -787,7 +1005,9 @@ env_update_tool() {
     # Use a sanitised PATH so we don't probe via stale bash hash or shadowed dirs.
     if [[ "$install_type" == "curl" ]]; then
         if [[ $exit_code -ne 0 ]]; then
-            utils_error "Failed to update $display_name"
+            # Issue #73: stage-classified message + log tail already emitted by
+            # _env_curl_update_with_capture. Avoid double-printing the generic
+            # "Failed to update" line here.
             return 1
         fi
 
@@ -901,6 +1121,11 @@ env_update_all() {
     # Issue #54: Track skipped tool names for user clarity
     local -a skipped_tools=()
 
+    # Issue #73: per-iteration cause stash for the batch summary one-liner.
+    # mktemp may fail (e.g. read-only TMPDIR); fall back gracefully to no-cause.
+    local _cause_file=""
+    _cause_file=$(mktemp -t "cac-env-update-cause-XXXXXX") 2>/dev/null || _cause_file=""
+
     echo "Updating all installed AI tools..."
     echo ""
 
@@ -913,16 +1138,29 @@ env_update_all() {
             continue
         fi
 
-        if env_update_tool "$tool" "$scope"; then
+        # Issue #73: clear stash file so a previous tool's cause doesn't leak.
+        [[ -n "$_cause_file" ]] && : > "$_cause_file"
+
+        if ENV_DIAG_CAUSE_FILE="$_cause_file" env_update_tool "$tool" "$scope"; then
             ((success++)) || true
         else
             ((failed++)) || true
-            local display_name
+            local display_name cause=""
             display_name=$(env_get_display_name "$tool")
-            failed_tools+=("$display_name")
+            if [[ -n "$_cause_file" && -s "$_cause_file" ]]; then
+                cause=$(head -1 "$_cause_file")
+            fi
+            if [[ -n "$cause" ]]; then
+                failed_tools+=("$display_name ($cause)")
+            else
+                failed_tools+=("$display_name")
+            fi
         fi
         echo ""
     done < <(env_get_all_tools)
+
+    # Issue #73: explicit cleanup — no trap chaining.
+    [[ -n "$_cause_file" ]] && rm -f "$_cause_file"
 
     echo "=== Update Summary ==="
     echo "Updated: $success"
