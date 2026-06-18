@@ -25,6 +25,11 @@ unset _tool_dir
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="${SCRIPT_DIR}/../lib"
 
+# Issue #79: export an absolute path to this entrypoint so env.sh can perform a
+# safe `sudo` re-exec for system-wide tool updates without reconstructing the
+# command from $0 or guessing via PATH.
+export CAC_BIN="${SCRIPT_DIR}/cac"
+
 # Source library modules
 # Note: logging.sh is the base (no deps), security.sh sources it,
 # config.sh sources security.sh. Each module sources its dependencies.

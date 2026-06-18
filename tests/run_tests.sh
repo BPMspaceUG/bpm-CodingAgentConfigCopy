@@ -169,6 +169,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #79 tests (cac env update auto-escalation for system-wide tools)
+    if $run_all || [[ "$filter" == "issue_79" ]] || [[ "$filter" == "79" ]]; then
+        if ! run_test_suite "Issue #79 Tests" "test_issue_79.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     echo "========================================"
     echo "Overall Summary"
     echo "========================================"

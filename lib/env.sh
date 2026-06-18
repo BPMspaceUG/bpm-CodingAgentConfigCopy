@@ -23,6 +23,10 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
     readonly ENV_EXIT_ALL_FAILED=2
     readonly ENV_EXIT_INVALID_ARG=3
     readonly ENV_EXIT_MISSING_DEP=4
+    # Issue #79: a globally-installed tool could not be escalated to (no sudo,
+    # unresolved cac path, or already root). Internal signal — not a process
+    # exit code; env_cmd_update folds it into the tri-state summary.
+    readonly ENV_EXIT_NEEDS_ROOT=5
 
     # Tool registry: tool|display_name|detect_cmd|version_cmd|install_type|optional
     # - tool: Internal name (lowercase, used in commands)
@@ -451,6 +455,136 @@ _env_global_install_exists() {
     local resolved
     resolved=$(PATH="$sanitized_path" command -v "$binary" 2>/dev/null || true)
     [[ -n "$resolved" ]]
+}
+
+# Detect whether a genuine per-user install of a tool exists (Issue #79).
+# Layout-agnostic: curl installers land in different places per tool
+# (claude -> ~/.local/bin, continuous-claude -> /opt, mistral -> ~/.vibe), so we
+# do NOT hardcode a single path. Instead we resolve the binary through the
+# user's normal PATH and accept it as a per-user install only when it both:
+#   * lives under $HOME (a copy the user owns/can overwrite), and
+#   * is not merely a symlink into a global location (/usr/local or /opt) — that
+#     is the Issue #71 propagation of the global binary, not a distinct copy.
+# Because this uses real PATH resolution, "both installs exist" is reported only
+# when the user's PATH actually prefers the HOME copy — i.e. exactly the case
+# where escalating the global copy would update the one they are NOT running.
+# Returns 0 if a per-user install exists, 1 otherwise.
+# Usage: _env_user_install_exists <tool>
+_env_user_install_exists() {
+    local tool="$1"
+    local binary
+    binary=$(_env_tool_to_binary "$tool" 2>/dev/null) || return 1
+
+    # type -P is a path-only resolver: it ignores shell aliases/functions, so
+    # classification cannot be skewed by an interactive `alias claude=...`.
+    local resolved
+    resolved=$(type -P "$binary" 2>/dev/null || true)
+    [[ -n "$resolved" ]] || return 1
+
+    # Positive test (Codex): the REAL target (after resolving every symlink) must
+    # live under $HOME. A link whose target is any non-home location — global or
+    # otherwise — is not a per-user copy and must not qualify for the #71 override.
+    local real
+    real=$(readlink -f "$resolved" 2>/dev/null || true)
+    [[ -n "$real" ]] || real="$resolved"
+    case "$real" in
+        "$HOME"/*) return 0 ;;
+        *)         return 1 ;;
+    esac
+}
+
+# Decide how `cac env update` should update a curl tool for a non-root user
+# (Issue #79). The rule follows what the user ACTUALLY runs, via PATH resolution,
+# so we never update a copy they are not executing. Echoes exactly one of:
+#   local    -> update at user scope, in-process. Either no system-wide install
+#               exists, OR the user's PATH resolves to their own per-user copy
+#               (~/.local). Updating that copy is correct and needs no root.
+#   escalate -> the user runs the system-wide copy (PATH resolves outside $HOME);
+#               a sudo re-exec is required to update it.
+# Usage: _env_update_action <tool>
+_env_update_action() {
+    local tool="$1"
+    # No system-wide install at all -> a plain user-scope update is always safe.
+    if ! _env_global_install_exists "$tool"; then
+        echo "local"
+        return 0
+    fi
+    # A system-wide install exists. If the user's PATH still resolves to their
+    # own per-user copy, update THAT (the one they run) without root. Otherwise
+    # they execute the global copy and we must escalate.
+    if _env_user_install_exists "$tool"; then
+        echo "local"
+    else
+        echo "escalate"
+    fi
+}
+
+# Resolve the absolute path to the running `cac` entrypoint for a safe sudo
+# re-exec (Issue #79). For a privilege boundary we never reconstruct the command
+# loosely from $0. Preference order:
+#   1. $CAC_BIN  (exported by bin/cac as an absolute path)
+#   2. command -v cac  (only if it resolves to an absolute, executable path)
+# Echoes the path on success; returns 1 (no output) if none is trustworthy.
+# Usage: _env_resolve_cac_bin
+_env_resolve_cac_bin() {
+    local candidate=""
+    if [[ -n "${CAC_BIN:-}" ]]; then
+        candidate="$CAC_BIN"
+    else
+        candidate=$(command -v cac 2>/dev/null || true)
+    fi
+
+    [[ -n "$candidate" ]] || return 1
+    [[ "$candidate" == /* ]] || return 1
+    [[ -x "$candidate" ]] || return 1
+    echo "$candidate"
+}
+
+# Re-exec `cac env update --global <tools>` under sudo as a subprocess
+# (Issue #79). NOT `exec` — the parent keeps its aggregation state so mixed
+# local/global batches stay coherent. Returns the child's exit code, or a
+# dedicated code when escalation is impossible:
+#   0/1/2  = child tri-state (success/partial/all-failed)
+#   $ENV_EXIT_NEEDS_ROOT = could not escalate (no sudo / unresolved cac path)
+# Usage: _env_reexec_sudo_update <tool>...
+_env_reexec_sudo_update() {
+    local -a tools=("$@")
+    [[ ${#tools[@]} -gt 0 ]] || return 0
+
+    # Only meaningful for a non-root caller.
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+        return "$ENV_EXIT_NEEDS_ROOT"
+    fi
+
+    if ! command -v sudo >/dev/null 2>&1; then
+        utils_error "sudo not found — cannot update system-wide tools: ${tools[*]}"
+        echo "Remediation: re-run as root (e.g. 'su -' then 'cac env update --global ${tools[*]}')." >&2
+        return "$ENV_EXIT_NEEDS_ROOT"
+    fi
+
+    local cac_bin
+    if ! cac_bin=$(_env_resolve_cac_bin); then
+        utils_error "Could not resolve the cac executable path — refusing to escalate."
+        echo "Remediation: run 'sudo cac env update --global ${tools[*]}' manually." >&2
+        return "$ENV_EXIT_NEEDS_ROOT"
+    fi
+
+    echo "${#tools[@]} tool(s) installed system-wide — escalating with sudo: ${tools[*]}"
+    # argv array, never eval.
+    #
+    # Recursion safety (Codex): the LOAD-BEARING guard is the --global flag, not
+    # the env sentinel. The child parses --global as an *explicit* scope, so it
+    # can never re-enter the auto-escalation branch (gated on implicit scope).
+    # And if a broken/mocked sudo runs the child WITHOUT actually elevating, the
+    # child sees --global + EUID!=0 and is rejected by _env_parse_scope_args
+    # ("Scope --global requires root") — terminating, not looping. This holds
+    # regardless of whether the sentinel survives sudo's env reset.
+    #
+    # --preserve-env makes CAC_ENV_ESCALATED survive sudo as defense-in-depth for
+    # any future caller that does NOT pass --global. If a hardened sudoers policy
+    # strips it, correctness still holds via the --global guard above.
+    CAC_ENV_ESCALATED=1 sudo --preserve-env=CAC_ENV_ESCALATED -- \
+        "$cac_bin" env update --global "${tools[@]}"
 }
 
 # Iterate candidate user homes for multi-user symlink propagation (Issue #71)
@@ -896,11 +1030,16 @@ _env_curl_update_with_capture() {
 }
 
 # Update a single tool
-# Usage: env_update_tool <tool> <scope>
+# Usage: env_update_tool <tool> <scope> [allow_user_override_global]
+# The optional 3rd arg, when set to "1", bypasses the Issue #71 user-scope
+# refusal (Issue #79). It is a FUNCTION PARAMETER on purpose: unlike an
+# environment variable it cannot be forged by the caller's environment, so the
+# bypass is strictly internal to env_update_with_escalation.
 # Returns: 0 on success, 1 on failure
 env_update_tool() {
     local tool="$1"
     local scope="${2:-user}"
+    local allow_user_override_global="${3:-}"
 
     # Validate tool
     if ! env_validate_tool "$tool"; then
@@ -935,7 +1074,17 @@ env_update_tool() {
 
             # Issue #71: Pre-existing global install + non-root user-scope update -> hard refuse
             # Extends Issue #29's exclusivity rule from install to update.
+            #
+            # Issue #79 override: env_update_with_escalation passes the 3rd arg
+            # "1" ONLY after confirming, via PATH resolution, that the user
+            # actually runs their own per-user copy (~/.local). Updating the copy
+            # they execute is correct and needs no root, so the refusal is
+            # bypassed for that narrow, verified case. The flag is a function
+            # parameter (not an env var), so a caller cannot forge it via the
+            # environment — every other path (incl. explicit `cac env update
+            # --user`) passes no 3rd arg and still hits the Issue #71 refusal.
             if [[ "$scope" == "user" ]] && [[ "$EUID" -ne 0 ]] \
+               && [[ "$allow_user_override_global" != "1" ]] \
                && _env_global_install_exists "$tool"; then
                 utils_error "$display_name has a system-wide install. User-scope update is refused to prevent dual-install drift."
                 echo "Remediation: run with sudo for a global update, or remove the global install first if you really want a per-user version." >&2
@@ -2364,6 +2513,10 @@ _env_configure_claude_settings() {
 # Sets: ENV_PARSED_SCOPE, ENV_PARSED_TOOLS
 _env_parse_scope_args() {
     ENV_PARSED_SCOPE=""
+    # Issue #79: distinguish an explicitly requested scope (--user/--global/--all)
+    # from the defaulted "user" scope. Auto-escalation only kicks in for the
+    # implicit default; an explicit --user must still hard-refuse (Issue #71).
+    ENV_PARSED_SCOPE_EXPLICIT="false"
     ENV_PARSED_TOOLS=()
     ENV_PARSED_YES="false"
     ENV_PARSED_PARSEABLE="false"
@@ -2378,6 +2531,7 @@ _env_parse_scope_args() {
                     return 1
                 fi
                 ENV_PARSED_SCOPE="user"
+                ENV_PARSED_SCOPE_EXPLICIT="true"
                 shift
                 ;;
             --global)
@@ -2386,6 +2540,7 @@ _env_parse_scope_args() {
                     return 1
                 fi
                 ENV_PARSED_SCOPE="global"
+                ENV_PARSED_SCOPE_EXPLICIT="true"
                 shift
                 ;;
             --all)
@@ -2394,6 +2549,7 @@ _env_parse_scope_args() {
                     return 1
                 fi
                 ENV_PARSED_SCOPE="all"
+                ENV_PARSED_SCOPE_EXPLICIT="true"
                 shift
                 ;;
             --yes|-y)
@@ -2489,6 +2645,135 @@ env_cmd_install() {
     fi
 }
 
+# Issue #79: implicit-scope, non-root update path. Updates user-scope (and npm)
+# tools in-process and auto-escalates system-wide curl tools via a single sudo
+# re-exec, instead of reporting them as hard failures. Returns the tri-state
+# 0/1/2 (SUCCESS/PARTIAL/ALL_FAILED) per the env_cmd_update contract.
+# Usage: env_update_with_escalation
+env_update_with_escalation() {
+    # Build the target set: an explicit tool list, or every installed tool.
+    local -a targets=()
+    if [[ ${#ENV_PARSED_TOOLS[@]} -gt 0 ]]; then
+        targets=("${ENV_PARSED_TOOLS[@]}")
+    else
+        local _t
+        while IFS= read -r _t; do
+            env_is_installed "$_t" && targets+=("$_t")
+        done < <(env_get_all_tools)
+    fi
+
+    # Empty target set (e.g. no tools installed) is not a failure — mirror the
+    # existing env_update_all "nothing failed" contract (Codex required change).
+    if [[ ${#targets[@]} -eq 0 ]]; then
+        echo "No installed AI tools to update."
+        return $ENV_EXIT_SUCCESS
+    fi
+
+    local -a local_tools=() global_tools=() bad_tools=()
+    local t
+    for t in "${targets[@]}"; do
+        # Arg safety (Codex): validate + installed BEFORE classification/escalation
+        # so nothing untrusted is ever forwarded into a root command.
+        if ! env_validate_tool "$t"; then
+            utils_error "Unknown tool: $t"
+            bad_tools+=("$t")
+            continue
+        fi
+        if ! env_is_installed "$t"; then
+            utils_warn "$(env_get_display_name "$t") is not installed. Use 'cac env install $t' first."
+            bad_tools+=("$t")
+            continue
+        fi
+
+        # Only curl-installed tools carry the Issue #71 global refusal; npm tools
+        # update fine at user scope and are never escalated — no behavior change.
+        if [[ "$(env_get_install_type "$t")" != "curl" ]]; then
+            local_tools+=("$t")
+            continue
+        fi
+
+        # Curl tool: follow what the user actually runs (PATH resolution).
+        #   local    -> their own per-user copy (or no global) -> user-scope update
+        #   escalate -> they run the system-wide copy -> sudo re-exec
+        case "$(_env_update_action "$t")" in
+            escalate) global_tools+=("$t") ;;
+            *)        local_tools+=("$t") ;;
+        esac
+    done
+
+    local success=0 failed=0 needs_root=0
+    local -a failed_names=() needs_root_names=()
+
+    # 1. Local updates, in-process at user scope. The 3rd arg ("1") tells
+    # env_update_tool to bypass the Issue #71 refusal ONLY here, where we have
+    # already confirmed (via _env_update_action) that the user runs their own
+    # per-user copy — so updating it without root is correct, not drift.
+    #
+    # Codex hardening: passing this as a positional PARAMETER (not an env/shell
+    # variable) makes the override unforgeable from the caller's environment and
+    # impossible to leak into the curl-installer subprocess.
+    for t in "${local_tools[@]+"${local_tools[@]}"}"; do
+        if env_update_tool "$t" "user" "1"; then
+            ((success++)) || true
+        else
+            ((failed++)) || true
+            failed_names+=("$(env_get_display_name "$t")")
+        fi
+        echo ""
+    done
+
+    # 2. Global curl tools the user actually runs: escalate PER TOOL so each
+    # outcome is unambiguous (Codex fix: a single batch child returning PARTIAL
+    # could not be attributed correctly). sudo caches credentials, so the user
+    # still sees at most one password prompt for the whole batch.
+    for t in "${global_tools[@]+"${global_tools[@]}"}"; do
+        local rc=0
+        _env_reexec_sudo_update "$t" || rc=$?
+        case "$rc" in
+            0)
+                ((success++)) || true
+                ;;
+            "$ENV_EXIT_NEEDS_ROOT")
+                ((needs_root++)) || true
+                needs_root_names+=("$(env_get_display_name "$t")")
+                ;;
+            *)
+                ((failed++)) || true
+                failed_names+=("$(env_get_display_name "$t")")
+                ;;
+        esac
+        echo ""
+    done
+
+    # Invalid / not-installed requested tools count as failures.
+    if [[ ${#bad_tools[@]} -gt 0 ]]; then
+        ((failed += ${#bad_tools[@]})) || true
+        for t in "${bad_tools[@]}"; do failed_names+=("$t"); done
+    fi
+
+    echo "=== Update Summary ==="
+    echo "Updated: $success"
+    echo "Failed: $failed"
+    [[ ${#failed_names[@]} -gt 0 ]] && echo "Failed tools: ${failed_names[*]}"
+    if [[ $needs_root -gt 0 ]]; then
+        echo "Needs root: $needs_root"
+        echo "Needs root tools: ${needs_root_names[*]}"
+        echo "Hint: run 'sudo cac env update' to update system-wide tools."
+    fi
+
+    # Tri-state per the contract. "problems" spans failed + needs-root.
+    # Distinguish "nothing was targetable" (handled above -> SUCCESS) from
+    # "everything targetable failed" (-> ALL_FAILED).
+    local problems=$((failed + needs_root))
+    if [[ $problems -eq 0 ]]; then
+        return $ENV_EXIT_SUCCESS
+    elif [[ $success -gt 0 ]]; then
+        return $ENV_EXIT_PARTIAL
+    else
+        return $ENV_EXIT_ALL_FAILED
+    fi
+}
+
 # Handle 'cac env update' command
 # Usage: env_cmd_update "$@"
 env_cmd_update() {
@@ -2497,6 +2782,17 @@ env_cmd_update() {
     fi
 
     local scope="$ENV_PARSED_SCOPE"
+
+    # Issue #79: implicit (default) scope + non-root + not already a re-exec'd
+    # child -> auto-escalate system-wide tools. Explicit --user/--global/--all,
+    # root callers, and re-exec'd children all fall through to the original
+    # behavior, preserving the Issue #71 refusal for explicit --user.
+    if [[ "$ENV_PARSED_SCOPE_EXPLICIT" != "true" ]] \
+       && [[ "${EUID:-$(id -u)}" -ne 0 ]] \
+       && [[ -z "${CAC_ENV_ESCALATED:-}" ]]; then
+        env_update_with_escalation
+        return $?
+    fi
 
     # No tools specified: update all installed
     if [[ ${#ENV_PARSED_TOOLS[@]} -eq 0 ]]; then
