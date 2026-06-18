@@ -66,8 +66,12 @@ _local_validate_storage() {
     LOCAL_STORAGE_DIR="${CAC_LOCAL_STORAGE}"
 
     if [[ ! -d "$LOCAL_STORAGE_DIR" ]]; then
-        utils_error "Storage directory does not exist: $LOCAL_STORAGE_DIR"
-        return 1
+        if ! mkdir -p "$LOCAL_STORAGE_DIR" 2>/dev/null; then
+            utils_error "Storage directory does not exist and could not be created: $LOCAL_STORAGE_DIR"
+            return 1
+        fi
+        chmod 700 "$LOCAL_STORAGE_DIR" 2>/dev/null || true
+        echo "Created storage directory: $LOCAL_STORAGE_DIR"
     fi
 
     return 0
