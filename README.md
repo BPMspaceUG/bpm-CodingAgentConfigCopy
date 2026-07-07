@@ -149,7 +149,7 @@ Every command prints a version banner (`cac v<VERSION>`) as the first line of ou
 ### Push (Upload) Configuration
 
 ```bash
-# Bundle and upload current user's config (all tools)
+# Bundle and upload current user's config (one bundle per tool)
 cac push
 
 # Bundle only a specific tool's config
@@ -167,7 +167,7 @@ sudo cac push --user ubuntu
 ### Pull (Download) Configuration
 
 ```bash
-# Download and apply the globally newest bundle
+# Download and apply the newest bundle for each supported tool
 cac pull
 
 # Filter by tool or user
@@ -181,7 +181,12 @@ sudo cac pull --user bob
 sudo cac pull --all
 ```
 
-Without `--tool` or `--user` flags, `cac pull` fetches the **globally newest** bundle across all hosts and users. Use `--tool` and/or `--user` to narrow the search.
+Without `--tool`, both `cac push` and `cac pull` operate **per tool** — they loop over every supported tool (`claude`, `codex`, `gemini`, `mistral`):
+
+- **`cac push`** creates one **per-tool** bundle (`…_claude_…`, `…_codex_…`, …) for each tool that has config on disk. It never aborts on a single tool's failure — tools with valid credentials are still uploaded, failures are reported, and it exits non-zero only if nothing was uploaded (or an upload failed). Combined `…_all_…` bundles are no longer created.
+- **`cac pull`** fetches and applies the newest bundle for each tool. Tools with no bundle are skipped with a warning. For migration safety it falls back to the newest legacy `…_all_…` bundle for any tool that has no per-tool bundle yet (this read-side fallback is kept for at least one release cycle).
+
+`cac pull` does **not** run credential checks — checks are a push-time concern (and can be skipped with `--skip-check`). Use `--tool` to operate on a single tool, or `--user` (root) to target another user.
 
 The `--all` flag scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`, `.vibe`) or files (`.claude.json`) and pulls the matching bundle for each.
 
@@ -201,7 +206,7 @@ cac list --tool claude --user deploy
 
 ```bash
 # By name or partial match
-cac pull CodingAgentConfig_myhost_user_all_250111-120000.zip
+cac pull CodingAgentConfig_myhost_user_claude_250111-120000.zip
 cac pull mybundle
 ```
 
@@ -209,7 +214,7 @@ cac pull mybundle
 
 ### Check/Test Credentials
 
-The `check` command verifies that AI tool CLI subscriptions work by running each CLI with a test prompt. A spinner shows progress during the check (up to 30 seconds per tool).
+The `check` command verifies that AI tool credentials work. Codex uses a lightweight built-in auth probe (`codex login status`) that is instant and consumes no API tokens; the other tools run their CLI with a short test prompt. A spinner shows progress during the check (up to 30 seconds per tool).
 
 ```bash
 # Verify all configured tools for current user

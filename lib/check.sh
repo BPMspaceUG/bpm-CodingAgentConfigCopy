@@ -366,11 +366,15 @@ check_tool_codex() {
         return $CHECK_EXIT_MISSING_DEP
     fi
 
+    # Issue #82: use the lightweight built-in auth probe instead of a full
+    # `codex exec` LLM generation. `codex login status` is instant, needs no API
+    # tokens, and returns exit 0 with "Logged in ..." when authenticated — so a
+    # valid login is no longer misreported as TIMEOUT.
     local cmd
     if [[ "$use_sudo" == "true" ]]; then
-        cmd=(sudo -u "$target_user" codex exec "Respond only with the text: CODEX_OK" --skip-git-repo-check)
+        cmd=(sudo -u "$target_user" codex login status)
     else
-        cmd=(codex exec "Respond only with the text: CODEX_OK" --skip-git-repo-check)
+        cmd=(codex login status)
     fi
 
     utils_verbose "Running: ${cmd[*]}"
@@ -381,7 +385,7 @@ check_tool_codex() {
         return $CHECK_EXIT_TIMEOUT
     fi
 
-    if echo "$output" | grep -q "CODEX_OK"; then
+    if [[ $exit_code -eq 0 ]] && echo "$output" | grep -qi "logged in"; then
         return $CHECK_EXIT_SUCCESS
     else
         utils_verbose "Codex response: $output"

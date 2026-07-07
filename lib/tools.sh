@@ -26,6 +26,14 @@ declare -A _SETTINGS_REGISTRY=(
 # Derived list of supported tools (excluding 'all')
 _TOOLS_SUPPORTED="${!_TOOLS_REGISTRY[*]}"
 
+# Ordered, deterministic list of supported tools — single source of truth for
+# the batch push/pull loops (Issue #76). Associative-array key order is not
+# stable, so an explicit ordered list keeps per-tool output deterministic.
+# Guard prevents re-declaration errors when sourced multiple times.
+if [[ -z "${SUPPORTED_TOOLS+isset}" ]]; then
+    readonly SUPPORTED_TOOLS=(claude codex gemini mistral)
+fi
+
 # Resolve tool alias to canonical name
 # Usage: _resolve_tool_alias <name>
 # Returns: canonical tool name (e.g., "vibe" -> "mistral")

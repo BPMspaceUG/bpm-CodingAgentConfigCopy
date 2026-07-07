@@ -106,13 +106,13 @@ OPTIONS:
     --version, -v   Show version information
 
 EXAMPLES:
-    cac push                    Bundle and upload current user's config (all tools)
+    cac push                    Bundle and upload current user's config (one bundle per tool)
     cac push --tool claude      Bundle and upload only Claude credentials
     cac push --tool codex       Bundle and upload only Codex credentials
     cac push --dry-run          Preview what would be bundled
     cac push --skip-check       Skip credential verification before upload
     cac push --user ubuntu      Bundle ubuntu user's config (requires root)
-    cac pull                    Apply globally newest bundle
+    cac pull                    Pull newest bundle for each supported tool
     cac pull --tool claude      Apply newest bundle for Claude tool
     cac pull --user bob         Apply newest bundle to user bob (requires root)
     cac pull --dry-run          Preview what would be extracted
@@ -169,6 +169,62 @@ show_version() {
 # Commands
 # ============================================================================
 
+# Push a single tool's config bundle (Issue #76).
+# Shared by the single-tool path (`cac push --tool X`) and the batch loop
+# (`cac push` with no --tool). The caller decides whether a non-success status
+# aborts (single-tool) or is tallied and skipped (batch loop).
+# Usage: _push_one_tool <tool> <home_dir> <target_user> <use_sudo> <skip_check> <dry_run> <temp_dir>
+# Returns: 0=pushed, 10=no config (skip), 11=creds failed (skip), 12=bundle/upload failed
+_push_one_tool() {
+    local tool="$1"
+    local home_dir="$2"
+    local target_user="$3"
+    local use_sudo="$4"
+    local skip_check="$5"
+    local dry_run="$6"
+    local temp_dir="$7"
+
+    local file_count
+    file_count=$(tools_count_existing "$home_dir" "$tool" "--include-settings")
+    if [[ "$file_count" -eq 0 ]]; then
+        return 10
+    fi
+
+    local bundle_name
+    if ! bundle_name=$(bundle_generate_filename "$target_user" "$tool"); then
+        return 12
+    fi
+
+    if [[ "$dry_run" == "true" ]]; then
+        utils_dryrun "[$tool] would push $file_count file(s) as $bundle_name"
+        return 0
+    fi
+
+    # Credential check (unless skipped). check_single_tool returns 100 when the
+    # tool has no primary credential file — treat that as "no config" (skip),
+    # any other non-zero as a credential failure.
+    if [[ "$skip_check" != "true" ]]; then
+        local check_rc=0
+        check_single_tool "$tool" "$use_sudo" "$target_user" "$home_dir" || check_rc=$?
+        if [[ "$check_rc" -eq 100 ]]; then
+            return 10
+        elif [[ "$check_rc" -ne 0 ]]; then
+            return 11
+        fi
+    fi
+
+    local bundle_path="${temp_dir}/${bundle_name}"
+    if ! bundle_create "$home_dir" "$bundle_path" "$tool"; then
+        return 12
+    fi
+    if ! backend_call upload "$bundle_path"; then
+        utils_error "[$tool] upload failed to ${CAC_BACKEND} backend"
+        return 12
+    fi
+    utils_success "[$tool] uploaded: $bundle_name"
+    return 0
+}
+
 cmd_push() {
     local explicit_tool="all"
     local args=()
@@ -216,94 +272,85 @@ cmd_push() {
     local skip_check="$PARSED_SKIP_CHECK"
     local home_dir="$PARSED_HOME_DIR"
 
-    # Check if any config files exist for the selected tool
-    local file_count
-    file_count=$(tools_count_existing "$home_dir" "$explicit_tool" "--include-settings")
-    if [[ "$file_count" -eq 0 ]]; then
-        if [[ "$explicit_tool" != "all" ]]; then
-            utils_error "No configuration files found for tool '$explicit_tool' (user '$target_user')"
-        else
-            utils_error "No AI tool configuration files found for user '$target_user'"
-        fi
-        return 1
+    local use_sudo="false"
+    if [[ "$target_user" != "$(whoami)" ]]; then
+        use_sudo="true"
     fi
 
-    # Generate bundle filename for display
-    local bundle_name
-    bundle_name=$(bundle_generate_filename "$target_user" "$explicit_tool")
-
-    # Show what would happen (always shown, dry-run stops here)
-    if [[ "$dry_run" == "true" ]]; then
-        utils_dryrun "Would create bundle for user: $target_user"
-        [[ "$explicit_tool" != "all" ]] && utils_dryrun "Tool filter: $explicit_tool"
-        utils_dryrun "Home directory: $home_dir"
-        utils_dryrun "Files to include: $file_count"
-        utils_dryrun "Bundle name: $bundle_name"
-        utils_dryrun "Backend: ${CAC_BACKEND}"
-        if [[ "$skip_check" == "true" ]]; then
-            utils_dryrun "Credential check: SKIPPED"
-        else
-            utils_dryrun "Credential check: Would run before push"
-        fi
-        echo ""
-        echo "Files that would be bundled:"
-        # Use process substitution to avoid pipe subshell masking errors
-        while IFS= read -r file; do
-            echo "  - $file"
-        done < <(tools_collect_existing "$home_dir" "$explicit_tool" "--include-settings")
-        utils_dryrun_footer
-        return 0
-    fi
-
-    # Run credential check before push (unless skipped)
-    if [[ "$skip_check" != "true" ]]; then
-        echo "=== Verifying credentials before push ==="
-        echo ""
-
-        local use_sudo="false"
-        if [[ "$target_user" != "$(whoami)" ]]; then
-            use_sudo="true"
-        fi
-
-        if [[ "$explicit_tool" != "all" ]]; then
-            # Check only the specific tool being pushed
-            if ! check_single_tool "$explicit_tool" "$use_sudo" "$target_user" "$home_dir"; then
-                utils_error "Credential check failed for $explicit_tool. Use --skip-check to bypass."
-                return 1
-            fi
-        else
-            if ! check_all_tools "$use_sudo" "$target_user" "$home_dir"; then
-                utils_error "Credential check failed. Use --skip-check to bypass."
-                return 1
-            fi
-        fi
-        echo ""
-    fi
-
-    echo "Creating bundle for user: $target_user"
-    [[ "$explicit_tool" != "all" ]] && echo "Tool: $explicit_tool"
-    echo "Home directory: $home_dir"
-    echo "Files found: $file_count"
-    echo ""
-
-    # Create temp directory for bundle (cleaned on return)
+    # Temp directory for bundle creation (cleaned on every return path, so
+    # per-tool ZIPs never leak even if a later tool in the loop fails).
     local temp_dir
     security_init_temp_dir temp_dir "cac-push"
     trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' RETURN
 
-    local bundle_path="${temp_dir}/${bundle_name}"
-
-    if ! bundle_create "$home_dir" "$bundle_path" "$explicit_tool"; then
-        return 1
+    if [[ "$skip_check" != "true" && "$dry_run" != "true" ]]; then
+        echo "=== Verifying credentials before push ==="
+        echo ""
     fi
 
-    # Upload to backend
-    if ! backend_call upload "$bundle_path"; then
-        utils_error "Failed to upload bundle to ${CAC_BACKEND} backend"
-        return 1
+    # Single-tool push (explicit --tool X): strict — any non-success aborts.
+    if [[ "$explicit_tool" != "all" ]]; then
+        local rc=0
+        _push_one_tool "$explicit_tool" "$home_dir" "$target_user" "$use_sudo" "$skip_check" "$dry_run" "$temp_dir" || rc=$?
+        case "$rc" in
+            0)
+                [[ "$dry_run" == "true" ]] && utils_dryrun_footer
+                return 0
+                ;;
+            10)
+                utils_error "No configuration files found for tool '$explicit_tool' (user '$target_user')"
+                return 1
+                ;;
+            11)
+                utils_error "Credential check failed for $explicit_tool. Use --skip-check to bypass."
+                return 1
+                ;;
+            *)
+                utils_error "Failed to push $explicit_tool"
+                return 1
+                ;;
+        esac
     fi
 
-    utils_success "Bundle uploaded successfully: $bundle_name"
+    # Batch push (no --tool / --tool all): loop per tool, NEVER abort early.
+    # Issue #76: no combined _all_ bundle — one per-tool bundle per tool.
+    local pushed=0 noconfig=0 creds_failed=0 failed=0
+    local tool rc
+    for tool in "${SUPPORTED_TOOLS[@]}"; do
+        rc=0
+        _push_one_tool "$tool" "$home_dir" "$target_user" "$use_sudo" "$skip_check" "$dry_run" "$temp_dir" || rc=$?
+        case "$rc" in
+            0)  pushed=$((pushed + 1)) ;;
+            10) utils_warn "[$tool] no config — skipped"; noconfig=$((noconfig + 1)) ;;
+            11) utils_error "[$tool] credential check failed — skipped"; creds_failed=$((creds_failed + 1)) ;;
+            *)  failed=$((failed + 1)) ;;
+        esac
+    done
+
+    echo ""
+
+    if [[ "$dry_run" == "true" ]]; then
+        utils_dryrun_footer
+        return 0
+    fi
+
+    echo "Per-tool summary: ${pushed} pushed, ${noconfig} skipped (no config), ${creds_failed} creds-failed, ${failed} failed"
+
+    # Exit policy (Issue #76 matrix): success only if at least one tool pushed
+    # AND no bundle/upload failure occurred. A failed upload after a success is
+    # still a failure; creds-failed / no-config alone are non-fatal.
+    if [[ "$pushed" -eq 0 ]]; then
+        if [[ "$creds_failed" -gt 0 || "$failed" -gt 0 ]]; then
+            utils_error "No bundles uploaded — all tools failed credential checks or upload"
+        else
+            utils_error "No AI tool configuration files found for user '$target_user' — nothing to push"
+        fi
+        return 1
+    fi
+    if [[ "$failed" -gt 0 ]]; then
+        return 1
+    fi
+    return 0
 }
 
 cmd_pull() {
@@ -393,56 +440,195 @@ cmd_pull() {
         return 0
     fi
 
-    # Build backend filter arguments (only pass explicitly provided filters)
-    local filter_args=()
+    # Path A: explicit --tool → single newest bundle for that tool (unchanged).
     if [[ "$tool_provided" == "true" ]]; then
-        filter_args+=(--tool "$explicit_tool")
-    fi
-    if [[ -n "$PARSED_USER" ]]; then
-        filter_args+=(--user "$PARSED_USER")
-    fi
+        local filter_args=(--tool "$explicit_tool")
+        if [[ -n "$PARSED_USER" ]]; then
+            filter_args+=(--user "$PARSED_USER")
+        fi
 
-    # Find newest matching bundle (globally unless filters are specified)
-    local newest_bundle
-    if ! newest_bundle=$(backend_call get_newest "${filter_args[@]+"${filter_args[@]}"}"); then
-        if [[ ${#filter_args[@]} -gt 0 ]]; then
+        local newest_bundle
+        if ! newest_bundle=$(backend_call get_newest "${filter_args[@]}"); then
             utils_error "No bundle found matching ${filter_args[*]}"
-        else
-            utils_error "No bundle found"
+            return 1
         fi
-        return 1
-    fi
 
-    # Show what would happen (dry-run stops here)
-    if [[ "$dry_run" == "true" ]]; then
-        utils_dryrun "Would pull newest bundle (applying to user: $target_user)"
-        if [[ ${#filter_args[@]} -gt 0 ]]; then
+        if [[ "$dry_run" == "true" ]]; then
+            utils_dryrun "Would pull newest bundle (applying to user: $target_user)"
             utils_dryrun "Filters: ${filter_args[*]}"
-        else
-            utils_dryrun "Filters: none (global newest)"
+            utils_dryrun "Target directory: $home_dir"
+            utils_dryrun "Bundle to download: $newest_bundle"
+            echo ""
+            utils_preview_extraction "$newest_bundle" "$home_dir"
+            utils_dryrun_footer
+            return 0
         fi
-        utils_dryrun "Target directory: $home_dir"
-        utils_dryrun "Bundle to download: $newest_bundle"
+
+        echo "Pulling newest bundle (applying to user: $target_user)"
+        echo "Filters: ${filter_args[*]}"
         echo ""
-        utils_preview_extraction "$newest_bundle" "$home_dir"
-        utils_dryrun_footer
+        echo "Found bundle: $newest_bundle"
+        if ! utils_download_and_extract "$newest_bundle" "$home_dir" "$target_user"; then
+            return 1
+        fi
+        echo ""
+        echo "Pull complete!"
         return 0
     fi
 
-    echo "Pulling newest bundle (applying to user: $target_user)"
-    if [[ ${#filter_args[@]} -gt 0 ]]; then
-        echo "Filters: ${filter_args[*]}"
+    # Path B: no --tool → newest bundle per supported tool (Issues #70 + #76).
+    local user_filter=()
+    if [[ -n "$PARSED_USER" ]]; then
+        user_filter=(--user "$PARSED_USER")
     fi
-    echo ""
-    echo "Found bundle: $newest_bundle"
 
-    # Download and extract
-    if ! utils_download_and_extract "$newest_bundle" "$home_dir" "$target_user"; then
+    echo "Pulling newest bundle for each supported tool (applying to user: $target_user)"
+    [[ ${#user_filter[@]} -gt 0 ]] && echo "Filters: ${user_filter[*]}"
+    echo ""
+
+    local extracted=0 skipped=0 failed=0
+    local legacy_needed=()
+    local tool
+    for tool in "${SUPPORTED_TOOLS[@]}"; do
+        local err_file rc=0 newest_bundle
+        if ! err_file=$(mktemp); then
+            utils_error "[$tool] mktemp failed"
+            failed=$((failed + 1))
+            continue
+        fi
+        newest_bundle=$(backend_call get_newest --tool "$tool" "${user_filter[@]+"${user_filter[@]}"}" 2>"$err_file") || rc=$?
+        if [[ "$rc" -ne 0 ]]; then
+            # Distinguish "no bundle for this tool" (expected → defer to legacy
+            # fallback) from a real backend error (surface it, count as failed).
+            if grep -qE '^ERROR: No bundles? found( matching:|[[:space:]])' "$err_file"; then
+                legacy_needed+=("$tool")
+            else
+                utils_error "[$tool] backend error:"
+                sed 's/^/  /' "$err_file" >&2
+                failed=$((failed + 1))
+            fi
+            rm -f "$err_file"
+            continue
+        fi
+        rm -f "$err_file"
+
+        if [[ "$dry_run" == "true" ]]; then
+            utils_dryrun "[$tool] would pull: $newest_bundle"
+            utils_preview_extraction "$newest_bundle" "$home_dir"
+            extracted=$((extracted + 1))
+            continue
+        fi
+
+        echo "[$tool] Found bundle: $newest_bundle"
+        if utils_download_and_extract "$newest_bundle" "$home_dir" "$target_user"; then
+            extracted=$((extracted + 1))
+        else
+            utils_error "[$tool] extract failed"
+            failed=$((failed + 1))
+        fi
+    done
+
+    # Legacy _all_ read-fallback (Issue #76, migration safety): for tools with no
+    # per-tool bundle, extract that tool's files from the newest legacy combined
+    # bundle. Kept for at least one release cycle; push never creates _all_ again.
+    if [[ ${#legacy_needed[@]} -gt 0 ]]; then
+        _pull_legacy_fallback "$home_dir" "$target_user" "$dry_run" \
+            legacy_needed extracted skipped failed \
+            "${user_filter[@]+"${user_filter[@]}"}"
+    fi
+
+    echo ""
+    echo "Per-tool summary: ${extracted} extracted, ${skipped} skipped, ${failed} failed"
+
+    if [[ "$failed" -gt 0 ]]; then
         return 1
     fi
+    if [[ "$extracted" -eq 0 ]]; then
+        utils_error "No bundles were extracted"
+        return 1
+    fi
+    return 0
+}
 
-    echo ""
-    echo "Pull complete!"
+# Legacy _all_ read-fallback for `cac pull` with no --tool (Issue #76).
+# Downloads the newest legacy combined bundle once and extracts each deferred
+# tool's files from it (tool-filtered, so a fresher per-tool bundle is never
+# clobbered). Counters are passed by name-ref and updated in place.
+# Usage: _pull_legacy_fallback <home_dir> <target_user> <dry_run> \
+#            <needed_arr> <extracted_ref> <skipped_ref> <failed_ref> [--user U]
+_pull_legacy_fallback() {
+    local home_dir="$1" target_user="$2" dry_run="$3"
+    local -n _needed="$4"
+    local -n _extracted="$5"
+    local -n _skipped="$6"
+    local -n _failed="$7"
+    shift 7
+    local user_filter=("$@")
+
+    local legacy_bundle="" lrc=0 lerr
+    lerr=$(mktemp 2>/dev/null) || lerr="/dev/null"
+    legacy_bundle=$(backend_call get_newest --tool all "${user_filter[@]+"${user_filter[@]}"}" 2>"$lerr") || lrc=$?
+    [[ "$lerr" != "/dev/null" ]] && rm -f "$lerr"
+
+    local tool
+    if [[ "$lrc" -ne 0 || -z "$legacy_bundle" ]]; then
+        for tool in "${_needed[@]}"; do
+            utils_warn "[$tool] no bundle available — skipping"
+            _skipped=$((_skipped + 1))
+        done
+        return 0
+    fi
+
+    # Download the legacy bundle once; extract per tool with a filter.
+    local ldir lpath
+    security_init_temp_dir ldir "cac-legacy"
+    lpath="${ldir}/$(basename "$legacy_bundle")"
+    if ! backend_call download "$legacy_bundle" "$lpath"; then
+        for tool in "${_needed[@]}"; do
+            utils_warn "[$tool] no bundle available — skipping"
+            _skipped=$((_skipped + 1))
+        done
+        rm -rf "$ldir"
+        return 0
+    fi
+
+    local zip_entries
+    zip_entries=$(security_list_zip_entries "$lpath")
+
+    for tool in "${_needed[@]}"; do
+        # Does the legacy bundle actually contain any of this tool's files?
+        local has=false tf
+        while IFS= read -r tf; do
+            [[ -z "$tf" ]] && continue
+            if grep -qxF "$tf" <<<"$zip_entries"; then
+                has=true
+                break
+            fi
+        done < <(tools_get_files "$tool" "--include-settings")
+
+        if [[ "$has" != "true" ]]; then
+            utils_warn "[$tool] no bundle available — skipping"
+            _skipped=$((_skipped + 1))
+            continue
+        fi
+
+        if [[ "$dry_run" == "true" ]]; then
+            utils_dryrun "[$tool] would pull from legacy combined bundle: $legacy_bundle"
+            _extracted=$((_extracted + 1))
+            continue
+        fi
+
+        echo "[$tool] no per-tool bundle — using legacy combined bundle: $legacy_bundle"
+        if bundle_extract "$lpath" "$home_dir" "$target_user" "$tool"; then
+            _extracted=$((_extracted + 1))
+        else
+            utils_error "[$tool] legacy extract failed"
+            _failed=$((_failed + 1))
+        fi
+    done
+
+    rm -rf "$ldir"
+    return 0
 }
 
 # Pull config to all users who have AI tool directories

@@ -177,6 +177,38 @@ main() {
         echo ""
     fi
 
+    # Run Issue #76 tests (batch push/pull per-tool bundles)
+    if $run_all || [[ "$filter" == "issue_76" ]] || [[ "$filter" == "76" ]]; then
+        if ! run_test_suite "Issue #76 Tests" "test_issue_76.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Issue #77 tests (version dirty/draft/clean detection)
+    if $run_all || [[ "$filter" == "issue_77" ]] || [[ "$filter" == "77" ]]; then
+        if ! run_test_suite "Issue #77 Tests" "test_issue_77.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Issue #81 tests (.claude.json cross-user path rewrite)
+    if $run_all || [[ "$filter" == "issue_81" ]] || [[ "$filter" == "81" ]]; then
+        if ! run_test_suite "Issue #81 Tests" "test_issue_81.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Issue #82 tests (fast codex probe + pull default-off)
+    if $run_all || [[ "$filter" == "issue_82" ]] || [[ "$filter" == "82" ]]; then
+        if ! run_test_suite "Issue #82 Tests" "test_issue_82.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     echo "========================================"
     echo "Overall Summary"
     echo "========================================"

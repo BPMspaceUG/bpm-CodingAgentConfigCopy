@@ -617,6 +617,67 @@ test_bundle_extract_settings_host_mismatch() {
 }
 
 # ============================================================================
+# Issue #76: bundle_extract tool-filter argument (legacy _all_ read-fallback)
+# ============================================================================
+
+# Build a combined (_all_) bundle containing claude + codex + gemini files.
+_make_all_bundle() {
+    local src_home="$1" bundle_zip="$2"
+    mkdir -p "${src_home}/.claude" "${src_home}/.codex" "${src_home}/.gemini"
+    echo '{"m":"claude"}'  > "${src_home}/.claude.json"
+    echo '{"m":"creds"}'   > "${src_home}/.claude/.credentials.json"
+    echo '{"m":"codex"}'   > "${src_home}/.codex/auth.json"
+    echo '{"m":"gemini"}'  > "${src_home}/.gemini/oauth_creds.json"
+    ( cd "$src_home" && zip -q "$bundle_zip" \
+        .claude.json .claude/.credentials.json .codex/auth.json .gemini/oauth_creds.json )
+}
+
+# B.1 [anti-bug]: tool-filtered extract installs only that tool's files.
+test_bundle_extract_tool_filter_claude_only() {
+    local src="${TEST_TMPDIR}/bf_src" dst="${TEST_TMPDIR}/bf_dst"
+    local zip="${TEST_TMPDIR}/CodingAgentConfig_HOSTA_$(whoami)_all_250101-100000.zip"
+    mkdir -p "$dst"
+    _make_all_bundle "$src" "$zip"
+
+    assert_success "filtered extract" bundle_extract "$zip" "$dst" "$(whoami)" "claude"
+    assert_file_exists "${dst}/.claude.json" "claude extracted" || return 1
+    assert_file_exists "${dst}/.claude/.credentials.json" "claude creds extracted" || return 1
+    if [[ -f "${dst}/.codex/auth.json" ]]; then echo "codex leaked past filter"; return 1; fi
+    if [[ -f "${dst}/.gemini/oauth_creds.json" ]]; then echo "gemini leaked past filter"; return 1; fi
+    return 0
+}
+
+# B.2 [sentinel]: no filter arg -> everything installed (back-compat).
+test_bundle_extract_no_filter_installs_all() {
+    local src="${TEST_TMPDIR}/bf2_src" dst="${TEST_TMPDIR}/bf2_dst"
+    local zip="${TEST_TMPDIR}/CodingAgentConfig_HOSTA_$(whoami)_all_250101-100000.zip"
+    mkdir -p "$dst"
+    _make_all_bundle "$src" "$zip"
+
+    assert_success "unfiltered extract" bundle_extract "$zip" "$dst" "$(whoami)"
+    assert_file_exists "${dst}/.claude.json" "claude extracted" || return 1
+    assert_file_exists "${dst}/.codex/auth.json" "codex extracted" || return 1
+    assert_file_exists "${dst}/.gemini/oauth_creds.json" "gemini extracted"
+}
+
+# B.3: filtered extract still skips host-specific settings on host mismatch.
+test_bundle_extract_tool_filter_settings_gated() {
+    local src="${TEST_TMPDIR}/bf3_src" dst="${TEST_TMPDIR}/bf3_dst"
+    # HOSTA != current host -> settings must be skipped even when in the filter set
+    local zip="${TEST_TMPDIR}/CodingAgentConfig_HOSTA_$(whoami)_all_250101-100000.zip"
+    mkdir -p "$dst" "${src}/.claude"
+    echo '{"m":"claude"}' > "${src}/.claude.json"
+    echo '{"teammateMode":"tmux"}' > "${src}/.claude/settings.json"
+    ( cd "$src" && zip -q "$zip" .claude.json .claude/settings.json )
+
+    local output
+    output=$(bundle_extract "$zip" "$dst" "$(whoami)" "claude" 2>&1)
+    assert_file_exists "${dst}/.claude.json" "claude extracted" || return 1
+    if [[ -f "${dst}/.claude/settings.json" ]]; then echo "settings extracted on host mismatch"; return 1; fi
+    assert_contains "skipped (host-specific)" "$output" "settings skip message"
+}
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -673,6 +734,12 @@ main() {
     run_test "bundle_create with mistral files" test_bundle_create_with_mistral_files
     run_test "bundle_create mistral only" test_bundle_create_mistral_only
     run_test "bundle_extract mistral permissions" test_bundle_extract_mistral_permissions
+    echo ""
+
+    echo "--- Issue #76: bundle_extract tool filter ---"
+    run_test "bundle_extract tool filter (claude only)" test_bundle_extract_tool_filter_claude_only
+    run_test "bundle_extract no filter installs all" test_bundle_extract_no_filter_installs_all
+    run_test "bundle_extract tool filter settings gated" test_bundle_extract_tool_filter_settings_gated
     echo ""
 
     framework_report

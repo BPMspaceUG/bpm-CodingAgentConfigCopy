@@ -217,6 +217,48 @@ _bundle_ensure_dir() {
     return 0
 }
 
+# Rewrite baked-in source-user home paths in an extracted file to the target home.
+# Issue #81: .claude.json embeds absolute /home/<sourceuser> paths (hook commands,
+# MCP server binaries, per-project keys). On a cross-user pull these must point at
+# the target user's home or hooks/MCP break and the session reads as not-logged-in.
+# The rewrite is boundary-anchored (source home must be followed by '/' or '"'),
+# so a longer prefix like /home/robert is never corrupted. No-op when the source
+# and destination homes are identical (own-host / own-user pull).
+# Usage: _bundle_rewrite_home_paths <file> <src_home> <dst_home> <username>
+_bundle_rewrite_home_paths() {
+    local file="$1"
+    local src_home="$2"
+    local dst_home="$3"
+    local username="$4"
+
+    [[ "$src_home" == "$dst_home" ]] && return 0
+    [[ -f "$file" ]] || return 0
+
+    # Escape for a sed s-command delimited by '#' (paths never contain '#'):
+    #   pattern: escape BRE metacharacters in the source home
+    #   replacement: escape '\' and '&'
+    local src_esc dst_esc
+    src_esc=$(printf '%s' "$src_home" | sed -e 's/[][\.*^$/]/\\&/g')
+    dst_esc=$(printf '%s' "$dst_home" | sed -e 's/[\&]/\\&/g')
+
+    local tmp
+    if ! tmp=$(mktemp); then
+        utils_warn "Path rewrite skipped (mktemp failed): $file"
+        return 0
+    fi
+
+    # Match <src_home> only when followed by '/' (subpath) or '"' (JSON string end),
+    # capturing that boundary char and preserving it in the replacement.
+    if sed "s#${src_esc}\\([/\"]\\)#${dst_esc}\\1#g" "$file" > "$tmp" 2>/dev/null && mv "$tmp" "$file"; then
+        security_secure_file "$file" "$username"
+        echo "  rewrote home paths (${src_home} -> ${dst_home}): $(basename "$file")"
+    else
+        rm -f "$tmp"
+        utils_warn "Path rewrite failed for $file — leaving extracted content unchanged"
+    fi
+    return 0
+}
+
 # Extract ZIP to temp directory
 # Usage: _bundle_extract_to_temp <zip_file> <temp_dir>
 # Returns: 0 on success, 1 on failure
@@ -232,14 +274,18 @@ _bundle_extract_to_temp() {
 }
 
 # Extract a bundle ZIP to user's home directory
-# Usage: bundle_extract <zip_file> <home_dir> <username>
+# Usage: bundle_extract <zip_file> <home_dir> <username> [tool_filter]
 # Settings files (from _SETTINGS_REGISTRY) are only extracted when the bundle's
 # hostname+user match the current host+target user. This prevents host-specific
 # config (e.g. teammateMode) from being overwritten by bundles from other hosts.
+# When <tool_filter> is given (Issue #76 legacy _all_ read-fallback), only that
+# tool's files are installed — the rest of the archive is skipped, so a legacy
+# combined bundle can supply just the tools that have no per-tool bundle.
 bundle_extract() {
     local zip_file="$1"
     local home_dir="$2"
     local username="$3"
+    local tool_filter="${4:-}"
 
     utils_verbose "Extracting bundle: $zip_file"
     utils_verbose "Target directory: $home_dir"
@@ -273,6 +319,29 @@ bundle_extract() {
         settings_files_map["$sf"]=1
     done < <(tools_get_settings_files "all")
 
+    # When a tool filter is set, build the allowed-file set for that tool.
+    # Any archive entry not in the set is skipped (Issue #76 legacy fallback).
+    local -A allowed_files_map
+    local use_tool_filter="false"
+    if [[ -n "$tool_filter" ]]; then
+        use_tool_filter="true"
+        local af
+        while IFS= read -r af; do
+            [[ -z "$af" ]] && continue
+            allowed_files_map["$af"]=1
+        done < <(tools_get_files "$tool_filter" "--include-settings")
+    fi
+
+    # Issue #81: derive source/target homes so .claude.json's baked-in
+    # /home/<sourceuser> paths can be rewritten to the target user's home.
+    local src_home dst_home
+    if [[ "$bundle_user" == "root" ]]; then
+        src_home="/root"
+    else
+        src_home="/home/${bundle_user}"
+    fi
+    dst_home="$home_dir"
+
     # Create secure temp directory for extraction
     # NOTE: Uses explicit cleanup instead of RETURN trap to avoid overwriting
     # caller's RETURN trap (e.g., utils_download_and_extract).
@@ -301,6 +370,11 @@ bundle_extract() {
             continue
         fi
 
+        # Skip entries outside the requested tool's file set (tool-filtered extract)
+        if [[ "$use_tool_filter" == "true" && -z "${allowed_files_map[$entry]+isset}" ]]; then
+            continue
+        fi
+
         local src_file="${temp_dir}/${entry}"
         local dst_file="${home_dir}/${entry}"
 
@@ -312,6 +386,11 @@ bundle_extract() {
         if ! _bundle_install_file "$src_file" "$dst_file" "$username" "$entry"; then
             extract_failed="true"
             break
+        fi
+
+        # Issue #81: repoint source-user home paths inside .claude.json
+        if [[ "$entry" == ".claude.json" ]]; then
+            _bundle_rewrite_home_paths "$dst_file" "$src_home" "$dst_home" "$username"
         fi
 
     done < <(security_list_zip_entries "$zip_file")
