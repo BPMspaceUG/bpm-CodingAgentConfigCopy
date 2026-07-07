@@ -283,36 +283,31 @@ update_cli_lib_path() {
     fi
 }
 
-# Stamp version into installed cac binary (bakes in the version at install time)
-# Uses git state of the SOURCE directory to determine version:
-#   dirty (uncommitted changes) → current date + "-dirty"
-#   draft (committed, not pushed) → commit date + "-draft"
-#   clean (committed + pushed) → commit date (no suffix)
+# Stamp version into installed cac binary (bakes in the version at install time).
+# An installed cac represents the committed/pushed release, so the baked-in
+# version is always the CLEAN HEAD commit date (YYMMDD-HHMM, no suffix). The
+# -dirty / -draft states are runtime-checkout-only concepts and are derived by
+# bin/cac at runtime when run from a git checkout — they are never baked in.
+# When src_dir is not a git checkout (the normal download-install case) or
+# git log fails, the target is left unchanged; _resolve_install_version() then
+# supplies a clean version from the GitHub API (or the "dev" sentinel).
 # Args: $1 = target file (installed copy), $2 = source directory (for git detection)
 stamp_version() {
     local target="$1"
     local src_dir="${2:-}"
-    local ver="" suffix=""
+    local ver=""
     if [[ -n "$src_dir" ]] && git -C "$src_dir" rev-parse --git-dir &>/dev/null; then
-        if ! git -C "$src_dir" diff --quiet HEAD 2>/dev/null || ! git -C "$src_dir" diff --cached --quiet HEAD 2>/dev/null; then
-            ver=$(git -C "$src_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || date '+%y%m%d-%H%M')
-            suffix="-dirty"
-        elif ! git -C "$src_dir" diff --quiet HEAD "@{upstream}" 2>/dev/null; then
-            ver=$(git -C "$src_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
-            suffix="-draft"
-        else
-            ver=$(git -C "$src_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
-        fi
+        ver=$(git -C "$src_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
     fi
     if [[ -n "$ver" ]]; then
-        if sed -i "0,/^VERSION=/{s/^VERSION=.*/VERSION=\"${ver}${suffix}\"/}" "$target" 2>/dev/null; then
+        if sed -i "0,/^VERSION=/{s/^VERSION=.*/VERSION=\"${ver}\"/}" "$target" 2>/dev/null; then
             : # GNU sed success
-        elif sed -i '' "s/^VERSION=\"dev\"/VERSION=\"${ver}${suffix}\"/" "$target" 2>/dev/null; then
+        elif sed -i '' "s/^VERSION=\"dev\"/VERSION=\"${ver}\"/" "$target" 2>/dev/null; then
             : # BSD sed success (no 0,/addr/ support, use simple replace)
         else
             local temp_file
             temp_file=$(mktemp)
-            if sed "s/^VERSION=\"dev\"/VERSION=\"${ver}${suffix}\"/" "$target" > "$temp_file" && \
+            if sed "s/^VERSION=\"dev\"/VERSION=\"${ver}\"/" "$target" > "$temp_file" && \
                mv "$temp_file" "$target"; then
                 : # Fallback success
             else
@@ -321,6 +316,30 @@ stamp_version() {
             fi
         fi
     fi
+}
+
+# Resolve a clean install-time version (YYMMDD-HHMM) when git stamping did not
+# apply — the normal download install (temp dir has no .git) or a source tree
+# with no .git. Uses the GitHub API commit date for main; falls back to the
+# defined "dev" sentinel when the API is unreachable (e.g. offline install).
+# "dev" is intentional and documented: it marks an unknown version and makes
+# `cac update` correctly offer an update, unlike a wall-clock date which would
+# look newer than the remote and suppress future updates.
+# Override CAC_INSTALL_API_URL in tests to avoid network access.
+# Returns: clean version string on stdout.
+_resolve_install_version() {
+    local api_url="${CAC_INSTALL_API_URL:-https://api.github.com/repos/BPMspaceUG/bpm-CodingAgentConfigCopy/commits/main}"
+    local api_response="" commit_date="" ver=""
+    if api_response=$(curl -fsSL --max-time 10 "$api_url" 2>/dev/null); then
+        commit_date=$(echo "$api_response" | grep '"date"' | tail -1 | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}' | head -1) || true
+        if [[ -n "$commit_date" ]]; then
+            ver=$(echo "$commit_date" | sed 's/^20\([0-9][0-9]\)-\([0-9][0-9]\)-\([0-9][0-9]\)T\([0-9][0-9]\):\([0-9][0-9]\)/\1\2\3-\4\5/')
+        fi
+    fi
+    if [[ -z "$ver" ]]; then
+        ver="dev"
+    fi
+    echo "$ver"
 }
 
 # Install shell completion files
@@ -385,23 +404,12 @@ install_files() {
     # Stamp version into installed binary (uses source dir git state)
     stamp_version "${BIN_DIR}/cac" "${temp_dir}"
 
-    # Fallback: if VERSION is still "dev" (curl|bash with no git repo), use commit date from GitHub API
+    # Fallback: if git stamping did not apply (normal download install with no
+    # .git, or git unavailable), resolve a clean version from the GitHub API,
+    # or the defined "dev" sentinel when offline.
     if grep -q '^VERSION="dev"' "${BIN_DIR}/cac" 2>/dev/null; then
-        local fallback_ver=""
-        # Try GitHub API to get commit date (matches update_get_remote_version format)
-        local api_url="https://api.github.com/repos/BPMspaceUG/bpm-CodingAgentConfigCopy/commits/main"
-        local api_response=""
-        if api_response=$(curl -fsSL --max-time 10 "$api_url" 2>/dev/null); then
-            local commit_date=""
-            commit_date=$(echo "$api_response" | grep '"date"' | tail -1 | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}' | head -1) || true
-            if [[ -n "$commit_date" ]]; then
-                fallback_ver=$(echo "$commit_date" | sed 's/^20\([0-9][0-9]\)-\([0-9][0-9]\)-\([0-9][0-9]\)T\([0-9][0-9]\):\([0-9][0-9]\)/\1\2\3-\4\5/')
-            fi
-        fi
-        # Last resort: use current date (better than "dev")
-        if [[ -z "$fallback_ver" ]]; then
-            fallback_ver=$(date '+%y%m%d-%H%M')
-        fi
+        local fallback_ver
+        fallback_ver=$(_resolve_install_version)
         if sed -i "0,/^VERSION=/{s/^VERSION=.*/VERSION=\"${fallback_ver}\"/}" "${BIN_DIR}/cac" 2>/dev/null; then
             : # GNU sed
         elif sed -i '' "s/^VERSION=\"dev\"/VERSION=\"${fallback_ver}\"/" "${BIN_DIR}/cac" 2>/dev/null; then

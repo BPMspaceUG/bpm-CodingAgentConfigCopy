@@ -788,12 +788,12 @@ main() {
 
     echo "--- stamp_version (Issue #58) ---"
     run_test "stamp_version: commit date in clean repo" test_stamp_version_clean_commit
-    run_test "stamp_version: dirty uses commit date not wall-clock" test_stamp_version_dirty_uses_commit_date
-    run_test "stamp_version: draft uses commit date" test_stamp_version_draft_uses_commit_date
+    run_test "stamp_version: dirty source bakes clean commit date (no suffix)" test_stamp_version_dirty_uses_commit_date
+    run_test "stamp_version: unpushed source bakes clean commit date (no suffix)" test_stamp_version_draft_uses_commit_date
     run_test "stamp_version: no git repo is noop" test_stamp_version_no_git_noop
     run_test "stamp_version: replaces VERSION line in target" test_stamp_version_replaces_version_line
     run_test "stamp_version: format is YYMMDD-HHMM" test_stamp_version_format_hhmm
-    run_test "stamp_version: date fallback when git-log fails" test_stamp_version_date_fallback_when_git_log_fails
+    run_test "stamp_version: noop when git-log fails (delegated to fallback)" test_stamp_version_noop_when_git_log_fails
     echo ""
 
     framework_report
@@ -877,9 +877,13 @@ test_stamp_version_dirty_uses_commit_date() {
     local stamped
     stamped=$(grep '^VERSION=' "$target" | head -1)
 
-    # After the fix, dirty should use HEAD commit date, not wall-clock
-    assert_contains "260310-0845" "$stamped" "dirty uses HEAD commit date (not wall-clock)"
-    assert_contains "-dirty" "$stamped" "dirty repo gets -dirty suffix"
+    # Issue #77: install always bakes the CLEAN committed release version.
+    # -dirty is a runtime-checkout-only concept and is never baked in at install time.
+    assert_contains "260310-0845" "$stamped" "dirty source still bakes clean HEAD commit date"
+    if [[ "$stamped" == *"-dirty"* || "$stamped" == *"-draft"* ]]; then
+        echo "Expected clean version (no suffix) from dirty source, got: $stamped" >&2
+        return 1
+    fi
 }
 
 test_stamp_version_draft_uses_commit_date() {
@@ -888,8 +892,7 @@ test_stamp_version_draft_uses_commit_date() {
     local repo="${TEST_TMPDIR}/stamp_draft_repo"
     _stamp_create_repo "$repo" "2026-04-20T16:15:00"
 
-    # No upstream configured, so diff HEAD @{upstream} will fail -> draft
-    # (git init creates no remote by default)
+    # Committed-but-unpushed source (no upstream configured).
 
     local target="${TEST_TMPDIR}/stamp_draft_target"
     echo 'VERSION="dev"' > "$target"
@@ -899,8 +902,13 @@ test_stamp_version_draft_uses_commit_date() {
     local stamped
     stamped=$(grep '^VERSION=' "$target" | head -1)
 
-    assert_contains "260420-1615" "$stamped" "draft uses commit date"
-    assert_contains "-draft" "$stamped" "unpushed commit gets -draft suffix"
+    # Issue #77: install always bakes the CLEAN committed release version.
+    # -draft is a runtime-checkout-only concept and is never baked in at install time.
+    assert_contains "260420-1615" "$stamped" "unpushed source still bakes clean commit date"
+    if [[ "$stamped" == *"-draft"* || "$stamped" == *"-dirty"* ]]; then
+        echo "Expected clean version (no suffix) from unpushed source, got: $stamped" >&2
+        return 1
+    fi
 }
 
 test_stamp_version_no_git_noop() {
@@ -964,16 +972,13 @@ test_stamp_version_format_hhmm() {
     assert_match '^VERSION="[0-9]{6}-[0-9]{4}"$' "$stamped" "version format is YYMMDD-HHMM"
 }
 
-test_stamp_version_date_fallback_when_git_log_fails() {
+test_stamp_version_noop_when_git_log_fails() {
     _load_stamp_version
 
     local repo="${TEST_TMPDIR}/stamp_fallback_repo"
     _stamp_create_repo "$repo" "2026-01-01T00:00:00"
 
-    # Make repo dirty so we enter the dirty branch
-    echo "dirty" > "$repo/file.txt"
-
-    # Create a git wrapper that succeeds for rev-parse and diff but fails for log
+    # Create a git wrapper that succeeds for rev-parse but fails for log
     local mock_bin="${TEST_TMPDIR}/stamp_fallback_bin"
     mkdir -p "$mock_bin"
     # Capture real git path before creating the mock to avoid PATH recursion
@@ -981,7 +986,7 @@ test_stamp_version_date_fallback_when_git_log_fails() {
     real_git=$(command -v git)
     cat > "$mock_bin/git" <<WRAPPER
 #!/usr/bin/env bash
-# Pass through rev-parse and diff commands; fail on log
+# Pass through rev-parse; fail on log
 for arg in "\$@"; do
     if [[ "\$arg" == "log" ]]; then
         exit 1
@@ -1000,15 +1005,10 @@ WRAPPER
     local stamped
     stamped=$(grep '^VERSION=' "$target" | head -1)
 
-    # git log fails, so the || date fallback fires. VERSION should NOT be "dev".
-    if [[ "$stamped" == 'VERSION="dev"' ]]; then
-        echo "Expected date fallback to fire, but VERSION is still dev: $stamped" >&2
-        return 1
-    fi
-    # Should still have -dirty suffix
-    assert_contains "-dirty" "$stamped" "fallback still gets -dirty suffix"
-    # Should match YYMMDD-HHMM format (from date command)
-    assert_match '^VERSION="[0-9]{6}-[0-9]{4}-dirty"$' "$stamped" "fallback format is YYMMDD-HHMM-dirty"
+    # Issue #77: when git log fails, stamp_version is a noop and leaves VERSION
+    # unchanged. Resolution is delegated to _resolve_install_version (GitHub API
+    # commit date, or the "dev" sentinel) in install_files.
+    assert_equals 'VERSION="dev"' "$stamped" "git log failure leaves VERSION unchanged (noop)"
 }
 
 main "$@"
