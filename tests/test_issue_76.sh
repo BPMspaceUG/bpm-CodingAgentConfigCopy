@@ -132,7 +132,8 @@ test_76_2_mixed_creds() {
     local d; d=$(new_sandbox 762)
     add_config "$d" claude; add_config "$d" codex; add_config "$d" gemini
     add_stub "$d" claude ok; add_stub "$d" codex ok; add_stub "$d" gemini fail
-    local out rc=0; out=$(run_cac "$d" push 2>&1) || rc=$?
+    # --check opts into credential verification (off by default per #82)
+    local out rc=0; out=$(run_cac "$d" push --check 2>&1) || rc=$?
     assert_equals 0 "$rc" "push exit code" || { echo "$out"; return 1; }
     have_glob "$d/storage/*_claude_*.zip" || { echo "no claude bundle"; return 1; }
     have_glob "$d/storage/*_codex_*.zip"  || { echo "no codex bundle"; return 1; }
@@ -155,7 +156,8 @@ test_76_4_all_creds_fail() {
     local d; d=$(new_sandbox 764)
     add_config "$d" claude; add_config "$d" codex
     add_stub "$d" claude fail; add_stub "$d" codex fail
-    local rc=0; run_cac "$d" push >/dev/null 2>&1 || rc=$?
+    # --check opts into credential verification (off by default per #82)
+    local rc=0; run_cac "$d" push --check >/dev/null 2>&1 || rc=$?
     assert_equals 1 "$rc" "push exit code" || return 1
     if have_glob "$d/storage/*.zip"; then echo "bundle created despite all creds fail"; return 1; fi
     return 0
@@ -222,7 +224,9 @@ test_76_9_single_tool_unchanged() {
 
     local d2; d2=$(new_sandbox 769b)
     add_config "$d2" claude; add_stub "$d2" claude fail
-    local rc2=0; run_cac "$d2" push --tool claude >/dev/null 2>&1 || rc2=$?
+    # --check opts into credential verification (off by default per #82);
+    # single-tool push with --check remains strict (creds-fail aborts).
+    local rc2=0; run_cac "$d2" push --tool claude --check >/dev/null 2>&1 || rc2=$?
     assert_equals 1 "$rc2" "single-tool creds-fail exit code" || return 1
     if have_glob "$d2/storage/*.zip"; then echo "bundle created despite creds fail"; return 1; fi
     return 0

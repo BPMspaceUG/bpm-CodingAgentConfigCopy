@@ -69,8 +69,9 @@ USAGE:
     cac <command> [options]
 
 COMMANDS:
-    push [--tool TOOL] [--user USER] [--dry-run] [--skip-check]
+    push [--tool TOOL] [--user USER] [--dry-run] [--check]
                                     Create and upload config bundle
+                                    (credential check OFF by default; --check to verify)
     pull [BUNDLE_ID] [--tool TOOL] [--user USER] [--dry-run] [--all]
                                     Download and apply bundle (newest or specific)
     list [--tool TOOL] [--user USER]  List available bundles
@@ -98,7 +99,8 @@ OPTIONS:
     --tool TOOL     Filter bundles by AI tool name (pull, list)
     --all           Pull to all users with AI tool configs (requires root)
     --dry-run       Preview what would happen without making changes
-    --skip-check    Skip credential verification before push
+    --check         Verify credentials before push (off by default)
+    --skip-check    No-op (kept for compatibility; checks are already off by default)
     --check-updates Check for latest versions (env status only)
     --tmux          Set Claude Code teammateMode to "tmux" (env install only)
     --verbose       Enable verbose output for debugging
@@ -110,7 +112,7 @@ EXAMPLES:
     cac push --tool claude      Bundle and upload only Claude credentials
     cac push --tool codex       Bundle and upload only Codex credentials
     cac push --dry-run          Preview what would be bundled
-    cac push --skip-check       Skip credential verification before upload
+    cac push --check            Verify credentials before upload (off by default)
     cac push --user ubuntu      Bundle ubuntu user's config (requires root)
     cac pull                    Pull newest bundle for each supported tool
     cac pull --tool claude      Apply newest bundle for Claude tool
@@ -227,11 +229,17 @@ _push_one_tool() {
 
 cmd_push() {
     local explicit_tool="all"
+    local do_check="false"
     local args=()
 
     # Pre-parse push-specific --tool/-t flag or positional tool argument
     while [[ $# -gt 0 ]]; do
         case "$1" in
+            --check)
+                # Credential checks are OFF by default; --check opts in.
+                do_check="true"
+                shift
+                ;;
             --tool|-t)
                 if [[ $# -lt 2 ]]; then
                     utils_error "Option $1 requires an argument"
@@ -269,7 +277,11 @@ cmd_push() {
     fi
     local target_user="$PARSED_TARGET_USER"
     local dry_run="$PARSED_DRY_RUN"
-    local skip_check="$PARSED_SKIP_CHECK"
+    # Credential checks default to OFF (Issue #82): they only run when
+    # explicitly requested via --check. --skip-check is accepted but redundant
+    # (kept for backward compatibility, since skipping is now the default).
+    local skip_check="true"
+    [[ "$do_check" == "true" ]] && skip_check="false"
     local home_dir="$PARSED_HOME_DIR"
 
     local use_sudo="false"
@@ -302,7 +314,7 @@ cmd_push() {
                 return 1
                 ;;
             11)
-                utils_error "Credential check failed for $explicit_tool. Use --skip-check to bypass."
+                utils_error "Credential check failed for $explicit_tool (you requested --check)."
                 return 1
                 ;;
             *)

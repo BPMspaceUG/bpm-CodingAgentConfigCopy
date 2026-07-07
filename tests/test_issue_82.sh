@@ -155,16 +155,92 @@ EOF
 }
 
 # ============================================================================
+# Integration: push runs NO credential check by default; --check opts in
+# ============================================================================
+
+# Build a push sandbox: local backend .env, getent mock -> sandbox home, and a
+# codex stub whose sentinel is written only if the credential check runs.
+# Echoes the sandbox dir. codex_mode: ok|fail.
+_setup_push_sandbox() {
+    local d="$1" codex_mode="$2" sentinel="$3"
+    mkdir -p "$d"/{storage,config,home/.codex,tmp,cache,bin}
+    cat > "$d/config/.env" <<EOF
+CAC_BACKEND=local
+CAC_LOCAL_STORAGE=$d/storage
+EOF
+    chmod 600 "$d/config/.env"
+    local user; user=$(whoami)
+    cat > "$d/bin/getent" <<EOF
+#!/usr/bin/env bash
+if [[ "\$1" == "passwd" && "\$2" == "$user" ]]; then
+    echo "$user:x:$(id -u):$(id -g):$user:$d/home:/bin/bash"; exit 0
+fi
+$(command -v getent) "\$@"
+EOF
+    chmod +x "$d/bin/getent"
+    make_codex_stub "$d/bin" "$codex_mode" "$sentinel"
+    rm -f "$sentinel"
+    # codex config file so there is something to bundle
+    echo '{"marker":"auth"}' > "$d/home/.codex/auth.json"
+}
+
+# 82.5 [anti-bug]: default `cac push --tool codex` (no --check) must NOT run any
+# credential check (sentinel absent) and must still create the bundle.
+test_82_5_push_default_no_check() {
+    local d="$TEST_TMPDIR/825"; local sentinel="$d/codex.called"
+    _setup_push_sandbox "$d" ok "$sentinel"
+    local user; user=$(whoami)
+
+    local rc=0
+    PATH="$d/bin:$PATH" CAC_CONFIG_DIR="$d/config" HOME="$d/home" TMPDIR="$d/tmp" XDG_CACHE_HOME="$d/cache" \
+        "$REPO_DIR/bin/cac" push --tool codex >/dev/null 2>&1 || rc=$?
+
+    assert_equals "0" "$rc" "push exit code (default, no check)" || return 1
+    # a codex bundle was uploaded to storage
+    if ! compgen -G "$d/storage/CodingAgentConfig_"*"_${user}_codex_"*.zip >/dev/null; then
+        echo "FAIL: no codex bundle created by default push" >&2; return 1
+    fi
+    # the credential check must NOT have run
+    if [[ -f "$sentinel" ]]; then
+        echo "FAIL: credential check ran on default push (sentinel present)" >&2; return 1
+    fi
+    return 0
+}
+
+# 82.6 [anti-bug]: `cac push --tool codex --check` MUST run the codex probe
+# (sentinel present, argv = login status) and succeed.
+test_82_6_push_check_opts_in() {
+    local d="$TEST_TMPDIR/826"; local sentinel="$d/codex.called"
+    _setup_push_sandbox "$d" ok "$sentinel"
+
+    local rc=0
+    PATH="$d/bin:$PATH" CAC_CONFIG_DIR="$d/config" HOME="$d/home" TMPDIR="$d/tmp" XDG_CACHE_HOME="$d/cache" \
+        "$REPO_DIR/bin/cac" push --tool codex --check >/dev/null 2>&1 || rc=$?
+
+    assert_equals "0" "$rc" "push --check exit code" || return 1
+    if [[ ! -f "$sentinel" ]]; then
+        echo "FAIL: --check did not run the credential check (sentinel absent)" >&2; return 1
+    fi
+    # and it used the lightweight 'login status' probe, not exec
+    if ! grep -qx "login" "$sentinel" || ! grep -qx "status" "$sentinel" || grep -qx "exec" "$sentinel"; then
+        echo "FAIL: --check did not use 'login status' probe" >&2; return 1
+    fi
+    return 0
+}
+
+# ============================================================================
 # Run
 # ============================================================================
 
 echo "=========================================="
-echo "Issue #82: fast codex probe + pull default-off"
+echo "Issue #82: fast codex probe + checks default-off (pull & push)"
 echo "=========================================="
 
 run_test "82.1 codex probe success + exact argv (login status, not exec)" test_82_1_probe_success_exact_argv
 run_test "82.2 codex probe not-logged-in -> AUTH_FAIL" test_82_2_probe_auth_fail
 run_test "82.3 codex missing binary -> MISSING_DEP" test_82_3_missing_binary
 run_test "82.4 pull runs no credential check (default-off)" test_82_4_pull_runs_no_check
+run_test "82.5 push runs no credential check by default" test_82_5_push_default_no_check
+run_test "82.6 push --check opts in to the codex probe" test_82_6_push_check_opts_in
 
 framework_report
