@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `cac` (Coding Agent Config) is a production-grade CLI tool for managing versioned ZIP-based configuration bundles for AI coding assistants. It supports centralized storage via Gokapi backend or local filesystem, enabling configuration portability across hosts and users.
 
-Supports: Claude Code, Codex CLI, Gemini CLI, and Mistral Vibe.
+Supports: Claude Code, Codex CLI, Gemini CLI, and Mistral Vibe. OpenCode is supported for `check` / `push` / `pull`; its `env install` / `env update` path is still open (#80).
 
 ## Quick Start
 
@@ -104,6 +104,7 @@ CodingAgentConfig_<HOST>_<USER>_<YYMMDD-HHMMSS>.zip
 | Codex CLI | `.codex/auth.json` |
 | Gemini CLI | `.gemini/oauth_creds.json`, `.gemini/google_accounts.json`, `.gemini/settings.json`, `.gemini/state.json`, `.gemini/installation_id`, `.config/gcloud/application_default_credentials.json` |
 | Mistral Vibe | `.vibe/.env`, `.vibe/config.toml` |
+| OpenCode | `.local/share/opencode/auth.json`, `.config/opencode/opencode.json` |
 
 ### Settings Files (host+user-specific, NOT portable)
 

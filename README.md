@@ -8,6 +8,7 @@ A production-grade CLI tool for managing versioned ZIP-based configuration bundl
 - **Codex CLI** (OpenAI)
 - **Gemini CLI** (Google)
 - **Mistral Vibe** (<a href="https://mistral.ai" target="_blank">Mistral AI</a>)
+- **OpenCode** (<a href="https://opencode.ai" target="_blank">provider-agnostic</a>) — `check` / `push` / `pull` only; `env install` pending ([#80](https://github.com/BPMspaceUG/bpm-CodingAgentConfigCopy/issues/80))
 
 ## Installation
 
@@ -423,6 +424,7 @@ Old 4-segment bundles (without the TOOL field) are still recognized during pull 
 | Codex CLI | `.codex/auth.json` |
 | Gemini CLI | `.gemini/oauth_creds.json`, `.gemini/google_accounts.json`, `.gemini/settings.json`, `.gemini/state.json`, `.gemini/installation_id`, `.config/gcloud/application_default_credentials.json` |
 | Mistral Vibe | `.vibe/.env`, `.vibe/config.toml` |
+| OpenCode | `.local/share/opencode/auth.json`, `.config/opencode/opencode.json` |
 
 ### Settings Files (host+user-specific, NOT portable)
 

@@ -201,6 +201,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #80 tests (opencode registry + check wiring)
+    if $run_all || [[ "$filter" == "issue_80" ]] || [[ "$filter" == "80" ]]; then
+        if ! run_test_suite "Issue #80 Tests" "test_issue_80.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #82 tests (fast codex probe + pull default-off)
     if $run_all || [[ "$filter" == "issue_82" ]] || [[ "$filter" == "82" ]]; then
         if ! run_test_suite "Issue #82 Tests" "test_issue_82.sh"; then

@@ -93,6 +93,7 @@ SUPPORTED TOOLS:
     codex           Codex CLI (OpenAI)
     gemini          Gemini CLI (Google)
     mistral         Mistral Vibe (Mistral AI)
+    opencode        OpenCode (provider-agnostic; check/push/pull only)
 
 OPTIONS:
     --user USER     Operate on specified user (requires root for other users)
@@ -248,7 +249,7 @@ cmd_push() {
                 explicit_tool="$(_resolve_tool_alias "$2")"
                 if ! tools_is_valid "$explicit_tool"; then
                     utils_error "Unknown tool: $2"
-                    echo "Valid tools: claude codex gemini mistral" >&2
+                    echo "Valid tools: ${SUPPORTED_TOOLS[*]}" >&2
                     return 1
                 fi
                 shift 2

@@ -15,6 +15,8 @@ declare -A _TOOLS_REGISTRY=(
 .config/gcloud/application_default_credentials.json'
     [mistral]='.vibe/.env
 .vibe/config.toml'
+    [opencode]='.local/share/opencode/auth.json
+.config/opencode/opencode.json'
 )
 
 # Settings registry - host+user-specific configuration (NOT portable)
@@ -31,7 +33,7 @@ _TOOLS_SUPPORTED="${!_TOOLS_REGISTRY[*]}"
 # stable, so an explicit ordered list keeps per-tool output deterministic.
 # Guard prevents re-declaration errors when sourced multiple times.
 if [[ -z "${SUPPORTED_TOOLS+isset}" ]]; then
-    readonly SUPPORTED_TOOLS=(claude codex gemini mistral)
+    readonly SUPPORTED_TOOLS=(claude codex gemini mistral opencode)
 fi
 
 # Resolve tool alias to canonical name

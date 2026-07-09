@@ -246,6 +246,9 @@ _check_get_primary_cred_file() {
         mistral)
             echo "${home_dir}/.vibe/.env"
             ;;
+        opencode)
+            echo "${home_dir}/.local/share/opencode/auth.json"
+            ;;
     esac
 }
 
@@ -267,6 +270,9 @@ _check_get_tool_version() {
             ;;
         mistral)
             vibe --version 2>/dev/null | head -1 || echo "unknown"
+            ;;
+        opencode)
+            opencode --version 2>/dev/null | head -1 || echo "unknown"
             ;;
         *)
             echo "unknown"
@@ -293,6 +299,9 @@ _check_tool_binary_exists() {
         mistral)
             command -v vibe &>/dev/null
             ;;
+        opencode)
+            command -v opencode &>/dev/null
+            ;;
         *)
             return 1
             ;;
@@ -309,6 +318,7 @@ _check_get_tool_display_name() {
         codex) echo "Codex" ;;
         gemini) echo "Gemini" ;;
         mistral) echo "Mistral Vibe" ;;
+        opencode) echo "OpenCode" ;;
         *) echo "$tool" ;;
     esac
 }
@@ -486,6 +496,52 @@ check_tool_mistral() {
     fi
 }
 
+# Check OpenCode credentials
+# Usage: check_tool_opencode <use_sudo> <target_user> <home_dir>
+# Returns: 0 on success, 1 on auth fail, 4 on missing binary
+#
+# ponytail: structural check only — auth.json must be an object with at least one
+# provider entry. Unlike the other tools this makes no live API call, because
+# opencode multiplexes providers (anthropic, openai, ...) and there is no single
+# endpoint to probe. Upgrade path: if opencode ships an `auth list`-style probe,
+# switch to it like check_tool_codex does with `codex login status`.
+check_tool_opencode() {
+    local use_sudo="$1"
+    local target_user="$2"
+    local home_dir="$3"
+    local auth_file="${home_dir}/.local/share/opencode/auth.json"
+    local content
+
+    if ! _check_tool_binary_exists "opencode"; then
+        utils_error "OpenCode binary not found"
+        return $CHECK_EXIT_MISSING_DEP
+    fi
+
+    if [[ "$use_sudo" == "true" ]]; then
+        content=$(sudo -u "$target_user" cat "$auth_file" 2>/dev/null)
+    else
+        content=$(cat "$auth_file" 2>/dev/null)
+    fi
+
+    if [[ -z "$content" ]]; then
+        utils_error "OpenCode auth file empty or unreadable: $auth_file"
+        return $CHECK_EXIT_AUTH_FAIL
+    fi
+
+    # Shape heuristic, not JSON validation: "looks like an object carrying at least
+    # one provider key". jq is not a hard dependency of this repo, so a malformed
+    # fragment like `{ "key":` would pass. Good enough to catch the real failure
+    # modes (empty file, truncated write, plain-text garbage).
+    if ! echo "$content" | grep -qE '^[[:space:]]*\{' || \
+       ! echo "$content" | grep -qE '"[^"]+"[[:space:]]*:'; then
+        utils_verbose "OpenCode auth content: $content"
+        utils_error "OpenCode auth file holds no provider credentials: $auth_file"
+        return $CHECK_EXIT_AUTH_FAIL
+    fi
+
+    return $CHECK_EXIT_SUCCESS
+}
+
 # Check a single tool
 # Usage: check_single_tool <tool> <use_sudo> <target_user> <home_dir>
 # Returns: 0=success, 1=auth fail, 2=unknown tool, 3=timeout, 4=missing dep
@@ -499,7 +555,7 @@ check_single_tool() {
     # Validate tool name
     if ! tools_is_valid "$tool"; then
         utils_error "Unknown tool: $tool"
-        echo "Valid tools: claude codex gemini mistral" >&2
+        echo "Valid tools: ${SUPPORTED_TOOLS[*]}" >&2
         return $CHECK_EXIT_UNKNOWN_TOOL
     fi
 
@@ -544,6 +600,16 @@ check_single_tool() {
         mistral)
             check_tool_mistral "$use_sudo" "$target_user" "$home_dir" && exit_code=0 || exit_code=$?
             ;;
+        opencode)
+            check_tool_opencode "$use_sudo" "$target_user" "$home_dir" && exit_code=0 || exit_code=$?
+            ;;
+        *)
+            # tools_is_valid passed but no probe is wired up. Fail loudly rather
+            # than leaving exit_code unset — `return $exit_code` would then abort
+            # with "numeric argument required".
+            utils_error "No credential check implemented for: $tool"
+            exit_code=$CHECK_EXIT_UNKNOWN_TOOL
+            ;;
     esac
 
     # Update cache and display result
@@ -575,7 +641,9 @@ check_all_tools() {
     local target_user="$2"
     local home_dir="$3"
 
-    local tools=("claude" "codex" "gemini" "mistral")
+    # Registry-driven: adding a tool to SUPPORTED_TOOLS must not require a second
+    # edit here (Issue: opencode was in the registry but never checked).
+    local tools=("${SUPPORTED_TOOLS[@]}")
     local highest_exit=0
     local passed=0 failed=0 skipped=0 total=0
     local exit_code
