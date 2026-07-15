@@ -552,6 +552,15 @@ check_single_tool() {
     local home_dir="$4"
     local display_name cache_key cached_result result exit_code
 
+    # 'all' is a pseudo-tool for the batch path (check_all_tools), never a single
+    # probe. Reject it here so a mis-route can't hit the empty-cred-path 100
+    # sentinel again (Issue #84). check_all_tools iterates real SUPPORTED_TOOLS,
+    # so this guard never fires on the batch path.
+    if [[ "$tool" == "all" ]]; then
+        utils_error "'all' is not a single tool; use check_all_tools"
+        return $CHECK_EXIT_UNKNOWN_TOOL
+    fi
+
     # Validate tool name
     if ! tools_is_valid "$tool"; then
         utils_error "Unknown tool: $tool"

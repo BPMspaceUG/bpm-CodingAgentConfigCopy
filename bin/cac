@@ -828,11 +828,11 @@ cmd_check() {
     echo "=== Checking AI Tool Credentials for user: $target_user ==="
     echo ""
 
-    if [[ -n "$tool_arg" ]]; then
+    if [[ -n "$tool_arg" && "$tool_arg" != "all" ]]; then
         # Check specific tool
         check_single_tool "$tool_arg" "$use_sudo" "$target_user" "$home_dir"
     else
-        # Check all tools
+        # No tool given, or the literal "all" -> check every tool (Issue #84)
         check_all_tools "$use_sudo" "$target_user" "$home_dir"
     fi
 }

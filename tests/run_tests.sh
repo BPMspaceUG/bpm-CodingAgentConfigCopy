@@ -217,6 +217,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #84 tests (cac check all routes to check_all_tools)
+    if $run_all || [[ "$filter" == "issue_84" ]] || [[ "$filter" == "84" ]]; then
+        if ! run_test_suite "Issue #84 Tests" "test_issue_84.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     echo "========================================"
     echo "Overall Summary"
     echo "========================================"
