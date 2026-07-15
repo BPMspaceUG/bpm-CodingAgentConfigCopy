@@ -209,6 +209,17 @@ new -> planned -> plan-approved -> test-designed -> test-design-approved
 4. One issue per discrete change — all phases documented as comments on that issue
 5. Every Codex response posted as comment on the GitHub Issue
 
+**Mechanical enforcement (Issue #90):**
+- A harness `[Plan Approved]` message is **NOT** a Codex gate. It is an auditable
+  MANUAL control, not a technical one: the Team Lead **MUST paste the real
+  `codex exec` output as an issue comment** before every transition. Approval of
+  unknown provenance = NO approval.
+- Before `test-approved`, the Team Lead **MUST run**
+  `tests/verify_gate.sh <issue> <default-branch>` and paste its output into the
+  issue; the milestone may not advance unless it exits `0`. It asserts a commit
+  referencing the issue is reachable from the integration branch **and** no
+  tracked files have uncommitted changes. Naming the merge branch is a manual step.
+
 See `/my-team-milestones` skill for full details including Codex gate patterns and compact lifecycle variant.
 
 ## Multi-Agent Workflow
