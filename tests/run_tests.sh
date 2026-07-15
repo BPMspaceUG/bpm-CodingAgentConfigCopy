@@ -225,6 +225,22 @@ main() {
         echo ""
     fi
 
+    # Run Issue #85 tests (env repair liveness preflight before rm -rf)
+    if $run_all || [[ "$filter" == "issue_85" ]] || [[ "$filter" == "85" ]]; then
+        if ! run_test_suite "Issue #85 Tests" "test_issue_85.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Issue #86 tests (env update installs; env repair fixes wrong-target symlink)
+    if $run_all || [[ "$filter" == "issue_86" ]] || [[ "$filter" == "86" ]]; then
+        if ! run_test_suite "Issue #86 Tests" "test_issue_86.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     echo "========================================"
     echo "Overall Summary"
     echo "========================================"

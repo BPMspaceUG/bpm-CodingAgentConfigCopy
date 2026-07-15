@@ -420,6 +420,115 @@ _env_npm_update_cmd() {
     esac
 }
 
+# Managed npm global prefix ROOT for a scope (Issue #86).
+#   user       -> $HOME/.local
+#   global|all -> $(npm prefix -g)   (falls back to /usr/local if npm is absent)
+# This is the install root that `env install`/`env update` actually writes to —
+# NOT the PATH the binary resolves through, which may be an unmanaged/legacy tree.
+# Usage: _env_npm_managed_prefix <scope>
+_env_npm_managed_prefix() {
+    local scope="$1"
+    case "$scope" in
+        global|all)
+            npm prefix -g 2>/dev/null || echo "/usr/local"
+            ;;
+        *)
+            echo "$HOME/.local"
+            ;;
+    esac
+}
+
+# Installed version of an npm package INSIDE the managed prefix (Issue #86).
+# Reads <prefix>/lib/node_modules/<package>/package.json "version".
+# Empty output (exit 0) if the package is absent from the managed prefix — that
+# absence is exactly what tells `env update` to install rather than `npm update`.
+# Usage: _env_npm_pkg_installed_version <package> <scope>
+_env_npm_pkg_installed_version() {
+    local package="$1"
+    local scope="$2"
+    local prefix pkg_json
+    prefix=$(_env_npm_managed_prefix "$scope")
+    pkg_json="$prefix/lib/node_modules/$package/package.json"
+    [[ -f "$pkg_json" ]] || return 0
+    sed -nE 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$pkg_json" 2>/dev/null | head -1
+    return 0
+}
+
+# Choose the npm command for `env update` (Issue #86): update in place if the
+# package is present in the managed prefix, otherwise INSTALL it. `npm update -g`
+# never installs an absent package (it exits 0 having done nothing), so a tool
+# whose PATH binary lives outside the managed prefix would be stuck forever.
+# Usage: _env_npm_update_or_install_cmd <package> <scope>
+_env_npm_update_or_install_cmd() {
+    local package="$1"
+    local scope="$2"
+    if [[ -z "$(_env_npm_pkg_installed_version "$package" "$scope")" ]]; then
+        _env_npm_install_cmd "${package}@latest" "$scope"
+    else
+        _env_npm_update_cmd "$package" "$scope"
+    fi
+}
+
+# Report the outcome of an npm `env update` (Issue #86). Compares versions read
+# from the MANAGED prefix on BOTH sides (never the PATH binary, which may resolve
+# into an unmanaged/legacy tree and yield a bogus "updated: <unmanaged> -> <managed>"
+# line). When the PATH binary is NOT the managed install, it reports that split
+# explicitly instead of an update/"already at latest" line.
+# Usage: _env_npm_report_update <tool> <scope> <old_managed_version> <exit_code>
+# Returns: the exit status env_update_tool should propagate.
+_env_npm_report_update() {
+    local tool="$1"
+    local scope="$2"
+    local old_managed="$3"
+    local exit_code="$4"
+
+    local display_name package
+    display_name=$(env_get_display_name "$tool")
+    package="${_ENV_NPM_PACKAGES[$tool]:-}"
+
+    if [[ "$exit_code" -ne 0 ]]; then
+        utils_error "Failed to update $display_name"
+        return 1
+    fi
+
+    local new_version
+    new_version=$(_env_npm_pkg_installed_version "$package" "$scope")
+    [[ -n "$new_version" ]] || new_version="unknown"
+
+    local prefix pkgdir binary
+    prefix=$(_env_npm_managed_prefix "$scope")
+    pkgdir="$prefix/lib/node_modules/$package"
+    binary=$(_env_tool_to_binary "$tool" 2>/dev/null || true)
+
+    # If the binary on PATH does NOT resolve into the managed install, the user is
+    # running something we did not manage — say so, don't pretend we updated it.
+    if [[ -n "$binary" ]]; then
+        local path_bin path_real
+        path_bin=$(type -P "$binary" 2>/dev/null || true)
+        if [[ -n "$path_bin" ]]; then
+            path_real=$(readlink -f "$path_bin" 2>/dev/null || echo "$path_bin")
+            case "$path_real" in
+                "$pkgdir"/*) : ;;  # managed install is what's on PATH — normal case
+                *)
+                    local path_ver
+                    path_ver=$(env_get_version "$tool")
+                    utils_warn "$display_name on PATH: $path_ver ($path_real, unmanaged); npm global: $new_version"
+                    echo "The binary on your PATH is not the npm-managed install. Run 'cac env repair $tool' to relink it." >&2
+                    return $ENV_EXIT_SUCCESS
+                    ;;
+            esac
+        fi
+    fi
+
+    [[ -n "$old_managed" ]] || old_managed="unknown"
+    if [[ "$old_managed" != "$new_version" ]]; then
+        utils_success "$display_name updated: $old_managed -> $new_version"
+    else
+        echo "$display_name is already at latest version ($new_version)"
+    fi
+    return $ENV_EXIT_SUCCESS
+}
+
 # Map tool name to its installed binary name
 # Usage: _env_tool_to_binary <tool>
 # Returns: binary name on stdout; returns 1 if unknown tool
@@ -1067,6 +1176,10 @@ env_update_tool() {
     # Issue #31: Declare exit_code before case block so update command
     # failures are captured instead of killing the script under set -e.
     local exit_code=0
+    # Issue #86: managed-prefix version captured before the npm command runs, so
+    # the success/regression comparison uses a source consistent with the post-run
+    # reading (never the PATH binary, which may be an unmanaged/legacy install).
+    local npm_old_managed=""
 
     case "$install_type" in
         curl)
@@ -1135,8 +1248,6 @@ env_update_tool() {
                 return $ENV_EXIT_MISSING_DEP
             fi
             local package="${_ENV_NPM_PACKAGES[$tool]}"
-            local cmd
-            cmd=$(_env_npm_update_cmd "$package" "$scope")
 
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
                 if [[ "$EUID" -ne 0 ]]; then
@@ -1144,6 +1255,13 @@ env_update_tool() {
                     return 1
                 fi
             fi
+
+            # Issue #86: record the managed-prefix version, then update-or-INSTALL.
+            # `npm update -g` never installs an absent package, so a tool missing
+            # from the managed prefix would otherwise stay stuck forever.
+            npm_old_managed=$(_env_npm_pkg_installed_version "$package" "$scope")
+            local cmd
+            cmd=$(_env_npm_update_or_install_cmd "$package" "$scope")
 
             utils_verbose "Running: $cmd"
             eval "$cmd" || exit_code=$?
@@ -1194,21 +1312,12 @@ env_update_tool() {
         return $ENV_EXIT_SUCCESS
     fi
 
-    # npm path: behaviour unchanged from pre-#71 (Issue #71 scope: do not touch npm).
-    local new_version
-    new_version=$(env_get_version "$tool")
-
-    if [[ $exit_code -eq 0 ]]; then
-        if [[ "$old_version" != "$new_version" ]]; then
-            utils_success "$display_name updated: $old_version -> $new_version"
-        else
-            echo "$display_name is already at latest version ($new_version)"
-        fi
-        return $ENV_EXIT_SUCCESS
-    else
-        utils_error "Failed to update $display_name"
-        return 1
-    fi
+    # npm path (Issue #86): compare versions read from the MANAGED prefix on both
+    # sides, and flag a PATH binary that resolves outside the managed install —
+    # instead of the old PATH-derived comparison that printed a bogus
+    # "updated: <unmanaged> -> <managed>" line.
+    _env_npm_report_update "$tool" "$scope" "$npm_old_managed" "$exit_code"
+    return $?
 }
 
 # Install all core tools
@@ -1966,6 +2075,142 @@ env_cmd_check() {
 # Repair Functions (Issue #59)
 # ============================================================================
 
+# Issue #85: scan /proc for a LIVE process whose real executable or mapped files
+# resolve under $ndir. This catches a live install that argv-text (`ps`) misses —
+# e.g. a process whose command line shows `/usr/local/bin/claude ...` (the wrapper)
+# or bare `claude ...`, while the real exe lives in /opt/claude-code; and node
+# interpreters that exec a wrapper but mmap .js files out of the dir.
+# Returns 0 if a live process under $ndir is found (=> refuse), 1 otherwise.
+# Reads from ${_ENV_PROC_ROOT:-/proc} so tests can point it at a mock proc tree.
+# Fail-safe: unreadable/other-user entries are skipped, never aborted (set -e safe).
+# Note: /proc absence returns 1 (not found) — NOT proof of safety; the caller still
+# requires the portable `ps` probe to succeed.
+# Cost: on a busy host /proc can hold thousands of PIDs, so this uses TWO single
+# external passes (not a per-PID loop that forks readlink/grep thousands of times):
+#   (a) one `find -lname` over */exe to catch any process whose real executable
+#       resolves under $ndir — regardless of how its argv displays or whether the
+#       binary is still on PATH; and
+#   (b) one `grep -l` over */maps to catch an interpreter (node) that execs a
+#       wrapper but mmaps .js files out of $ndir.
+_env_liveness_proc_scan() {
+    local ndir="$1"
+    local proc_root="${_ENV_PROC_ROOT:-/proc}"
+    [[ -d "$proc_root" ]] || return 1
+
+    # (a) real executable under $ndir. find matches the raw /proc/<pid>/exe link
+    # target (kernel-canonical absolute path); `*` in -lname spans '/'. One process,
+    # stops at the first hit; permission-denied entries are skipped (stderr muted).
+    local exe_hit
+    exe_hit=$(find "$proc_root" -maxdepth 2 -name exe -lname "${ndir}/*" -print -quit 2>/dev/null || true)
+    if [[ -n "$exe_hit" ]]; then
+        local pid="${exe_hit%/exe}"; pid="${pid##*/}"
+        _ENV_LIVENESS_REASON="process ${pid} executes from $ndir"
+        return 0
+    fi
+
+    # (b) mapped files under $ndir. Single grep across all readable maps files.
+    local maps_hit
+    maps_hit=$(grep -lF -- "${ndir}/" "$proc_root"/[0-9]*/maps 2>/dev/null | head -1 || true)
+    if [[ -n "$maps_hit" ]]; then
+        local pid="${maps_hit%/maps}"; pid="${pid##*/}"
+        _ENV_LIVENESS_REASON="process ${pid} maps files under $ndir"
+        return 0
+    fi
+
+    return 1
+}
+
+# Issue #85: Liveness + ownership preflight before ANY recursive deletion.
+#
+# `cac env repair claude --yes` used to `rm -rf /opt/claude-code` guarded only by
+# the tool name and `[[ -d ]]`. On a host where /opt/claude-code is the LIVE shared
+# install (e.g. /usr/local/bin/claude is a wrapper exec-ing into it, with running
+# processes) that wiped the toolchain for every user. This preflight must PROVE the
+# target is inactive before deletion is permitted.
+#
+# Fail-safe contract: returns 0 (safe to delete) ONLY when no liveness signal fires
+# AND every required probe could run. ANY of: the tool's active binary resolving
+# into $dir, a wrapper referencing $dir, a running process from $dir, an open file
+# under $dir (lsof, when available), OR the inability to run `ps` at all => return 1
+# (REFUSE). Uncertain always resolves to REFUSE — never to delete.
+#
+# Sets _ENV_LIVENESS_REASON with a human-readable reason on refusal.
+# Usage: _env_repair_preflight_safe_to_delete <dir> <tool>
+_ENV_LIVENESS_REASON=""
+_env_repair_preflight_safe_to_delete() {
+    local dir="$1"
+    local tool="$2"
+    _ENV_LIVENESS_REASON=""
+
+    # Normalise (strip trailing slash) for exact prefix matching.
+    local ndir="${dir%/}"
+    if [[ -z "$ndir" ]]; then
+        _ENV_LIVENESS_REASON="empty target directory"
+        return 1
+    fi
+
+    # --- Signal 1: active exec-chain / install-root comparison ---------------
+    # Resolve the tool's live binary and check whether it IS $dir (directly, or
+    # via a wrapper script that execs into it).
+    local binary resolved real
+    binary=$(_env_tool_to_binary "$tool" 2>/dev/null || true)
+    if [[ -n "$binary" ]]; then
+        resolved=$(type -P "$binary" 2>/dev/null || true)
+        if [[ -n "$resolved" ]]; then
+            # (a) The real target (after resolving symlinks) lives under $dir.
+            real=$(readlink -f "$resolved" 2>/dev/null || true)
+            case "$real" in
+                "$ndir"|"$ndir"/*)
+                    _ENV_LIVENESS_REASON="active binary '$binary' resolves into $ndir ($real)"
+                    return 1
+                    ;;
+            esac
+            # (b) The binary is a text wrapper whose contents reference $dir
+            #     (e.g. `exec /opt/claude-code/node_modules/.bin/claude "$@"`).
+            #     grep -I skips real (binary) executables, so this only matches
+            #     genuine wrapper scripts. A false positive here is fail-SAFE.
+            if [[ -f "$resolved" ]] && grep -IqF -- "$ndir" "$resolved" 2>/dev/null; then
+                _ENV_LIVENESS_REASON="active wrapper '$resolved' references $ndir"
+                return 1
+            fi
+        fi
+    fi
+
+    # --- Signal 2a: /proc real-executable scan (Linux, authoritative) --------
+    # Resolves each process's REAL exe (and mmapped files) via /proc, so a live
+    # install is caught even when argv text shows the wrapper/bare name and the
+    # binary is off PATH — the exact gap a text-only `ps` grep leaves open.
+    if _env_liveness_proc_scan "$ndir"; then
+        return 1  # _ENV_LIVENESS_REASON set by the scan
+    fi
+
+    # --- Signal 2b: running processes via ps (portable secondary; REQUIRED) --
+    # If ps cannot run we CANNOT prove inactivity => refuse. Detect failure via
+    # exit status so a stubbed/absent ps is caught (not confused with "none found").
+    local ps_out="" ps_rc=0
+    ps_out=$(ps -eo args= 2>/dev/null) || ps_rc=$?
+    if [[ $ps_rc -ne 0 ]]; then
+        _ENV_LIVENESS_REASON="cannot verify liveness ('ps' failed, rc=$ps_rc) — refusing"
+        return 1
+    fi
+    if printf '%s\n' "$ps_out" | grep -qF -- "$ndir/"; then
+        _ENV_LIVENESS_REASON="running process(es) execute from $ndir"
+        return 1
+    fi
+
+    # --- Signal 3: open files (lsof OPTIONAL, degrade safely) ----------------
+    # lsof is additive: its absence only drops a positive signal, it never flips
+    # a live host to "safe". Never hard-depend on it.
+    if command -v lsof >/dev/null 2>&1; then
+        if lsof +D "$ndir" >/dev/null 2>&1; then
+            _ENV_LIVENESS_REASON="open file handle(s) under $ndir (lsof)"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
 # Repair: remove legacy Bun directories in /opt/
 # Usage: _env_repair_remove_bun_opt <tool> <auto_yes>
 _env_repair_remove_bun_opt() {
@@ -1979,8 +2224,18 @@ _env_repair_remove_bun_opt() {
         *) return 0 ;;
     esac
 
+    local refused=0
     for dir in "${dirs_to_remove[@]}"; do
         if [[ -d "$dir" ]]; then
+            # Issue #85: fail-safe liveness preflight BEFORE any rm -rf. `--yes`
+            # may skip the confirmation prompt below, but NEVER this safety gate.
+            if ! _env_repair_preflight_safe_to_delete "$dir" "$tool"; then
+                utils_error "REFUSING to delete $dir — ${_ENV_LIVENESS_REASON}."
+                echo "  $dir appears to be a LIVE or in-use install; not removing." >&2
+                echo "  If you are certain it is dead, remove it manually: sudo rm -rf $dir" >&2
+                refused=1
+                continue
+            fi
             if [[ "$auto_yes" != "true" ]]; then
                 echo -n "  Remove legacy Bun directory $dir? [y/N]: "
                 local reply
@@ -1996,6 +2251,8 @@ _env_repair_remove_bun_opt() {
             fi
         fi
     done
+
+    [[ $refused -eq 0 ]]
 }
 
 # Repair: remove ~/.bun directory
@@ -2004,6 +2261,13 @@ _env_repair_remove_bun_home() {
     local auto_yes="${1:-false}"
 
     if [[ -d "$HOME/.bun" ]]; then
+        # Issue #85: same fail-safe preflight before rm -rf. Empty tool arg skips
+        # the binary/exec-chain signal; the ps + lsof signals still apply.
+        if ! _env_repair_preflight_safe_to_delete "$HOME/.bun" ""; then
+            utils_error "REFUSING to delete $HOME/.bun — ${_ENV_LIVENESS_REASON}."
+            echo "  If you are certain it is unused, remove it manually: rm -rf $HOME/.bun" >&2
+            return 1
+        fi
         if [[ "$auto_yes" != "true" ]]; then
             echo -n "  Remove legacy ~/.bun directory? [y/N]: "
             local reply
@@ -2015,13 +2279,102 @@ _env_repair_remove_bun_home() {
     fi
 }
 
-# Repair: create missing symlink in /usr/local/bin/
+# Issue #86: point /usr/local/bin/<binary> at the npm-managed install, correcting
+# a WRONG-target symlink (e.g. a legacy Bun tree), not only creating a missing one.
+# Ensures a valid managed install exists first; NEVER removes any install tree —
+# only the symlink pointer, and only when it is a symlink. Requires root for
+# system-wide changes.
+# Usage: _env_repair_npm_symlink <tool> <binary>
+_env_repair_npm_symlink() {
+    local tool="$1"
+    local binary="$2"
+
+    local package prefix pkgdir link
+    package="${_ENV_NPM_PACKAGES[$tool]:-}"
+    if [[ -z "$package" ]]; then
+        utils_warn "No npm package known for $tool — cannot relink"
+        return 1
+    fi
+    prefix=$(_env_npm_managed_prefix "global")
+    pkgdir="$prefix/lib/node_modules/$package"
+    link="/usr/local/bin/$binary"
+
+    local is_root=0
+    [[ "${EUID:-$(id -u)}" -eq 0 ]] && is_root=1
+
+    # 1. Ensure a valid managed install exists BEFORE relinking to it.
+    if [[ ! -d "$pkgdir" ]]; then
+        if [[ $is_root -eq 1 ]]; then
+            utils_verbose "Installing $package into managed prefix ($prefix)..."
+            eval "$(_env_npm_install_cmd "${package}@latest" "global")" >/dev/null 2>&1 || true
+        else
+            utils_warn "Requires root to install $package into the managed prefix"
+            return 1
+        fi
+    fi
+    if [[ ! -d "$pkgdir" ]]; then
+        utils_warn "No managed install of $package at $pkgdir — refusing to relink to a non-existent target"
+        return 1
+    fi
+
+    # 2. If a link already exists, decide whether it is correct.
+    if [[ -e "$link" || -L "$link" ]]; then
+        local real
+        real=$(readlink -f "$link" 2>/dev/null || true)
+        case "$real" in
+            "$pkgdir"/*) return 0 ;;  # already points into the managed install
+        esac
+        # Wrong target. Remove ONLY the pointer, and ONLY if it is a symlink —
+        # never a real file, and never any install tree (that is Issue #85's domain).
+        if [[ -L "$link" ]]; then
+            if [[ $is_root -eq 1 ]]; then
+                rm -f "$link"
+                echo "  Removed wrong-target symlink $link (was -> ${real:-unresolved})"
+            else
+                utils_warn "Requires root to fix wrong-target symlink $link"
+                return 1
+            fi
+        else
+            utils_warn "$link is a real file, not a symlink — leaving it untouched"
+            return 1
+        fi
+    elif [[ $is_root -ne 1 ]]; then
+        utils_warn "Requires root to create $link"
+        return 1
+    fi
+
+    # 3. (Re)create the correct link via npm, which is the source of truth for the
+    #    bin target (avoids brittle package.json "bin" parsing).
+    eval "$(_env_npm_install_cmd "${package}@latest" "global")" >/dev/null 2>&1 || true
+
+    # 4. Verify the link now resolves into the managed install.
+    local real2
+    real2=$(readlink -f "$link" 2>/dev/null || true)
+    case "$real2" in
+        "$pkgdir"/*) echo "  Relinked $link -> $real2"; return 0 ;;
+        *) utils_warn "Could not point $link into $pkgdir (got: ${real2:-missing})"; return 1 ;;
+    esac
+}
+
+# Repair: ensure /usr/local/bin/<binary> is present and correct.
+# npm tools (Issue #86): relink a wrong-target symlink to the managed install.
+# curl tools: original behaviour — only CREATE a missing link.
 # Usage: _env_repair_create_symlink <tool>
 _env_repair_create_symlink() {
     local tool="$1"
 
     local binary
     binary=$(_env_tool_to_binary "$tool") || return 1
+
+    # Issue #86: for npm tools the correct target is the managed npm install; a
+    # symlink that EXISTS but points elsewhere (legacy Bun tree) must be re-pointed,
+    # not treated as "already fine".
+    local install_type
+    install_type=$(env_get_install_type "$tool" 2>/dev/null || true)
+    if [[ "$install_type" == "npm" ]]; then
+        _env_repair_npm_symlink "$tool" "$binary"
+        return $?
+    fi
 
     if [[ -e "/usr/local/bin/$binary" ]]; then
         return 0  # Already exists
@@ -2144,7 +2497,13 @@ _env_repair_one_tool() {
                 fi
                 ;;
             binary_location)
-                if [[ -z "${repaired[bun_opt]:-}" ]]; then
+                # Issue #86: for npm tools, a wrong-location binary means the
+                # /usr/local/bin symlink points at a legacy/unmanaged tree — relink
+                # it to the managed install. For curl tools (claude/cc) it means a
+                # legacy /opt Bun dir — remove it (behind Issue #85's preflight).
+                if [[ "$(env_get_install_type "$tool")" == "npm" ]]; then
+                    _env_repair_create_symlink "$tool"
+                elif [[ -z "${repaired[bun_opt]:-}" ]]; then
                     _env_repair_remove_bun_opt "$tool" "$auto_yes"
                     repaired[bun_opt]=1
                 fi
