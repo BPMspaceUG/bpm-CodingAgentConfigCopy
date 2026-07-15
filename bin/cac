@@ -73,7 +73,10 @@ COMMANDS:
                                     Create and upload config bundle
                                     (credential check OFF by default; --check to verify)
     pull [BUNDLE_ID] [--tool TOOL] [--user USER] [--dry-run] [--all]
-                                    Download and apply bundle (newest or specific)
+                                    Download and apply bundle (newest or specific).
+                                    No --user: newest bundle per tool, regardless
+                                    of uploader. --user X: only bundles uploaded by
+                                    X. --all: discover local users and fan out.
     list [--tool TOOL] [--user USER]  List available bundles
     check [TOOL] [--user USER]      Verify AI tool credentials work
     test [--user USER]              (Alias for check) Test API connectivity
@@ -96,9 +99,12 @@ SUPPORTED TOOLS:
     opencode        OpenCode (provider-agnostic; check/push/pull only)
 
 OPTIONS:
-    --user USER     Operate on specified user (requires root for other users)
+    --user USER     Operate on specified user (requires root for other users).
+                    For pull, filters bundles by uploader; without it, pull is
+                    uploader-agnostic (newest bundle per tool).
     --tool TOOL     Filter bundles by AI tool name (pull, list)
-    --all           Pull to all users with AI tool configs (requires root)
+    --all           Pull to all users with AI tool configs (requires root):
+                    discovers local users, then pulls each user's newest bundle
     --dry-run       Preview what would happen without making changes
     --check         Verify credentials before push (off by default)
     --skip-check    No-op (kept for compatibility; checks are already off by default)
@@ -115,9 +121,9 @@ EXAMPLES:
     cac push --dry-run          Preview what would be bundled
     cac push --check            Verify credentials before upload (off by default)
     cac push --user ubuntu      Bundle ubuntu user's config (requires root)
-    cac pull                    Pull newest bundle for each supported tool
+    cac pull                    Pull newest bundle per tool (any uploader)
     cac pull --tool claude      Apply newest bundle for Claude tool
-    cac pull --user bob         Apply newest bundle to user bob (requires root)
+    cac pull --user bob         Apply newest bundle uploaded by bob (requires root)
     cac pull --dry-run          Preview what would be extracted
     cac pull CodingAgentConfig_myhost_user_250111-120000.zip
                                 Download and apply a specific bundle
@@ -391,6 +397,19 @@ cmd_pull() {
                 tool_provided="true"
                 shift 2
                 ;;
+            --user)
+                # Issue #91: consume --user AND its value as a pair. Without this,
+                # --user fell through to --*) (pushed alone to args) while its value
+                # hit *) and was swallowed as BUNDLE_ID, so utils_init_command_context
+                # later saw a bare --user and errored. Forward the pair intact for
+                # standard parsing (sets PARSED_USER → --user filter in Paths A/B).
+                if [[ $# -lt 2 ]]; then
+                    utils_error "Option --user requires an argument"
+                    return 1
+                fi
+                args+=("$1" "$2")
+                shift 2
+                ;;
             --dry-run)
                 dry_run="true"
                 args+=("$1")
@@ -644,28 +663,14 @@ _pull_legacy_fallback() {
     return 0
 }
 
-# Pull config to all users who have AI tool directories
-cmd_pull_all() {
-    local dry_run="${1:-false}"
-
-    # Cross-user operations are not supported on Windows (no sudo / POSIX users)
-    if platform_is_windows; then
-        utils_error "--all is not supported on Windows Git Bash. Run as the target user without --all."
-        return 1
-    fi
-
-    # Require root
-    if [[ "$EUID" -ne 0 ]]; then
-        utils_error "Root required for --all (pulls to all users)"
-        return 1
-    fi
-
-    echo "=== Pulling config to all AI tool users ==="
-    echo ""
-
-    # Find users with AI tool config directories or files
+# Discover local users who have any AI tool config dir/file (Issue #89).
+# Extracted from cmd_pull_all so the discovery set is unit-testable without root.
+# Emits one username per line in encounter order, de-duplicated.
+# Discovery dirs mirror the per-tool paths in lib/tools.sh _TOOLS_REGISTRY;
+# opencode config lives under .config/opencode and .local/share/opencode.
+_pull_all_find_users() {
     local users_found=()
-    local tool_dirs=(".claude" ".codex" ".gemini" ".vibe")
+    local tool_dirs=(".claude" ".codex" ".gemini" ".vibe" ".config/opencode" ".local/share/opencode")
     local tool_files=(".claude.json")
 
     while IFS= read -r user_home; do
@@ -697,8 +702,38 @@ cmd_pull_all() {
         fi
     done < <(platform_list_user_homes)
 
+    if [[ ${#users_found[@]} -gt 0 ]]; then
+        printf '%s\n' "${users_found[@]}"
+    fi
+}
+
+# Pull config to all users who have AI tool directories
+cmd_pull_all() {
+    local dry_run="${1:-false}"
+
+    # Cross-user operations are not supported on Windows (no sudo / POSIX users)
+    if platform_is_windows; then
+        utils_error "--all is not supported on Windows Git Bash. Run as the target user without --all."
+        return 1
+    fi
+
+    # Require root
+    if [[ "$EUID" -ne 0 ]]; then
+        utils_error "Root required for --all (pulls to all users)"
+        return 1
+    fi
+
+    echo "=== Pulling config to all AI tool users ==="
+    echo ""
+
+    # Find users with AI tool config directories or files (Issue #89: incl. opencode)
+    local users_found=()
+    while IFS= read -r username; do
+        [[ -n "$username" ]] && users_found+=("$username")
+    done < <(_pull_all_find_users)
+
     if [[ ${#users_found[@]} -eq 0 ]]; then
-        echo "No users with AI tool configs found (.claude, .codex, .gemini, .claude.json)"
+        echo "No users with AI tool configs found (.claude, .codex, .gemini, .vibe, .config/opencode, .claude.json)"
         return 0
     fi
 

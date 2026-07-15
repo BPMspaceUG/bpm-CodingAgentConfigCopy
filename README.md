@@ -168,10 +168,10 @@ sudo cac push --user ubuntu
 ### Pull (Download) Configuration
 
 ```bash
-# Download and apply the newest bundle for each supported tool
+# Download and apply the newest bundle per tool, regardless of who uploaded it
 cac pull
 
-# Filter by tool or user
+# Filter by tool, or narrow to bundles uploaded by a specific user
 cac pull --tool claude
 cac pull --user bob
 
@@ -189,7 +189,11 @@ Without `--tool`, both `cac push` and `cac pull` operate **per tool** — they l
 
 `cac pull` does **not** run credential checks — checks are a push-time concern (and can be skipped with `--skip-check`). Use `--tool` to operate on a single tool, or `--user` (root) to target another user.
 
-The `--all` flag scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`, `.vibe`) or files (`.claude.json`) and pulls the matching bundle for each.
+The three source semantics are distinct:
+
+- **no `--user`** — uploader-agnostic: applies the newest bundle **per tool**, regardless of who uploaded it.
+- **`--user <UPLOADER>`** — narrows the source to bundles **uploaded by** that user (targeting another user's home requires root).
+- **`--all`** — root-only per-local-user discovery + fan-out: scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`, `.vibe`, `.config/opencode`, `.local/share/opencode`) or files (`.claude.json`) and pulls each discovered user's own newest bundle.
 
 ### List Bundles
 
