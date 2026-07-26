@@ -33,6 +33,26 @@ setup_integration_env() {
     # Call the base framework init to create TEST_TMPDIR
     framework_init
 
+    # Issue #111: scope every temp dir this suite creates - and every one the
+    # cac libs create on its behalf - into our own sandbox. mktemp -d -t
+    # (lib/security.sh:247) honours TMPDIR, and no path in lib/ or bin/cac
+    # hardcodes /tmp, so all six bundle_extract call sites and any added later
+    # land here instead of the global namespace.
+    #
+    # This line must stay AFTER framework_init. That is the first point at
+    # which TMPDIR can be pointed inside the actual suite sandbox while
+    # preserving today's TEST_TMPDIR placement. Before it, TEST_TMPDIR is still
+    # the empty string (test_framework.sh:33), so "${TEST_TMPDIR}/tmp" expands
+    # to /tmp - an earlier export would SILENTLY keep writing to the global
+    # namespace, which is the defect being repaired. It does not fail loudly.
+    #
+    # setup runs once in the main process before the first run_test, and
+    # run_test uses a subshell (test_framework.sh:103), so every test inherits
+    # this and no test can leak its own TMPDIR back out.
+    export TMPDIR="${TEST_TMPDIR}/tmp"
+    mkdir -p "$TMPDIR"
+    chmod 700 "$TMPDIR"
+
     # Create fake home directory with config files
     TEST_HOME="${TEST_TMPDIR}/home"
     mkdir -p "${TEST_HOME}/.claude"
@@ -671,6 +691,29 @@ test_bundle_extract_cleans_temp_dir() {
     unset CAC_CONFIG_DIR
 }
 
+# Issue #111: the suite-wide TMPDIR scope set in setup_integration_env must
+# actually be in force. The export survives someone adding a seventh
+# bundle_extract call site, but not someone deleting the export itself - and
+# that deletion would restore global-/tmp aggression with every test still
+# green. Asserts on security_mktemp_dir's real return value, so it cannot pass
+# vacuously if the lib ever stops honouring TMPDIR.
+test_suite_tmpdir_is_scoped() {
+    source "${PROJECT_ROOT}/lib/security.sh"
+
+    [[ "$TMPDIR" == "${TEST_TMPDIR}/"* ]] || {
+        echo "TMPDIR '$TMPDIR' is not inside TEST_TMPDIR - suite scope lost" >&2
+        return 1
+    }
+
+    local probe
+    probe=$(security_mktemp_dir "cac-extract")
+    rmdir "$probe" 2>/dev/null || rm -rf "$probe"
+    [[ "$probe" == "${TEST_TMPDIR}/"* ]] || {
+        echo "security_mktemp_dir escaped the suite sandbox (got '$probe')" >&2
+        return 1
+    }
+}
+
 # ============================================================================
 # Full Workflow Tests
 # ============================================================================
@@ -1221,6 +1264,7 @@ main() {
     run_test "pull rejects unknown flags" test_pull_rejects_unknown_flags
     run_test "version printed on command (Issue #21)" test_version_printed_on_command
     run_test "bundle_extract cleans temp dir" test_bundle_extract_cleans_temp_dir
+    run_test "suite TMPDIR is scoped (Issue #111)" test_suite_tmpdir_is_scoped
     echo ""
 
     echo "--- Full Workflow ---"
