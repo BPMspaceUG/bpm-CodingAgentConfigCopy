@@ -636,14 +636,37 @@ test_bundle_extract_cleans_temp_dir() {
     local bundle_path="${TEST_TMPDIR}/cleanup_test.zip"
     bundle_create "$TEST_HOME" "$bundle_path" "all" >/dev/null 2>&1
 
+    # Issue #102: scope extraction temp dirs to this test's own sandbox, so a
+    # concurrent cac run (or the Codex sandbox, which bind-mounts host /tmp)
+    # holding a /tmp/cac-extract.* dir cannot false-fail this assertion.
+    # security_mktemp_dir (lib/security.sh:247) uses `mktemp -d -t`, which
+    # honours TMPDIR. run_test runs each test in a subshell, so this export
+    # cannot leak into sibling tests.
+    export TMPDIR="${TEST_TMPDIR}/extract_tmp"
+    mkdir -p "$TMPDIR"
+
     # Extract it
     local extract_dir="${TEST_TMPDIR}/extract_target"
     mkdir -p "$extract_dir"
     bundle_extract "$bundle_path" "$extract_dir" "$(whoami)" >/dev/null 2>&1
 
-    # Check no cac-extract temp dirs remain
+    # Check no cac-extract temp dirs remain in OUR namespace
     local leftover
-    leftover=$(find /tmp -maxdepth 1 -name "cac-extract.*" -type d 2>/dev/null | wc -l)
+    leftover=$(find "$TMPDIR" -maxdepth 1 -name "cac-extract.*" -type d 2>/dev/null | wc -l)
+
+    # Anti-vacuity guard: if the lib ever stops honouring TMPDIR, the scoped
+    # count above would be permanently 0 and this test would pass while
+    # testing nothing. Prove the code path bundle_extract uses still lands
+    # inside our scope. Counted after $leftover so the probe cannot inflate it.
+    local probe
+    probe=$(security_mktemp_dir "cac-extract")
+    rmdir "$probe" 2>/dev/null || rm -rf "$probe"
+    [[ "$probe" == "${TMPDIR}/"* ]] || {
+        echo "security_mktemp_dir ignored TMPDIR (got '$probe') - assertion would be vacuous" >&2
+        unset CAC_CONFIG_DIR
+        return 1
+    }
+
     [[ "$leftover" -eq 0 ]] || { echo "Found $leftover leftover cac-extract temp dirs" >&2; unset CAC_CONFIG_DIR; return 1; }
     unset CAC_CONFIG_DIR
 }
@@ -1099,14 +1122,23 @@ test_env_status_check_updates() {
         return 1
     fi
 
-    # At least one tool row must contain a version indicator in the Latest column
-    # ✓ = up-to-date, ⬆ = upgrade available, ? = lookup failed
-    # (NOT checking for "-" here as it would match the separator row)
-    if echo "$tool_lines" | grep -qE "[✓⬆?]"; then
-        return 0
-    else
-        echo "No version indicator (✓, ⬆, or ?) found on tool rows:" >&2
-        echo "$tool_lines" >&2
+    # Issue #105: the previous assertion required a version indicator (✓/⬆/?)
+    # on a tool row. Indicators only appear for INSTALLED tools - host state
+    # this test does not control - so it was red on every clean CI runner.
+    # The indicator SEMANTICS are already covered deterministically by
+    # tests/test_env.sh:852 (test_env_status_check_updates_matches_normalized),
+    # which mocks env_is_installed/env_get_version/env_get_latest_version and
+    # is stricter than this check was (it requires ✓ and forbids ⬆, where this
+    # accepted any of ✓⬆?). An integration test's job here is end-to-end flag
+    # plumbing, so assert that: the Latest column must be produced BY the flag,
+    # not unconditionally. Together with the assert_contains above this is a
+    # two-sided check - it fails if Latest disappears, and it fails if Latest
+    # becomes a constant - so it cannot be satisfied by a degenerate table.
+    local plain_output
+    plain_output=$("${PROJECT_ROOT}/bin/cac" env status 2>&1) || true
+    if echo "$plain_output" | grep -q "Latest"; then
+        echo "Expected 'Latest' only with --check-updates; plain 'env status' emitted it too" >&2
+        echo "$plain_output" >&2
         return 1
     fi
 }
