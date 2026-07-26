@@ -208,6 +208,10 @@ new -> planned -> plan-approved -> test-designed -> test-design-approved
 3. `DONE` is human-only — agents must NEVER set this milestone
 4. One issue per discrete change — all phases documented as comments on that issue
 5. Every Codex response posted as comment on the GitHub Issue
+6. **No side-car status files.** Plans, progress and per-issue status live in the
+   GitHub Issue, never in a repo file. `SHARED_TASK_NOTES.md` was removed for
+   this reason (#97) — do not recreate it. If you need shared context, write it
+   as an issue comment.
 
 **Mechanical enforcement (Issue #90):**
 - A harness `[Plan Approved]` message is **NOT** a Codex gate. It is an auditable
@@ -221,6 +225,59 @@ new -> planned -> plan-approved -> test-designed -> test-design-approved
   tracked files have uncommitted changes. Naming the merge branch is a manual step.
 
 See `/my-team-milestones` skill for full details including Codex gate patterns and compact lifecycle variant.
+
+### Reading Issues — `gh issue view` is broken in this repo
+
+`gh issue view <N>` and `gh issue view <N> --comments` **fail here**: they exit `1`
+and print only a GraphQL deprecation notice — **no title, no body, no comments**.
+The message names the deprecation, not your command, so it reads like *"the issue
+is unavailable"*. It is not. The issue is fine; the render path is broken.
+
+```
+$ gh issue view 93
+GraphQL: Projects (classic) is being deprecated in favor of the new Projects experience,
+see: https://github.blog/changelog/2024-05-23-sunset-notice-projects-classic/. (repository.issue.projectCards)
+$ echo $?
+1
+```
+
+**Never advance a milestone against an issue you could not read.** In the audit
+trail, a gate advanced on assumptions is indistinguishable from one advanced on
+the issue text — the same failure class as #87 and #90. If a read fails, fix the
+command; do not proceed.
+
+Use one of these instead (all measured working 2026-07-26, `gh` 2.46.0):
+
+```bash
+# title + milestone + labels + body
+gh issue view <N> --json number,title,milestone,labels,body \
+  --jq '"#\(.number) [\(.milestone.title)] \(.title)\n\n\(.body)"'
+
+# comments
+gh issue view <N> --json comments \
+  --jq '.comments[] | "--- \(.author.login)\n\(.body)"'
+
+# REST equivalent — avoids the GraphQL path entirely
+gh api repos/BPMspaceUG/bpm-CodingAgentConfigCopy/issues/<N> --jq .body
+gh api repos/BPMspaceUG/bpm-CodingAgentConfigCopy/issues/<N>/comments \
+  --jq '.[] | "--- \(.user.login)\n\(.body)"'
+```
+
+**Unaffected:** `gh issue list` (plain *and* `--json`), `gh issue comment`, and —
+per Team Lead measurement — `gh issue create` and `gh issue edit --milestone`.
+Only the single-issue `gh issue view` render path requests
+`repository.issue.projectCards`; `--json` never asks for that field, so it works.
+
+**Recheck trigger — delete this subsection once it stops reproducing.** The error
+names a field *the client requests*, so any `gh` release that stops requesting
+`projectCards` fixes this with no change here; the pinned Ubuntu package `gh
+2.46.0` (2025-01-13) is well behind. Recheck after every `gh` upgrade:
+
+```bash
+gh issue view 93 >/dev/null 2>&1 \
+  && echo "FIXED — remove this subsection (#103)" \
+  || echo "still broken — keep"
+```
 
 ## Multi-Agent Workflow
 
