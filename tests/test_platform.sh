@@ -20,6 +20,7 @@ framework_init
 # ============================================================================
 # Helper: detect platform in a sub-shell with overridden OSTYPE
 # ============================================================================
+# Only the gitbash branch of platform_detect reads OSTYPE; use this for those.
 _platform_for_ostype() {
     local ostype="$1"
     bash -c "
@@ -31,28 +32,67 @@ _platform_for_ostype() {
 }
 
 # ============================================================================
+# Helper: detect platform in a sub-shell with a stubbed `uname` (Issue #107)
+# ============================================================================
+# platform_detect reads `uname -r` for the wsl branch and `uname -s` for the
+# macos branch, NOT OSTYPE. Overriding OSTYPE alone leaves the test with no
+# control over which branch runs: on a Darwin host the macos branch is taken
+# because the HOST is Darwin, not because the code under test decided so, and on
+# a Linux host that branch is never reached at all. Stubbing uname puts the
+# branch under the test's control on every host.
+#
+# Usage: _platform_with_uname <uname-s> <uname-r>
+_platform_with_uname() {
+    local uname_s="$1" uname_r="$2"
+    local stub_dir
+    stub_dir=$(mktemp -d "${TEST_TMPDIR}/uname_stub.XXXXXX")
+
+    cat > "${stub_dir}/uname" <<STUB
+#!/usr/bin/env bash
+case "\${1:-}" in
+    -s) echo '${uname_s}' ;;
+    -r) echo '${uname_r}' ;;
+    *)  echo '${uname_s}' ;;
+esac
+STUB
+    chmod +x "${stub_dir}/uname"
+
+    # Prepend the stub but KEEP the real PATH: platform_detect needs grep, and
+    # sourcing platform.sh needs dirname (see Issue #106 — narrowing PATH to a
+    # single directory makes the test fail for reasons other than its subject).
+    # OSTYPE is pinned to a non-Windows value so the one OSTYPE-driven branch
+    # cannot fire; the outcome is then attributable to uname alone.
+    bash -c "
+        PATH='${stub_dir}:${PATH}'
+        OSTYPE='linux-gnu'
+        unset PLATFORM 2>/dev/null || true
+        source '${LIB_DIR}/platform.sh' 2>/dev/null
+        echo \"\$PLATFORM\"
+    "
+}
+
+# ============================================================================
 # Tests: platform_detect
 # ============================================================================
 
+# A "linux OR wsl" / "macos OR wsl" assertion cannot distinguish the branch it
+# names from the branch above it, which is how the macOS case stayed broken
+# while looking green. With uname stubbed each branch is asserted exactly.
 test_detect_linux() {
-    # In a WSL2 Docker environment uname -r still contains "microsoft",
-    # so OSTYPE=linux-gnu correctly maps to "wsl". Both outcomes are valid.
-    local result
-    result=$(_platform_for_ostype 'linux-gnu')
-    [[ "$result" == "linux" || "$result" == "wsl" ]] || {
-        echo "Expected linux or wsl (got: $result)" >&2; return 1
-    }
+    assert_equals "linux" "$(_platform_with_uname 'Linux' '6.8.0-generic')" \
+        "uname -s=Linux, no microsoft in -r → linux"
 }
 
 test_detect_macos() {
-    # macOS detection requires uname -s == Darwin AND no "microsoft" in uname -r.
-    # In a Docker-on-WSL2 environment uname -r has "microsoft", so this path
-    # can't be reached; the result will be "wsl". Both are correct for the host.
-    local result
-    result=$(_platform_for_ostype 'darwin20.0')
-    [[ "$result" == "macos" || "$result" == "wsl" ]] || {
-        echo "Expected macos or wsl (got: $result)" >&2; return 1
-    }
+    assert_equals "macos" "$(_platform_with_uname 'Darwin' '21.6.0')" \
+        "uname -s=Darwin → macos"
+}
+
+# The wsl branch precedes macos in platform_detect and silently satisfied both
+# assertions above; it had never been asserted positively (Issue #107).
+test_detect_wsl() {
+    assert_equals "wsl" "$(_platform_with_uname 'Linux' '5.15.0-microsoft-standard-WSL2')" \
+        "microsoft in uname -r → wsl"
 }
 
 test_detect_gitbash_msys() {
@@ -280,6 +320,7 @@ test_resolve_home_current_user() {
 
 run_test "Detect Linux platform"                test_detect_linux
 run_test "Detect macOS platform"                test_detect_macos
+run_test "Detect WSL platform"                  test_detect_wsl
 run_test "Detect Git Bash (msys)"               test_detect_gitbash_msys
 run_test "Detect Git Bash (mingw64)"            test_detect_gitbash_mingw
 run_test "Detect Cygwin → gitbash"              test_detect_cygwin

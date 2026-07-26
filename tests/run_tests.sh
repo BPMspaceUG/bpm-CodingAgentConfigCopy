@@ -15,7 +15,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
@@ -27,9 +26,20 @@ run_test_suite() {
     local script_name="$2"
     local script_path="${SCRIPT_DIR}/${script_name}"
 
+    # A suite named here is a contract: it is expected to exist AND to run.
+    # Both conditions below used to share one SKIP message that exited 0, which
+    # is how tests/test_platform.sh stayed unexecuted for months (#107). They are
+    # now reported separately and both FAIL the run.
+    if [[ ! -e "$script_path" ]]; then
+        echo -e "${RED}MISSING${NC}: $suite_name (${script_path} does not exist)"
+        ((TOTAL_FAILED++)) || true
+        return 1
+    fi
+
     if [[ ! -x "$script_path" ]]; then
-        echo -e "${YELLOW}SKIP${NC}: $suite_name (not found or not executable)"
-        return 0
+        echo -e "${RED}NOT EXECUTABLE${NC}: $suite_name (chmod +x ${script_path})"
+        ((TOTAL_FAILED++)) || true
+        return 1
     fi
 
     echo -e "${BLUE}Running: $suite_name${NC}"
@@ -252,6 +262,84 @@ main() {
     # Run Issue #94/#95 tests (escalated env update cannot update the on-PATH copy)
     if $run_all || [[ "$filter" == "issue_94_95" ]] || [[ "$filter" == "94" ]] || [[ "$filter" == "95" ]]; then
         if ! run_test_suite "Issue #94/#95 Tests" "test_issue_94_95.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Issue #100 tests (curl post-update verification: false success for
+    # an install reachable only by root)
+    if $run_all || [[ "$filter" == "issue_100" ]] || [[ "$filter" == "100" ]]; then
+        if ! run_test_suite "Issue #100 Tests" "test_issue_100.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # ------------------------------------------------------------------------
+    # Suites below were delivered unregistered and never executed until #101.
+    # ------------------------------------------------------------------------
+
+    # Run Issue #71 tests (multi-user env update)
+    if $run_all || [[ "$filter" == "issue_71" ]] || [[ "$filter" == "71" ]]; then
+        if ! run_test_suite "Issue #71 Tests" "test_issue_71.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Issue #72 tests
+    if $run_all || [[ "$filter" == "issue_72" ]] || [[ "$filter" == "72" ]]; then
+        if ! run_test_suite "Issue #72 Tests" "test_issue_72.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Issue #73 tests (env update path)
+    if $run_all || [[ "$filter" == "issue_73" ]] || [[ "$filter" == "73" ]]; then
+        if ! run_test_suite "Issue #73 Tests" "test_issue_73.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Issues #7/#8/#9 tests
+    if $run_all || [[ "$filter" == "issues_7_8_9" ]] || [[ "$filter" == "7_8_9" ]]; then
+        if ! run_test_suite "Issues #7/#8/#9 Tests" "test_issues_7_8_9.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run pull argument-parsing tests (Issue #91)
+    if $run_all || [[ "$filter" == "pull_args" ]] || [[ "$filter" == "91" ]]; then
+        if ! run_test_suite "Pull Argument Parsing Tests" "test_pull_args.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run landing-gate tests (Issue #90)
+    if $run_all || [[ "$filter" == "verify_gate" ]] || [[ "$filter" == "90" ]]; then
+        if ! run_test_suite "Verify Gate Tests" "test_verify_gate.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run suite-registration guard (Issue #101) — fails if any suite file is
+    # unregistered or non-executable.
+    if $run_all || [[ "$filter" == "suite_registration" ]] || [[ "$filter" == "101" ]]; then
+        if ! run_test_suite "Suite Registration Guard" "test_suite_registration.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run landing sweep tests (Issue #104)
+    if $run_all || [[ "$filter" == "gate_sweep" ]] || [[ "$filter" == "104" ]]; then
+        if ! run_test_suite "Gate Sweep Tests" "test_gate_sweep.sh"; then
             exit_code=1
         fi
         echo ""

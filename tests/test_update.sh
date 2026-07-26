@@ -94,10 +94,14 @@ test_update_detect_scope_user_pattern() {
 }
 
 test_update_detect_scope_unknown() {
-    # With no cac in PATH and no standard locations, should fail
-    local old_path="$PATH"
-    PATH="${TEST_TMPDIR}/empty_dir"
+    # With no cac in PATH and no standard locations, should fail.
+    # Create the directory BEFORE narrowing PATH — mkdir is external and would
+    # otherwise be unresolvable (Issue #106). /usr/bin:/bin is retained so the
+    # rest of the shell keeps working; neither holds a cac, so "no cac on PATH"
+    # still holds and the test exercises an EMPTY dir, not a MISSING one.
     mkdir -p "${TEST_TMPDIR}/empty_dir"
+    local old_path="$PATH"
+    PATH="${TEST_TMPDIR}/empty_dir:/usr/bin:/bin"
 
     # Temporarily hide standard locations by overriding the function's checks
     # The function checks /usr/local/bin/cac and ~/.local/bin/cac as fallback.
@@ -177,13 +181,51 @@ MOCK
     assert_equals "260301-0900" "$version" "extracted single-quoted version"
 }
 
-test_update_get_local_version_missing() {
-    # No cac in PATH should fail
+# Regression guard for Issue #106. The narrowed-PATH tests below must fail
+# because no cac is findable — never because the shell lost its external
+# commands. This test uses the SAME narrowed shape but DOES place a cac on it:
+# if PATH is ever narrowed to a single directory again, grep (lib/update.sh)
+# stops resolving, extraction fails, and this test goes red — whereas the
+# negative tests would keep passing for the wrong reason.
+test_update_get_local_version_under_narrowed_path() {
+    local mock_dir="${TEST_TMPDIR}/narrow_bin"
+    mkdir -p "$mock_dir"
+    cat > "${mock_dir}/cac" <<'MOCK'
+#!/usr/bin/env bash
+VERSION="260726-1200"
+echo "cac v${VERSION}"
+MOCK
+    chmod +x "${mock_dir}/cac"
+
     local old_path="$PATH"
     local old_home="$HOME"
-    PATH="${TEST_TMPDIR}/empty_bin"
+    PATH="${mock_dir}:/usr/bin:/bin"
     HOME="${TEST_TMPDIR}/nohome"
+
+    local version rc=0
+    version=$(update_get_local_version 2>/dev/null) || rc=$?
+
+    PATH="$old_path"
+    HOME="$old_home"
+
+    [[ $rc -eq 0 ]] || {
+        echo "update_get_local_version failed under a narrowed PATH that DOES contain cac" >&2
+        return 1
+    }
+    assert_equals "260726-1200" "$version" "version extracted under narrowed PATH"
+}
+
+test_update_get_local_version_missing() {
+    # No cac in PATH should fail.
+    # mkdir before narrowing PATH, and keep /usr/bin:/bin — see Issue #106.
+    # Without them update_get_local_version fails because grep (lib/update.sh)
+    # is unresolvable, not because no cac was found: the right result for the
+    # wrong reason.
     mkdir -p "${TEST_TMPDIR}/empty_bin"
+    local old_path="$PATH"
+    local old_home="$HOME"
+    PATH="${TEST_TMPDIR}/empty_bin:/usr/bin:/bin"
+    HOME="${TEST_TMPDIR}/nohome"
 
     local result
     if result=$(update_get_local_version 2>/dev/null); then
@@ -713,6 +755,7 @@ main() {
     echo "--- Local Version Extraction ---"
     run_test "get_local_version" test_update_get_local_version
     run_test "get_local_version different format" test_update_get_local_version_different_format
+    run_test "get_local_version under narrowed PATH" test_update_get_local_version_under_narrowed_path
     run_test "get_local_version missing binary" test_update_get_local_version_missing
     echo ""
 
