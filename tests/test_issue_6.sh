@@ -140,6 +140,30 @@ EOF
                 echo '{}' > "$MOCK_HOME/.claude.json"
                 ;;
             codex_ok)
+                # Issue #82 changed check_tool_codex from `codex exec` to
+                # `codex login status`, which is accepted only when the output
+                # matches "logged in" (lib/check.sh). A mock echoing CODEX_OK
+                # exits 0 but is still reported FAILED — that is why this mock
+                # emits the login-status wording. See codex_no_login below for
+                # the control arm that pins this contract.
+                cat > "$MOCK_BIN/codex" <<'EOF'
+#!/bin/bash
+if [[ "$1" == "--version" ]]; then
+    echo "mock-codex 1.0.0"
+    exit 0
+fi
+echo "Logged in as test@example.com"
+exit 0
+EOF
+                chmod +x "$MOCK_BIN/codex"
+                mkdir -p "$MOCK_HOME/.codex"
+                echo '{}' > "$MOCK_HOME/.codex/auth.json"
+                ;;
+            codex_no_login)
+                # Control arm for the codex_ok contract: exits 0 like a healthy
+                # binary but never says "logged in". Must be reported FAILED.
+                # This is the pre-#82 mock verbatim; if check_tool_codex ever
+                # reverts to accepting any exit-0 output, test 6.6c goes red.
                 cat > "$MOCK_BIN/codex" <<'EOF'
 #!/bin/bash
 if [[ "$1" == "--version" ]]; then
@@ -366,7 +390,19 @@ test_6_5() {
     local fake_bin="$TEMP_DIR/fake_bin_6_5"
     mkdir -p "$fake_bin"
 
-    # Set PATH to only include our fake bin
+    # Set PATH to only include our fake bin.
+    #
+    # Deliberately NOT the "$fake_bin:/usr/bin:/bin" shape used elsewhere
+    # (#106). That shape is needed where narrowed PATH starves code that still
+    # shells out. Here it is unnecessary: PLATFORM is resolved once, at the
+    # moment lib/platform.sh is sourced (`PLATFORM=$(platform_detect)`,
+    # readonly), which happens long before this line runs. platform_detect is
+    # the only thing in this path that calls uname/grep, and it has already
+    # finished; platform_is_windows just reads the variable. A later PATH
+    # narrowing therefore cannot reach an external binary here.
+    #
+    # Test 6.5c is the control arm: without it this test would still pass if
+    # _check_get_timeout_cmd hardcoded `return $CHECK_EXIT_MISSING_DEP`.
     PATH="$fake_bin"
 
     local exit_code output
@@ -390,6 +426,43 @@ test_6_5() {
     fi
 }
 test_6_5
+
+# Test 6.5c (REQUIRED): timeout present returns 0 and names the command
+#
+# Control arm for 6.5. 6.5 asserts a failure; on its own it is satisfied by a
+# function that can only fail. This arm drives the same function down the
+# success path with the same narrowed PATH, so the two together show
+# _check_get_timeout_cmd discriminates on what is actually on PATH.
+echo ""
+echo "Test 6.5c (REQUIRED): timeout present returns 0"
+
+test_6_5c() {
+    local orig_path="$PATH"
+
+    local fake_bin="$TEMP_DIR/fake_bin_6_5c"
+    mkdir -p "$fake_bin"
+
+    # A stub named `timeout` — enough for command -v to resolve it.
+    printf '#!/bin/bash\nexit 0\n' > "$fake_bin/timeout"
+    chmod +x "$fake_bin/timeout"
+
+    PATH="$fake_bin"
+
+    local exit_code output
+    output=$(_check_get_timeout_cmd 2>&1)
+    exit_code=$?
+
+    PATH="$orig_path"
+
+    if [[ $exit_code -eq 0 ]] && [[ "$output" == "timeout" ]]; then
+        pass "Test 6.5c - timeout on PATH returns exit 0 and echoes 'timeout'"
+        ((REQUIRED_PASSED++)) || true
+    else
+        fail "Test 6.5c - Expected exit 0 and 'timeout', got exit=$exit_code output='$output'"
+        ((REQUIRED_FAILED++)) || true
+    fi
+}
+test_6_5c
 
 # Test 6.5b (REQUIRED): Known tool with missing binary returns exit 4
 echo ""
@@ -555,8 +628,16 @@ test_6_6b() {
         fi
     done
 
-    # Ensure no tools were skipped
-    if echo "$output" | grep -qi "Skipping"; then
+    # Ensure none of the tools UNDER TEST were skipped.
+    #
+    # Scoped to Claude/Codex/Gemini deliberately. A bare `grep -qi "Skipping"`
+    # was correct when the registry held exactly these three; #80 added Mistral
+    # Vibe and OpenCode, which this fixture gives no credentials, so they are
+    # skipped legitimately and the unscoped pattern matched them. Mocking every
+    # tool instead would make this test re-fail each time a tool is added;
+    # scoping to the three keeps the property the test was written to hold.
+    # Test 6.6d is the control arm proving this pattern still fires.
+    if echo "$output" | grep -qiE "Skipping (Claude|Codex|Gemini)"; then
         has_skipping=true
     fi
 
@@ -570,6 +651,89 @@ test_6_6b() {
     fi
 }
 test_6_6b
+
+# Test 6.6c (REQUIRED): codex exiting 0 without "logged in" is reported FAILED
+#
+# Control arm for 6.6b's Codex assertion. 6.6b alone would pass against a
+# check_tool_codex that accepted ANY exit-0 output; this arm fails in exactly
+# that case, so the pair pins the #82 contract (`codex login status`, accepted
+# only when the output says "logged in") rather than "the binary ran".
+# Distinct from 6.12, where the mock exits NON-zero: here the binary is healthy
+# and only the wording is wrong, which is the case #82 actually introduced.
+echo ""
+echo "Test 6.6c (REQUIRED): codex exit 0 without 'logged in' is FAILED"
+
+test_6_6c() {
+    if ! $TIMEOUT_AVAILABLE; then
+        skip "Test 6.6c - Requires timeout command (dependency issue)"
+        return
+    fi
+
+    create_mock_env "test_6_6c" "claude_ok" "codex_no_login" "gemini_ok"
+
+    local output exit_code
+    output=$(PATH="$MOCK_BIN:$ORIG_PATH" "$REPO_DIR/bin/cac" check 2>&1)
+    exit_code=$?
+
+    restore_env
+
+    # Codex must be reported FAILED and the run must be non-zero, even though
+    # the mock exited 0. Claude/Gemini must still be OK — otherwise this arm
+    # would also pass if credential checking broke wholesale.
+    local codex_failed=false others_ok=true
+    if echo "$output" | grep -qi "Checking Codex.*FAILED"; then
+        codex_failed=true
+    fi
+    for tool in Claude Gemini; do
+        if ! echo "$output" | grep -qi "Checking $tool.*OK"; then
+            others_ok=false
+            break
+        fi
+    done
+
+    if $codex_failed && $others_ok && [[ $exit_code -ne 0 ]]; then
+        pass "Test 6.6c - exit-0 codex without 'logged in' is FAILED (contract pinned)"
+        ((REQUIRED_PASSED++)) || true
+    else
+        fail "Test 6.6c - Expected Codex FAILED with Claude/Gemini OK and non-zero exit, got exit=$exit_code codex_failed=$codex_failed others_ok=$others_ok"
+        echo "  Output: $output" >&2
+        ((REQUIRED_FAILED++)) || true
+    fi
+}
+test_6_6c
+
+# Test 6.6d (REQUIRED): a tool under test with no credentials IS reported skipped
+#
+# Control arm for 6.6b's scoped "Skipping (Claude|Codex|Gemini)" pattern. Without
+# this, 6.6b's negative would be satisfied by a pattern that can never match —
+# e.g. a typo in the tool names, or the message being reworded.
+echo ""
+echo "Test 6.6d (REQUIRED): missing Gemini credentials produce 'Skipping Gemini'"
+
+test_6_6d() {
+    if ! $TIMEOUT_AVAILABLE; then
+        skip "Test 6.6d - Requires timeout command (dependency issue)"
+        return
+    fi
+
+    # Gemini deliberately NOT mocked: no binary, no credential file.
+    create_mock_env "test_6_6d" "claude_ok" "codex_ok"
+
+    local output
+    output=$(PATH="$MOCK_BIN:$ORIG_PATH" "$REPO_DIR/bin/cac" check 2>&1) || true
+
+    restore_env
+
+    if echo "$output" | grep -qiE "Skipping (Claude|Codex|Gemini)"; then
+        pass "Test 6.6d - scoped skip pattern fires when a tool under test is skipped"
+        ((REQUIRED_PASSED++)) || true
+    else
+        fail "Test 6.6d - Expected 'Skipping Gemini'; 6.6b's negative cannot fail without it"
+        echo "  Output: $output" >&2
+        ((REQUIRED_FAILED++)) || true
+    fi
+}
+test_6_6d
 
 # Test 6.7b (REQUIRED): `bin/cac check claude` CLI runs only Claude (CLI-level test)
 echo ""
@@ -670,29 +834,47 @@ CAC_LOCAL_STORAGE=$test_storage
 EOF
     chmod 600 "$test_config_dir/.env"
 
-    local output
-    output=$(CAC_CONFIG_DIR="$test_config_dir" HOME="$MOCK_HOME" "$REPO_DIR/bin/cac" push --skip-check --dry-run 2>&1) || true
+    # NOT --dry-run, deliberately.
+    #
+    # _push_one_tool returns at bin/cac:207 (`if [[ "$dry_run" == "true" ]];
+    # then ... return 0`) BEFORE reaching the credential-check block below it,
+    # and bin/cac:305 suppresses the "=== Verifying credentials ===" banner
+    # whenever dry_run is true. So under --dry-run this assertion holds whether
+    # credential checking is on or off — it would be green against both correct
+    # and broken code. A real push is the only way for it to mean anything.
+    # Writes stay inside $TEMP_DIR (CAC_LOCAL_STORAGE above).
+    #
+    # #82 removed the "Credential check: SKIPPED" message this test used to
+    # match; the CONTRACT it guarded is still live (bin/cac:110 documents
+    # --skip-check as an accepted no-op), so the assertion moved to behaviour.
+    local output rc=0
+    output=$(CAC_CONFIG_DIR="$test_config_dir" HOME="$MOCK_HOME" "$REPO_DIR/bin/cac" push --skip-check 2>&1) || rc=$?
+
+    # Control arm: an unknown flag IS rejected. Without this, "--skip-check was
+    # not rejected" would also pass against a parser that rejects nothing.
+    local bogus_output
+    bogus_output=$(CAC_CONFIG_DIR="$test_config_dir" HOME="$MOCK_HOME" "$REPO_DIR/bin/cac" push --definitely-not-a-real-flag 2>&1) || true
 
     restore_env
 
-    # Should see dry-run output
-    if echo "$output" | grep -qi "DRY-RUN"; then
-        # Should see "Credential check: SKIPPED" in dry-run output
-        if echo "$output" | grep -qi "Credential check: SKIPPED"; then
-            # Should NOT see "Verifying credentials" or actual check running
-            if echo "$output" | grep -qi "Verifying credentials"; then
-                fail "Test 6.9 - --skip-check still ran credential verification"
-                ((REQUIRED_FAILED++)) || true
-            else
-                pass "Test 6.9 - --skip-check shows SKIPPED and bypasses verification"
-                ((REQUIRED_PASSED++)) || true
-            fi
-        else
-            fail "Test 6.9 - Expected 'Credential check: SKIPPED' in output"
-            ((REQUIRED_FAILED++)) || true
-        fi
+    local verified=false accepted=true control_rejects=false
+    if echo "$output" | grep -qF "Verifying credentials before push" \
+       || echo "$output" | grep -qi "Checking Claude credentials"; then
+        verified=true
+    fi
+    if echo "$output" | grep -qi "Unknown option"; then
+        accepted=false
+    fi
+    if echo "$bogus_output" | grep -qi "Unknown option"; then
+        control_rejects=true
+    fi
+
+    if ! $verified && $accepted && $control_rejects && [[ $rc -eq 0 ]]; then
+        pass "Test 6.9 - --skip-check is accepted and runs no credential verification"
+        ((REQUIRED_PASSED++)) || true
     else
-        fail "Test 6.9 - Expected dry-run output"
+        fail "Test 6.9 - Expected no verification and flag accepted, got verified=$verified accepted=$accepted control_rejects=$control_rejects rc=$rc"
+        echo "  Output: $output" >&2
         ((REQUIRED_FAILED++)) || true
     fi
 }
@@ -721,22 +903,44 @@ CAC_LOCAL_STORAGE=$test_storage
 EOF
     chmod 600 "$test_config_dir/.env"
 
-    local output
-    output=$(CAC_CONFIG_DIR="$test_config_dir" HOME="$MOCK_HOME" "$REPO_DIR/bin/cac" push --dry-run 2>&1) || true
+    # This test previously asserted "push runs the check by default". #82
+    # (88ba20e) deliberately INVERTED that: checks are default-OFF and --check
+    # opts in (bin/cac:287-292). The assertion is inverted to the current
+    # contract rather than deleted, so the case stays covered.
+    #
+    # NOT --dry-run: _push_one_tool returns at bin/cac:207 before the credential
+    # check, and bin/cac:305 suppresses the banner under dry-run, so a dry-run
+    # version of this test would pass whether checks ran or not. Writes stay
+    # inside $TEMP_DIR.
+    #
+    # The two arms are each other's control: the default arm asserts the banner
+    # is ABSENT, the --check arm asserts the same string is PRESENT. Neither can
+    # be satisfied by a banner that never appears, or by one that always does.
+    local out_default rc_default=0
+    out_default=$(CAC_CONFIG_DIR="$test_config_dir" HOME="$MOCK_HOME" "$REPO_DIR/bin/cac" push 2>&1) || rc_default=$?
+
+    local out_check rc_check=0
+    out_check=$(CAC_CONFIG_DIR="$test_config_dir" HOME="$MOCK_HOME" "$REPO_DIR/bin/cac" push --check 2>&1) || rc_check=$?
 
     restore_env
 
-    # Should see dry-run output with "Credential check: Would run"
-    if echo "$output" | grep -qi "DRY-RUN"; then
-        if echo "$output" | grep -qi "Credential check: Would run"; then
-            pass "Test 6.10 - push dry-run shows credential check would run"
-            ((REQUIRED_PASSED++)) || true
-        else
-            fail "Test 6.10 - Expected 'Credential check: Would run' in output"
-            ((REQUIRED_FAILED++)) || true
-        fi
+    local default_checked=true check_checked=false
+    if ! echo "$out_default" | grep -qF "Verifying credentials before push" \
+       && ! echo "$out_default" | grep -qi "Checking Claude credentials"; then
+        default_checked=false
+    fi
+    if echo "$out_check" | grep -qF "Verifying credentials before push" \
+       && echo "$out_check" | grep -qi "Checking Claude credentials"; then
+        check_checked=true
+    fi
+
+    if ! $default_checked && $check_checked && [[ $rc_default -eq 0 ]] && [[ $rc_check -eq 0 ]]; then
+        pass "Test 6.10 - checks are off by default and --check opts in (#82)"
+        ((REQUIRED_PASSED++)) || true
     else
-        fail "Test 6.10 - Expected dry-run output"
+        fail "Test 6.10 - Expected default=no check, --check=check, got default_checked=$default_checked check_checked=$check_checked rc_default=$rc_default rc_check=$rc_check"
+        echo "  Default output: $out_default" >&2
+        echo "  --check output: $out_check" >&2
         ((REQUIRED_FAILED++)) || true
     fi
 }

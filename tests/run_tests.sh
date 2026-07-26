@@ -235,6 +235,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #6 tests (cac check: cache, timeout, exit codes, CLI integration)
+    if $run_all || [[ "$filter" == "issue_6" ]] || [[ "$filter" == "6" ]]; then
+        if ! run_test_suite "Issue #6 Tests" "test_issue_6.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #93 tests (cac check --user USER [TOOL] argument parsing)
     if $run_all || [[ "$filter" == "check_args" ]] || [[ "$filter" == "93" ]]; then
         if ! run_test_suite "Issue #93 Tests" "test_check_args.sh"; then

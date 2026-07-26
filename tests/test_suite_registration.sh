@@ -44,7 +44,6 @@ framework_init
 # Format: "<filename>|<reason>"
 EXCEPTIONS=(
     "test_framework.sh|sourced library, not a suite — correctly non-executable"
-    "test_issue_6.sh|4 REQUIRED failures are a behavioural triage question, tracked in #108"
 )
 
 _print_exceptions() {
