@@ -1,5 +1,7 @@
 # cac - Coding Agent Config
 
+[![CI](https://github.com/BPMspaceUG/bpm-CodingAgentConfigCopy/actions/workflows/ci.yml/badge.svg)](https://github.com/BPMspaceUG/bpm-CodingAgentConfigCopy/actions/workflows/ci.yml)
+
 A production-grade CLI tool for managing versioned ZIP-based configuration bundles for AI coding assistants. Supports centralized storage with Gokapi backend or local filesystem.
 
 ## Supported Tools
@@ -477,9 +479,14 @@ sudo apt-get install zip unzip
 
 ### Linting
 
+CI enforces these two ShellCheck invocations (see `.github/workflows/ci.yml`):
+
 ```bash
-shellcheck bin/cac lib/*.sh install.sh uninstall.sh tests/*.sh
+shellcheck --severity=error bin/cac lib/*.sh install.sh uninstall.sh
+shellcheck --severity=error tests/*.sh
 ```
+
+The split into two invocations is intentional: the fully-combined single invocation (sources plus `tests/*.sh` in one argument set) is not the CI gate and is not a practical measured baseline, because it does not terminate on a loaded host. Both invocations run in one `run:` step under `bash -e`, so the first non-zero invocation aborts the step; both are enforced, but only one set of findings is reported per run.
 
 ## Multi-Agent Workflow
 
