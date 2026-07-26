@@ -1015,6 +1015,140 @@ _env_is_root() {
     [[ "${EUID:-$(id -u)}" -eq 0 ]]
 }
 
+# _env_root_home
+# Issue #100: root's home directory, resolved from the passwd database with a
+# /root fallback. A FUNCTION, not an environment variable, on purpose: it feeds
+# a security-relevant rejection, so it must not be forgeable from the caller's
+# environment. The test suite overrides it by defining the function in a
+# subshell, the same seam technique as _env_is_root.
+_env_root_home() {
+    local h=""
+    h=$(getent passwd root 2>/dev/null | cut -d: -f6) || true
+    [[ -n "$h" ]] || h="/root"
+    echo "$h"
+}
+
+# _env_mode_has_other_x <path>
+# Issue #100: does <path> carry the world-execute bit? Returns 0 yes, 1 no, and
+# 2 when the mode cannot be read at all (caller treats that as "don't know",
+# never as a failure).
+#
+# `[[ -x ]]` cannot answer this question. It reports whether the CALLING user
+# may traverse/execute, and the caller here is root — for whom it is true of
+# every path, including a 0700 directory nobody else can enter. That is exactly
+# the blind spot Issue #100 is about, so the mode bits must be read directly.
+#
+# PLATFORM CONSTRAINT: `stat -c` is GNU coreutils syntax. BSD/macOS stat needs
+# `-f %Lp`. That is acceptable here because it matches the existing house style
+# (_env_chk_ownership already uses `stat -c '%U:%G'`) and because an unreadable
+# mode returns 2, which every caller treats permissively — so on a non-GNU host
+# this check degrades to "silent", never to "wrongly blocks".
+_env_mode_has_other_x() {
+    local m=""
+    m=$(stat -c '%a' "$1" 2>/dev/null) || return 2
+    [[ "$m" =~ ^[0-7]+$ ]] || return 2
+    (( 8#$m & 01 )) && return 0
+    return 1
+}
+
+# _env_binary_reachable_by_all <path>
+# Issue #100: is <path> usable by an ordinary, non-root user?
+#
+# This is the assertion the curl post-update verification never made. It only
+# asked "does `command -v` find something as root", which is satisfied by a
+# binary in /root/.local/bin (mode 0700 home) that no other user can reach, and
+# by a /usr/local/bin symlink pointing into that home.
+#
+# Two independent rejections:
+#   1. the real path lives inside root's private home — the Issue #57 layout
+#      that Issue #99 exists to redesign;
+#   2. any ancestor directory is not world-traversable, or the file itself is
+#      not world-readable+executable — the general property, which also covers
+#      a hardened /opt tree or another user's home.
+#
+# Deliberately permissive on unknowns (vanished path, unreadable mode): the
+# verification's job is to refuse a KNOWN-bad layout, not to invent failures out
+# of things it could not measure. Same conservative default as
+# _env_installer_target_dirs and _env_installer_can_update.
+#
+# Sets _ENV_VERIFY_REASON for the caller's message. Pure predicate — no EUID
+# logic, so it is fully testable as a normal user.
+# Returns 0 if reachable by every user, 1 if provably not.
+_env_binary_reachable_by_all() {
+    local path="$1"
+    _ENV_VERIFY_REASON=""
+    [[ -n "$path" ]] || return 0
+
+    local real
+    real=$(readlink -f "$path" 2>/dev/null || true)
+    [[ -n "$real" ]] || real="$path"
+    [[ -e "$real" ]] || return 0                      # vanished -> unknown, not a failure
+
+    # 1. Inside root's private home.
+    local root_home
+    root_home=$(_env_root_home)
+    if [[ -n "$root_home" ]] && [[ "$real" == "$root_home"/* ]]; then
+        _ENV_VERIFY_REASON="real path $real is inside root's private home ($root_home) — unreachable for every non-root user"
+        return 1
+    fi
+
+    # 2. Every ancestor directory must be world-traversable.
+    local dir="${real%/*}"
+    local -a ancestors=()
+    while [[ -n "$dir" && "$dir" != "/" ]]; do
+        ancestors=("$dir" "${ancestors[@]+"${ancestors[@]}"}")
+        dir="${dir%/*}"
+    done
+    # `|| rc=$?` is not decoration: a BARE call whose exit is inspected via $?
+    # aborts the whole run under `set -e`, which lib/env.sh is sourced into.
+    local a rc
+    for a in "${ancestors[@]+"${ancestors[@]}"}"; do
+        rc=0
+        _env_mode_has_other_x "$a" || rc=$?
+        case $rc in
+            1)
+                _ENV_VERIFY_REASON="directory $a is not world-traversable (mode $(stat -c '%a' "$a" 2>/dev/null || echo '?')) — $real is unreachable for other users"
+                return 1
+                ;;
+            2) return 0 ;;                            # unreadable mode -> stop, stay silent
+        esac
+    done
+
+    # 3. The file itself must be world-executable. (Same `set -e` care as above.)
+    local frc=0
+    _env_mode_has_other_x "$real" || frc=$?
+    if [[ $frc -eq 1 ]]; then
+        _ENV_VERIFY_REASON="$real is not world-executable (mode $(stat -c '%a' "$real" 2>/dev/null || echo '?'))"
+        return 1
+    fi
+
+    return 0
+}
+
+# _env_verify_check_path
+# Issue #100: the sanitised PATH used to verify a curl install AFTER it ran.
+#
+# In root context "$HOME" is /root, so the old fixed string put /root/.local/bin
+# — a 0700 private directory — into the PATH that decides whether the install
+# "worked". A binary reachable only from there satisfied the check while being
+# unreachable for every other user on the host. In root context the promise
+# being verified is a SYSTEM-WIDE install, so the probe PATH must contain only
+# system directories.
+#
+# Gated on _env_is_root alone, NOT on CAC_ENV_ESCALATED: that variable is a
+# recursion guard forgeable from the environment, and the escalated child is
+# always root anyway, so the root predicate subsumes it and keeps the Issue #79
+# contract structural rather than predicate-tuned (same reasoning as #94/#95).
+# For a non-root caller the string is unchanged — their ~/.local/bin genuinely
+# is where their own copy lives.
+_env_verify_check_path() {
+    if _env_is_root; then
+        echo "/usr/local/bin:/usr/bin:/bin"
+    else
+        echo "/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin"
+    fi
+}
+
 # _env_installer_can_update <tool>
 # Issues #94/#95: refuse to run an upstream installer that cannot possibly
 # update the copy on PATH. These installers write into $HOME (=/root under a
@@ -1276,11 +1410,18 @@ env_update_tool() {
         return 1
     fi
 
-    local old_version
-    old_version=$(env_get_version "$tool")
-
     local install_type
     install_type=$(env_get_install_type "$tool")
+
+    # Issue #100: the curl path DEFERS this read — it happens inside the curl
+    # branch instead, on the same sanitised PATH as the post-update read and
+    # only after the Issues #94/#95 guard has passed. Reading here as well would
+    # execute the tool twice per update for no benefit, and would probe before a
+    # guard whose contract is that a refusal probes nothing.
+    local old_version="unknown"
+    if [[ "$install_type" != "curl" ]]; then
+        old_version=$(env_get_version "$tool")
+    fi
 
     echo "Updating $display_name..."
 
@@ -1359,6 +1500,28 @@ env_update_tool() {
                 return $ENV_EXIT_MISSING_DEP
             fi
 
+            # Issue #100: read the PRE-update version HERE, on the same
+            # sanitised PATH the POST-update version will be read on
+            # (_env_verify_check_path). The top-of-function read is skipped for
+            # curl tools precisely so this is the only one.
+            #
+            # It used to happen at the top, on the caller's ambient PATH. Under
+            # a sudo re-exec that is sudo's secure_path, which EXCLUDES
+            # /root/.local/bin — while the post-update read used a PATH that
+            # INCLUDED it. Two different binaries were being compared, which is
+            # what manufactured "updated: unknown -> X.Y.Z" out of an install
+            # that had not become usable for anyone. Same asymmetry Issue #86
+            # removed from the npm path.
+            #
+            # PLACEMENT IS LOAD-BEARING, not stylistic: env_get_version EXECUTES
+            # the tool. The Issues #94/#95 guard above promises that a refusal
+            # performs no probes and mutates nothing (asserted by test 94/95.9,
+            # which is Issue #95's literal requirement — its installer bootstraps
+            # uv into /root before failing). Probing before that guard would
+            # break the promise. So this sits AFTER the guard and AFTER the
+            # Issue #73 pre-flight, and before anything is downloaded or run.
+            old_version=$(PATH="$(_env_verify_check_path)" env_get_version "$tool")
+
             echo "Re-running installer from: $url"
 
             # Issue #94: claude.ai/install.sh hard-refuses when it detects a
@@ -1432,7 +1595,10 @@ env_update_tool() {
             return 1
         fi
 
-        local check_path="/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin"
+        # Issue #100: in root context this drops /root/.local/bin, which the old
+        # hardcoded string included via "$HOME" — see _env_verify_check_path.
+        local check_path
+        check_path=$(_env_verify_check_path)
         local binary
         binary=$(_env_tool_to_binary "$tool" 2>/dev/null || true)
 
@@ -1445,10 +1611,56 @@ env_update_tool() {
                 echo "Old version: $old_version. Investigate the upstream installer." >&2
                 return 1
             fi
+
+            # Issue #100: resolvability is not installability. As root, the
+            # previous check was satisfied by a binary only root can reach —
+            # /root is 0700 — so an escalated update printed
+            # "<tool> updated: unknown -> X.Y.Z" and exited 0 while every
+            # non-root user on the host still could not run the tool.
+            #
+            # ROOT CONTEXT ONLY. A non-root user-scope update legitimately
+            # resolves into their own ~/.local/bin, and asserting world
+            # reachability there would refuse a correct install. In root
+            # context the promise on offer is a system-wide install, so the
+            # promise is what gets verified.
+            #
+            # This is the AFTER side of Issues #94/#95. That guard refuses
+            # BEFORE the installer runs when the installer cannot write the
+            # copy on PATH; it deliberately ACCEPTS the Issue #57 layout
+            # (/usr/local/bin/x -> /root/.local/bin/x) because the installer
+            # genuinely does write that target. Accepting it is correct there
+            # and wrong to report as success here — the two checks compose,
+            # they do not overlap.
+            if _env_is_root && ! _env_binary_reachable_by_all "$resolved"; then
+                local _cause="update produced an install unreachable for non-root users"
+                utils_error "$display_name: $_cause"
+                echo "  The installer ran and did change the install — this is NOT a rollback." >&2
+                echo "  Binary on PATH: $resolved" >&2
+                echo "  Problem:        $_ENV_VERIFY_REASON" >&2
+                echo "Remediation: run 'cac env check $tool' to see the layout, then 'cac env repair $tool'. A tool installed into root's home is not system-wide (see Issue #99)." >&2
+                if [[ -n "${ENV_DIAG_CAUSE_FILE:-}" ]]; then
+                    printf '%s\n' "$_cause" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
+                fi
+                return 1
+            fi
         fi
 
         local new_version
         new_version=$(PATH="$check_path" env_get_version "$tool")
+
+        # Issue #100: never report SUCCESS against a version we could not read.
+        # "updated: X.Y.Z -> unknown" was printed with exit 0, because "unknown"
+        # was compared as if it were a legitimate version string.
+        if [[ "$new_version" == "unknown" ]]; then
+            local _cause="update reported success but the installed version could not be determined"
+            utils_error "$display_name: $_cause"
+            echo "  Previous version: $old_version" >&2
+            echo "Remediation: run 'cac env check $tool'; the binary on PATH may be broken or shadowed." >&2
+            if [[ -n "${ENV_DIAG_CAUSE_FILE:-}" ]]; then
+                printf '%s\n' "$_cause" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
+            fi
+            return 1
+        fi
 
         # Regression detection: refuse to print SUCCESS on a downgrade.
         if [[ "$old_version" != "unknown" ]] && [[ "$new_version" != "unknown" ]] \
@@ -1458,7 +1670,14 @@ env_update_tool() {
             return 1
         fi
 
-        if [[ "$old_version" != "$new_version" ]]; then
+        if [[ "$old_version" == "unknown" ]]; then
+            # Issue #100: a real update, but there is no transition to report.
+            # Printing "updated: unknown -> X.Y.Z" states a fact we never
+            # measured. This IS a success — a previously unreadable install
+            # that now reads a version is exactly what an update should do —
+            # so it must not be turned into a failure either.
+            utils_success "$display_name is now at $new_version (previous version could not be determined)"
+        elif [[ "$old_version" != "$new_version" ]]; then
             utils_success "$display_name updated: $old_version -> $new_version"
         else
             echo "$display_name is already at latest version ($new_version)"
@@ -1894,6 +2113,45 @@ _env_chk_no_bun() {
     return 0
 }
 
+# Check: the binary is reachable for ordinary users, not just for root
+# Usage: _env_chk_user_reachable <binary_path> <tool>
+# Returns: 0=pass, 1=fail (sets _CHECK_REASON)
+#
+# Issue #100: `cac env check` flagged a binary in root's home for a normal user
+# but BLESSED it for root — the same command, opposite verdicts, and the verdict
+# that mattered (root's, since that is who installs system-wide) was the wrong
+# one. _env_chk_binary_location accepts "$HOME"/.local/bin/*, and under root
+# "$HOME" is /root.
+#
+# WHY THIS IS A NEW CHECK RATHER THAN A FIX TO _env_chk_binary_location, which
+# is deliberately left byte-identical: _env_repair_one_tool routes a
+# binary_location failure for a CURL tool into _env_repair_remove_bun_opt (see
+# the binary_location arm below). Widening that check would make
+# `sudo cac env repair claude --yes` attempt to delete /opt/claude-code in
+# response to a defect that has nothing to do with Bun — destructive, unrelated,
+# and a re-creation of Issue #85. (Only remove_bun_opt is on that route;
+# _env_repair_remove_bun_home is reached from the no_bun arm, not this one.)
+# A separate check name gets its own repair arm, which only warns.
+#
+# NON-ROOT IS A NO-OP, on purpose and not merely for test convenience: an
+# ordinary user's ~/.local/bin copy is correct by design and cac must not call
+# it broken. The claim being audited here — "this install serves every user on
+# the host" — is only ever made in root context.
+_env_chk_user_reachable() {
+    local binary_path="$1"
+    # shellcheck disable=SC2034
+    local tool="$2"
+
+    [[ -n "$binary_path" ]] || return 0   # absence is _env_chk_binary_location's finding
+    _env_is_root || return 0
+
+    if ! _env_binary_reachable_by_all "$binary_path"; then
+        _CHECK_REASON="$_ENV_VERIFY_REASON"
+        return 1
+    fi
+    return 0
+}
+
 # Check: if binary is a symlink, target exists and is executable
 # Usage: _env_chk_symlink_target <binary_path> <tool>
 # Returns: 0=pass, 1=fail
@@ -2099,6 +2357,7 @@ _env_chk_node_version() {
 # List of all check names in order
 _ENV_CHECK_NAMES=(
     binary_location
+    user_reachable
     no_bun
     symlink_target
     ownership
@@ -2661,6 +2920,23 @@ _env_repair_one_tool() {
                     _env_repair_remove_bun_opt "$tool" "$auto_yes"
                     repaired[bun_opt]=1
                 fi
+                ;;
+            user_reachable)
+                # Issue #100: WARN ONLY — never repaired automatically.
+                # The fix is to move the install out of root's home (or to
+                # loosen a directory mode), which is a layout decision with
+                # host-wide consequences; Issue #99 owns the redesign. Note the
+                # neighbouring binary_location arm routes CURL tools into
+                # _env_repair_remove_bun_opt, which DELETES /opt trees — the
+                # precise reason this defect got its own check name instead of
+                # widening that one.
+                # Re-derive the reason: the collection loop above resets
+                # _CHECK_REASON per check, so by the time this arm runs it holds
+                # the LAST check's reason, not this one's.
+                _CHECK_REASON=""
+                _env_chk_user_reachable "$binary_path" "$tool" 2>/dev/null || true
+                utils_warn "$display_name: ${_CHECK_REASON:-binary is not reachable for non-root users}"
+                echo "  Not repaired automatically — see 'cac env check $tool' and Issue #99." >&2
                 ;;
             symlink_target)
                 _env_repair_create_symlink "$tool"
