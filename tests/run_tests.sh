@@ -225,6 +225,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #93 tests (cac check --user USER [TOOL] argument parsing)
+    if $run_all || [[ "$filter" == "check_args" ]] || [[ "$filter" == "93" ]]; then
+        if ! run_test_suite "Issue #93 Tests" "test_check_args.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #85 tests (env repair liveness preflight before rm -rf)
     if $run_all || [[ "$filter" == "issue_85" ]] || [[ "$filter" == "85" ]]; then
         if ! run_test_suite "Issue #85 Tests" "test_issue_85.sh"; then

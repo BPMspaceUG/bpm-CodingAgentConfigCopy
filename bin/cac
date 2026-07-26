@@ -794,13 +794,40 @@ cmd_check() {
     local tool_arg=""
     local args=()
 
-    # Extract tool argument (first non-option argument), resolve aliases
-    for arg in "$@"; do
-        if [[ "$arg" != --* && -z "$tool_arg" ]]; then
-            tool_arg="$(_resolve_tool_alias "$arg")"
-        else
-            args+=("$arg")
-        fi
+    # Pre-parse check-specific arguments (Issue #93 — twin of #91 in cmd_pull).
+    # The old loop took "the first token not starting with --" as the tool, with
+    # no knowledge that --user consumes the NEXT token. So `check --user bob all`
+    # made bob the tool and all the user, and `check --user bob` (the documented
+    # form, see EXAMPLES above) left a bare --user for utils_parse_user_arg and
+    # died with "Option --user requires an argument". Consume --user with its
+    # value as a pair, then take the tool from what remains.
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --user)
+                if [[ $# -lt 2 ]]; then
+                    utils_error "Option --user requires an argument"
+                    return 1
+                fi
+                # Forward the pair intact for standard parsing (sets PARSED_USER).
+                args+=("$1" "$2")
+                shift 2
+                ;;
+            -*)
+                # Any other flag: pass through to strict parsing, which rejects
+                # unknown options. Matches cmd_push's handling (one dialect).
+                args+=("$1")
+                shift
+                ;;
+            *)
+                # First non-flag token is the TOOL; resolve aliases (vibe -> mistral).
+                if [[ -z "$tool_arg" ]]; then
+                    tool_arg="$(_resolve_tool_alias "$1")"
+                else
+                    args+=("$1")
+                fi
+                shift
+                ;;
+        esac
     done
 
     # Parse remaining arguments
