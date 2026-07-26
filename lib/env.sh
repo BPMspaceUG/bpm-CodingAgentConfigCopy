@@ -89,13 +89,34 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
     # unsupported by `cac env update` until a separate stream-execute path is
     # added.
     #
-    # Each entry maps tool -> well-known install target dir, used by
-    # _env_diag_preflight_curl for writability + free-space pre-flight checks.
-    # Tools not listed here skip the pre-flight (safe default).
+    # Each entry maps tool -> the dir(s) that tool's upstream installer WRITES,
+    # in the current user context. Colon-separated, payload dir first.
+    # Consumed by:
+    #   * _env_diag_preflight_curl (Issue #73) — first dir only, for the
+    #     writability + free-space pre-flight.
+    #   * _env_installer_can_update (Issues #94/#95) — all dirs, as the
+    #     accept-set for "can this installer update the copy on PATH?".
+    # Tools not listed here skip both checks (safe default — never block on
+    # unknowns).
+    #
+    # '$HOME' is stored LITERALLY (single quotes) and expanded at call time by
+    # _env_installer_target_dirs. Expanding at source time baked in the invoking
+    # user's home, so under a sudo re-exec (HOME=/root) the registry described a
+    # directory the escalated installer would never touch (#94, #95).
+    #
+    # Values are what the installers actually write, verified against upstream:
+    #   claude            -> $HOME/.local/bin      (claude.ai/install.sh)
+    #   continuous-claude -> $HOME/.local/bin      (INSTALL_DIR default; the old
+    #                        /opt/continuous-claude value was a legacy Bun tree
+    #                        this file elsewhere treats as REMOVABLE, never an
+    #                        install target — see _env_chk_location)
+    #   mistral           -> uv tool payload dir, then uv's shim/bin dir. The
+    #                        old $HOME/.vibe value does not exist; the installer
+    #                        delegates to `uv tool install/upgrade`.
     declare -A _ENV_CURL_TARGET_DIR=(
-        [continuous-claude]="/opt/continuous-claude"
-        [claude]="$HOME/.local/bin"
-        [mistral]="$HOME/.vibe"
+        [continuous-claude]='$HOME/.local/bin'
+        [claude]='$HOME/.local/bin'
+        [mistral]='$HOME/.local/share/uv/tools:$HOME/.local/bin'
     )
 fi
 
@@ -962,11 +983,98 @@ env_install_tool() {
 # Issue #73 — env update upstream-installer diagnostics
 # ============================================================================
 
+# _env_installer_target_dirs <tool>
+# Issues #94/#95: echo every dir this tool's upstream installer writes, one per
+# line, with '$HOME' expanded in the CURRENT user context (so a sudo re-exec
+# correctly resolves them under /root). Echoes nothing for unregistered tools.
+_env_installer_target_dirs() {
+    local raw="${_ENV_CURL_TARGET_DIR[$1]:-}"
+    [[ -n "$raw" ]] || return 0
+    raw="${raw//\$HOME/$HOME}"
+    printf '%s\n' "${raw//:/$'\n'}"
+}
+
 # _env_diag_target_dir <tool>
 # Echo the pre-flight target directory for a curl tool, or empty if unknown.
+# Unchanged single-value contract for the Issue #73 pre-flight: the FIRST
+# registered dir. Not a pipe to `head -1` on purpose — `set -o pipefail` is
+# active and printf can exit non-zero on EPIPE.
 _env_diag_target_dir() {
+    local dirs
+    dirs=$(_env_installer_target_dirs "$1")
+    echo "${dirs%%$'\n'*}"
+}
+
+# _env_is_root
+# Root-context predicate. Production behavior is identical to the inline
+# "$EUID" checks used elsewhere in this file; it exists as a seam so the
+# root-only branches in env_update_tool are reachable from the non-root test
+# suite. It does NOT weaken any privilege check: the real gate for the global
+# curl path remains the "$EUID" test in env_update_tool.
+_env_is_root() {
+    [[ "${EUID:-$(id -u)}" -eq 0 ]]
+}
+
+# _env_installer_can_update <tool>
+# Issues #94/#95: refuse to run an upstream installer that cannot possibly
+# update the copy on PATH. These installers write into $HOME (=/root under a
+# sudo re-exec); if neither the launcher on PATH nor its payload lives in a dir
+# this installer writes, running it creates a copy nobody executes — and for
+# stateful installers (mistral -> per-user uv tool registry) it FAILS only
+# after bootstrapping uv/uvx into /root.
+#
+# Accepts the LAUNCHER path or the PAYLOAD path against the tool's dir list: a
+# launcher and its payload legitimately live in different dirs (uv puts its
+# shim in ~/.local/bin and the payload in ~/.local/share/uv/tools), so matching
+# only the payload would falsely refuse every normal uv install.
+#
+# Deliberately conservative — see the layout table in the Issue #94/#95 plan.
+# Two known conservative refusals, both requiring a CODE CHANGE (not a registry
+# entry) to accept:
+#   * a script wrapper whose payload IS managed: a wrapper's payload cannot be
+#     determined without parsing or executing it, and adding the wrapper's dir
+#     (e.g. /usr/local/bin) to the accept-set would be far too broad;
+#   * an intermediate-symlink chain (/usr/local/bin/x -> ~/.local/bin/x ->
+#     elsewhere): the installer would rewrite the middle link, but only the
+#     endpoints are inspected.
+# Refusing costs one manual command and prints both paths; wrongly accepting is
+# #94/#95 itself — the installer runs, updates a copy nobody uses, and (per
+# #100) reports success.
+#
+# Sets _ENV_INSTALLER_LAUNCHER_PATH / _ENV_INSTALLER_REAL_PATH for the caller's
+# message. Pure predicate: no EUID logic, so it is testable as non-root.
+# Returns 0 if the installer may run, 1 if it cannot possibly help.
+_env_installer_can_update() {
     local tool="$1"
-    echo "${_ENV_CURL_TARGET_DIR[$tool]:-}"
+    local dirs binary resolved real d
+    _ENV_INSTALLER_LAUNCHER_PATH=""
+    _ENV_INSTALLER_REAL_PATH=""
+
+    dirs=$(_env_installer_target_dirs "$tool")
+    [[ -n "$dirs" ]] || return 0                      # unregistered -> never block
+
+    binary=$(_env_tool_to_binary "$tool" 2>/dev/null) || return 0
+
+    # type -P is a path-only resolver: it follows the caller's real PATH and
+    # ignores shell aliases/functions (parity with _env_user_install_exists).
+    resolved=$(type -P "$binary" 2>/dev/null || true)
+    [[ -n "$resolved" ]] || return 0                  # not on PATH -> never block
+
+    real=$(readlink -f "$resolved" 2>/dev/null || true)
+    [[ -n "$real" ]] || real="$resolved"
+
+    _ENV_INSTALLER_LAUNCHER_PATH="$resolved"
+    _ENV_INSTALLER_REAL_PATH="$real"
+
+    # Here-string, not a pipe: the loop must run in this shell so `return`
+    # exits the function rather than a subshell.
+    while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        case "$resolved" in "$d"/*) return 0 ;; esac  # launcher clause
+        case "$real"     in "$d"/*) return 0 ;; esac  # payload clause
+    done <<< "$dirs"
+
+    return 1
 }
 
 # _env_diag_preflight_curl <tool>
@@ -1118,7 +1226,10 @@ _env_curl_update_with_capture() {
     # ----- Stage 2: execute -----
     # Live output via tee; capture bash's exit via PIPESTATUS[0].
     # tee -a appends so stage-1 curl-stderr (already in log) is preserved.
-    bash "$_installer" 2>&1 | tee -a "$_diag_log"
+    # Args 4+ are optional KEY=VALUE assignments for the installer's
+    # environment (Issue #94). With none supplied this is `env bash "$_installer"`,
+    # identical in behavior to the previous bare `bash "$_installer"`.
+    env "${@:4}" bash "$_installer" 2>&1 | tee -a "$_diag_log"
     local _bash_rc=${PIPESTATUS[0]}
 
     if [[ "$_bash_rc" -ne 0 ]]; then
@@ -1215,7 +1326,31 @@ env_update_tool() {
             # Issue #73: ordering is load-bearing.
             # 1. Issue #71 user-scope refusal already fired ABOVE this point.
             #    No mutating side effects, no tempfiles, no probes have run.
+            # 1b. Issues #94/#95: cannot-possibly-work check. Still no side
+            #    effects at this point — nothing downloaded, probed or written.
+            #    ROOT CONTEXT ONLY, and that is what makes the Issue #79
+            #    contract hold structurally rather than by predicate tuning:
+            #    _env_update_action is consulted only by
+            #    env_update_with_escalation, which env_cmd_update enters only
+            #    for a non-root caller. A tool it classifies "local" is updated
+            #    in-process as that non-root user and can never reach this
+            #    guard.
             # 2. Issue #73 pre-flight: writability + disk-space.
+            if _env_is_root && ! _env_installer_can_update "$tool"; then
+                local _cause="installer cannot update the copy on PATH ($_ENV_INSTALLER_REAL_PATH)"
+                utils_error "$display_name: $_cause"
+                echo "  Launcher on PATH: $_ENV_INSTALLER_LAUNCHER_PATH" >&2
+                echo "  Resolves to:      $_ENV_INSTALLER_REAL_PATH" >&2
+                echo "  This installer writes to: $(_env_installer_target_dirs "$tool" | tr '\n' ' ')" >&2
+                echo "Remediation: run 'cac env check $tool' to diagnose the layout, then 'cac env repair $tool'; or update it as the user/mechanism that owns $_ENV_INSTALLER_REAL_PATH." >&2
+                # Parity with Issue #73 so env_update_all's batch summary names
+                # the cause.
+                if [[ -n "${ENV_DIAG_CAUSE_FILE:-}" ]]; then
+                    printf '%s\n' "$_cause" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
+                fi
+                return 1
+            fi
+
             if ! _env_diag_preflight_curl "$tool"; then
                 return 1
             fi
@@ -1226,9 +1361,28 @@ env_update_tool() {
 
             echo "Re-running installer from: $url"
 
+            # Issue #94: claude.ai/install.sh hard-refuses when it detects a
+            # sudo invocation (id -u 0 AND SUDO_USER set AND != root), which is
+            # exactly the shape of the Issue #79 escalated re-exec — so the
+            # escalated Claude Code update failed on every single run. Upstream
+            # documents CLAUDE_INSTALL_ALLOW_SUDO=1 as the sanctioned way to
+            # install for the root user, which is precisely what we intend here:
+            # the guard above has already established that the copy on PATH is
+            # one this installer writes, so the refusal's stated harm ("the
+            # installation would go into root's home instead of yours") is the
+            # target, not an accident. Never set for a non-root caller — and
+            # unreachable for one anyway, since the global curl path rejects
+            # non-root above.
+            local -a _installer_env=()
+            if [[ "$tool" == "claude" ]] && _env_is_root \
+               && [[ -n "${SUDO_USER:-}" ]] && [[ "${SUDO_USER}" != "root" ]]; then
+                _installer_env=(CLAUDE_INSTALL_ALLOW_SUDO=1)
+            fi
+
             # 3+4+5. Download + execute via capture helper (mktemp, curl,
             # bash via PIPESTATUS). Stage-classified diagnostics on failure.
-            if ! _env_curl_update_with_capture "$tool" "$url" "$display_name"; then
+            if ! _env_curl_update_with_capture "$tool" "$url" "$display_name" \
+                 "${_installer_env[@]+"${_installer_env[@]}"}"; then
                 exit_code=1
             fi
 
