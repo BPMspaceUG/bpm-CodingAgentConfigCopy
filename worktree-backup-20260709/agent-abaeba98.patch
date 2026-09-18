@@ -1,0 +1,173 @@
+diff --git a/lib/backend_local.sh b/lib/backend_local.sh
+index 5ade2f0..37ff35e 100644
+--- a/lib/backend_local.sh
++++ b/lib/backend_local.sh
+@@ -8,13 +8,28 @@ source "${SCRIPT_DIR}/bundle.sh"
+ # shellcheck source=lib/utils.sh
+ source "${SCRIPT_DIR}/utils.sh"
+ 
+-# Internal: List all bundle files sorted by modification time (newest first)
++# Internal: List all bundle files sorted by filename timestamp (newest first)
++# Extracts the YYMMDD-HHMMSS timestamp embedded in each filename and sorts by
++# that, avoiding mtime-based ordering which breaks when files are copied/touched.
++# Supports both 5-segment (HOST_USER_TOOL_YYMMDD-HHMMSS) and 4-segment
++# (HOST_USER_YYMMDD-HHMMSS) naming formats.
+ # Usage: _local_list_bundle_files <storage_dir>
+ # Outputs: One file path per line, sorted newest first
+ _local_list_bundle_files() {
+     local storage_dir="$1"
+     # BUNDLE_NAME_PREFIX is defined in bundle.sh
+-    find "$storage_dir" -maxdepth 1 -name "${BUNDLE_NAME_PREFIX}_*.zip" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-
++    # For each file, extract the timestamp from the filename (last _-delimited
++    # segment before .zip), prepend it as a sort key, sort descending, then
++    # strip the sort key to output only the file path.
++    find "$storage_dir" -maxdepth 1 -name "${BUNDLE_NAME_PREFIX}_*.zip" -type f 2>/dev/null \
++        | while IFS= read -r filepath; do
++            fname=$(basename "$filepath" .zip)
++            # Timestamp is the last underscore-delimited segment (YYMMDD-HHMMSS)
++            ts="${fname##*_}"
++            echo "${ts} ${filepath}"
++        done \
++        | sort -rn \
++        | cut -d' ' -f2-
+ }
+ 
+ # Internal: Find a bundle file by ID (exact or partial match)
+diff --git a/lib/update.sh b/lib/update.sh
+index 3f8470d..3b80312 100644
+--- a/lib/update.sh
++++ b/lib/update.sh
+@@ -204,7 +204,7 @@ update_get_remote_version() {
+     #   "date": "2026-02-25T15:42:33Z"
+     # We grab the last "date" field (committer date, after author date).
+     local commit_date
+-    commit_date=$(echo "$response" | grep '"date"' | tail -1 | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}' | head -1) || {
++    commit_date=$(echo "$response" | grep '"date"' | tail -1 | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}' | head -1) || {
+         utils_error "Cannot parse commit date from GitHub API response"
+         return 1
+     }
+diff --git a/tests/test_integration.sh b/tests/test_integration.sh
+index 02f35dd..5fa8101 100755
+--- a/tests/test_integration.sh
++++ b/tests/test_integration.sh
+@@ -308,22 +308,59 @@ test_local_list_bundle_files_sorted() {
+     export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
+     config_load 2>/dev/null
+ 
+-    # Create bundles with different modification times
+-    local bundle1="${TEST_STORAGE}/CodingAgentConfig_listtest_user1_250101-090000.zip"
+-    local bundle2="${TEST_STORAGE}/CodingAgentConfig_listtest_user2_250101-100000.zip"
++    # Use an isolated storage directory to avoid interference from other tests
++    local iso_storage="${TEST_TMPDIR}/sorted_test_storage"
++    mkdir -p "$iso_storage"
++
++    # Create bundles with different filename timestamps
++    local bundle1="${iso_storage}/CodingAgentConfig_listtest_user1_250101-090000.zip"
++    local bundle2="${iso_storage}/CodingAgentConfig_listtest_user2_250101-100000.zip"
+ 
+     echo "old" | zip -q "$bundle1" -
+-    sleep 1
+     echo "new" | zip -q "$bundle2" -
+ 
+-    # List should return newest first
++    # List should return newest (by filename timestamp) first
+     local result
+-    result=$(_local_list_bundle_files "$TEST_STORAGE" | head -1)
++    result=$(_local_list_bundle_files "$iso_storage" | head -1)
+ 
+     assert_equals "$bundle2" "$result" "newest bundle first" || { unset CAC_CONFIG_DIR; return 1; }
+     unset CAC_CONFIG_DIR
+ }
+ 
++test_local_list_sorted_by_filename_not_mtime() {
++    # P1 regression: Verify that sorting uses the filename-embedded timestamp,
++    # not filesystem mtime. When files are copied, mtime can diverge from the
++    # timestamp in the filename, causing the wrong bundle to be selected.
++    source "${PROJECT_ROOT}/lib/config.sh"
++    source "${PROJECT_ROOT}/lib/backend_local.sh"
++
++    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
++    config_load 2>/dev/null
++
++    # Create a dedicated storage dir to avoid interference from other tests
++    local iso_storage="${TEST_TMPDIR}/mtime_test_storage"
++    mkdir -p "$iso_storage"
++
++    # Bundle with NEWER filename timestamp but created FIRST (older mtime)
++    local newer_name="${iso_storage}/CodingAgentConfig_host1_user1_250201-120000.zip"
++    echo "newer-by-name" | zip -q "$newer_name" -
++
++    sleep 1
++
++    # Bundle with OLDER filename timestamp but created SECOND (newer mtime)
++    local older_name="${iso_storage}/CodingAgentConfig_host1_user1_250101-060000.zip"
++    echo "older-by-name" | zip -q "$older_name" -
++
++    # The file with the newer mtime is the one with the OLDER filename timestamp.
++    # Before the fix, mtime-based sorting would return older_name first (wrong).
++    # After the fix, filename-based sorting returns newer_name first (correct).
++    local result
++    result=$(_local_list_bundle_files "$iso_storage" | head -1)
++
++    assert_equals "$newer_name" "$result" "filename-timestamp sorting beats mtime" || { unset CAC_CONFIG_DIR; return 1; }
++    unset CAC_CONFIG_DIR
++}
++
+ # ============================================================================
+ # Local Backend Integration Tests
+ # ============================================================================
+@@ -478,7 +515,7 @@ test_local_backend_filter_by_user() {
+ # Issue #19: get_newest Global vs Filtered Behavior
+ # ============================================================================
+ 
+-# Helper: set up a clean storage with bundles from different hosts/users/tools
++# Helper: set up a clean isolated storage with bundles from different hosts/users/tools
+ _setup_issue19_storage() {
+     source "${PROJECT_ROOT}/lib/config.sh"
+     source "${PROJECT_ROOT}/lib/tools.sh"
+@@ -486,7 +523,21 @@ _setup_issue19_storage() {
+     source "${PROJECT_ROOT}/lib/bundle.sh"
+     source "${PROJECT_ROOT}/lib/backend_local.sh"
+ 
+-    export CAC_CONFIG_DIR="$TEST_CONFIG_DIR"
++    # Use an isolated storage directory to avoid interference from other tests
++    local iso_storage="${TEST_TMPDIR}/issue19_storage"
++    mkdir -p "$iso_storage"
++
++    # Update config to point to isolated storage
++    local iso_config="${TEST_TMPDIR}/issue19_config"
++    mkdir -p "$iso_config"
++    chmod 700 "$iso_config"
++    cat > "${iso_config}/.env" <<EOF
++CAC_BACKEND=local
++CAC_LOCAL_STORAGE=${iso_storage}
++EOF
++    chmod 600 "${iso_config}/.env"
++
++    export CAC_CONFIG_DIR="$iso_config"
+     config_load 2>/dev/null
+ 
+     # Create a base bundle for content
+@@ -496,11 +547,11 @@ _setup_issue19_storage() {
+     # Place bundles from different hosts/users/tools with known timestamps
+     # Issue #41: Use new 5-segment naming format
+     # Oldest: rob@host-a, claude (250101-100000)
+-    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-a_rob_claude_250101-100000.zip"
++    cp "$base_bundle" "${iso_storage}/CodingAgentConfig_host-a_rob_claude_250101-100000.zip"
+     # Middle: tim@host-b, all (250102-100000)
+-    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-b_tim_all_250102-100000.zip"
++    cp "$base_bundle" "${iso_storage}/CodingAgentConfig_host-b_tim_all_250102-100000.zip"
+     # Newest: rob@host-b, codex (250103-100000)
+-    cp "$base_bundle" "${TEST_STORAGE}/CodingAgentConfig_host-b_rob_codex_250103-100000.zip"
++    cp "$base_bundle" "${iso_storage}/CodingAgentConfig_host-b_rob_codex_250103-100000.zip"
+ }
+ 
+ test_get_newest_no_filters_returns_global_newest() {
+@@ -1148,6 +1199,7 @@ main() {
+     run_test "find bundle not found" test_local_find_bundle_not_found
+     run_test "find bundle multiple matches" test_local_find_bundle_multiple_matches
+     run_test "list bundle files sorted" test_local_list_bundle_files_sorted
++    run_test "list sorted by filename not mtime (Issue #67)" test_local_list_sorted_by_filename_not_mtime
+     echo ""
+ 
+     echo "--- Local Backend Operations ---"

@@ -1,0 +1,127 @@
+diff --git a/bin/cac b/bin/cac
+index 31604af..cc4f8b4 100755
+--- a/bin/cac
++++ b/bin/cac
+@@ -72,7 +72,7 @@ COMMANDS:
+     check [TOOL] [--user USER]      Verify AI tool credentials work
+     test [--user USER]              (Alias for check) Test API connectivity
+     update [--check]                Self-update cac to the latest version
+-    env install [TOOL] [--user|--global] [--tmux]  Install AI tool environments
++    env install [TOOL|all] [--user|--global] [--tmux]  Install AI tool environments
+     env update [TOOL] [--user|--global]   Update AI tool environments
+     env status [--parseable] [--check-updates]  Show AI tool installation status
+     env check [TOOL] [--parseable]        Health-check installed AI tool environments
+@@ -129,6 +129,7 @@ EXAMPLES:
+     cac env status --check-updates  Show status with update availability
+     cac env install claude      Install Claude Code CLI
+     cac env install mistral     Install Mistral Vibe CLI
++    cac env install all         Install all tools including optional (playwright, etc.)
+     cac env install --global    Install all AI tools system-wide (requires root)
+     cac env update codex        Update Codex CLI
+     cac env check                   Health-check all installed tools
+@@ -658,7 +659,7 @@ USAGE:
+     cac env <subcommand> [options]
+ 
+ SUBCOMMANDS:
+-    install [TOOL] [--user|--global] [--yes] [--tmux]  Install AI tool environments
++    install [TOOL|all] [--user|--global] [--yes] [--tmux]  Install AI tool environments
+     update [TOOL] [--user|--global]           Update AI tool environments
+     status [--parseable] [--check-updates]    Show installation status
+     check [TOOL] [--parseable]               Health-check installed tools
+@@ -684,6 +685,7 @@ EXAMPLES:
+     cac env status                    Show status of all AI tools
+     cac env install                   Interactive tool selection
+     cac env install claude            Install Claude Code
++    cac env install all               Install all tools including optional
+     cac env install --global          Install all tools system-wide
+     cac env update codex              Update Codex CLI
+     cac env status --parseable        Machine-readable status output
+diff --git a/lib/env.sh b/lib/env.sh
+index 5f87680..1901efa 100644
+--- a/lib/env.sh
++++ b/lib/env.sh
+@@ -728,6 +728,52 @@ env_install_all() {
+     fi
+ }
+ 
++# Install ALL tools including optional ones
++# Usage: env_install_all_tools <scope> [flags...]
++# Returns: 0 all succeeded, 1 partial, 2 all failed
++env_install_all_tools() {
++    local scope="${1:-user}"
++    shift || true
++    local -a extra_flags=("$@")
++    local success=0
++    local updated=0
++    local failed=0
++
++    echo "Installing all AI tools (including optional)..."
++    echo ""
++
++    while IFS= read -r tool; do
++        # Issue #49: installed tools get updated via env_install_tool
++        if env_is_installed "$tool"; then
++            if env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"; then
++                ((updated++)) || true
++            else
++                ((failed++)) || true
++            fi
++        else
++            if env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"; then
++                ((success++)) || true
++            else
++                ((failed++)) || true
++            fi
++        fi
++        echo ""
++    done < <(env_get_all_tools)
++
++    echo "=== Installation Summary ==="
++    echo "Installed: $success"
++    echo "Updated: $updated"
++    echo "Failed: $failed"
++
++    if [[ $failed -eq 0 ]]; then
++        return $ENV_EXIT_SUCCESS
++    elif [[ $((success + updated)) -gt 0 ]]; then
++        return $ENV_EXIT_PARTIAL
++    else
++        return $ENV_EXIT_ALL_FAILED
++    fi
++}
++
+ # Update all installed tools
+ # Usage: env_update_all <scope>
+ # Returns: 0 all succeeded, 1 partial, 2 all failed
+@@ -2064,6 +2110,12 @@ env_cmd_install() {
+         fi
+     fi
+ 
++    # Intercept "all" keyword: install all tools including optional (Issue #64)
++    if [[ ${#ENV_PARSED_TOOLS[@]} -eq 1 && "${ENV_PARSED_TOOLS[0]}" == "all" ]]; then
++        env_install_all_tools "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"
++        return $?
++    fi
++
+     # Install specified tools
+     local success=0
+     local failed=0
+diff --git a/tests/run_tests.sh b/tests/run_tests.sh
+index 91ff47a..1b56410 100755
+--- a/tests/run_tests.sh
++++ b/tests/run_tests.sh
+@@ -153,6 +153,14 @@ main() {
+         echo ""
+     fi
+ 
++    # Run env install all tests (Issue #64)
++    if $run_all || [[ "$filter" == "env_install_all" ]] || [[ "$filter" == "env" ]]; then
++        if ! run_test_suite "Environment Install All Tests" "test_env_install_all.sh"; then
++            exit_code=1
++        fi
++        echo ""
++    fi
++
+     # Run update tests (Issue #47)
+     if $run_all || [[ "$filter" == "update" ]]; then
+         if ! run_test_suite "Update Tests" "test_update.sh"; then

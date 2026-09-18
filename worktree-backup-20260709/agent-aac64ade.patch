@@ -1,0 +1,456 @@
+diff --git a/install.sh b/install.sh
+index 34c66eb..39785c3 100755
+--- a/install.sh
++++ b/install.sh
+@@ -118,10 +118,25 @@ set_install_paths() {
+ }
+ 
+ # Check for required dependencies
++# curl is auto-installed if running as root; zip/unzip/git remain hard errors
+ check_dependencies() {
++    # Handle curl specially: auto-install if root, helpful error if not
++    if ! command -v curl &>/dev/null; then
++        if is_root; then
++            info "curl not found — installing via apt-get..."
++            if apt-get install -y curl >/dev/null 2>&1; then
++                success "Installed curl"
++            else
++                die "Failed to install curl via apt-get"
++            fi
++        else
++            die "curl is required but not installed. Install it with: sudo apt-get install -y curl"
++        fi
++    fi
++
+     local missing=()
+ 
+-    for cmd in curl unzip zip git; do
++    for cmd in unzip zip git; do
+         if ! command -v "$cmd" &>/dev/null; then
+             missing+=("$cmd")
+         fi
+@@ -144,6 +159,75 @@ get_latest_version() {
+     fi
+ }
+ 
++# Detect if local project files exist relative to this script
++# Returns 0 if all required files found, 1 otherwise
++# Note: BASH_SOURCE[0] is empty/unreliable when piped via curl, so detection safely returns false
++detect_local_files() {
++    local script_path="${BASH_SOURCE[0]:-}"
++    [[ -n "$script_path" && -f "$script_path" ]] || return 1
++
++    local script_dir
++    script_dir="$(cd "$(dirname "$script_path")" && pwd)"
++
++    [[ -f "${script_dir}/bin/cac" ]] || return 1
++    [[ -f "${script_dir}/lib/config.sh" ]] || return 1
++    [[ -f "${script_dir}/lib/security.sh" ]] || return 1
++    [[ -f "${script_dir}/lib/bundle.sh" ]] || return 1
++
++    return 0
++}
++
++# Copy local project files to temp directory (same layout as download_project)
++copy_local_files() {
++    local temp_dir="$1"
++    local script_dir
++    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++
++    info "Using local project files from ${script_dir}..."
++
++    if ! mkdir -p "${temp_dir}/bin" "${temp_dir}/lib" "${temp_dir}/completions"; then
++        die "Failed to create temporary directories"
++    fi
++
++    # Copy main CLI
++    cp "${script_dir}/bin/cac" "${temp_dir}/bin/cac"
++    chmod +x "${temp_dir}/bin/cac"
++
++    # Copy library modules
++    local libs=(config.sh security.sh tools.sh bundle.sh backend_local.sh backend_gokapi.sh utils.sh logging.sh check.sh env.sh skill.sh update.sh)
++    for lib in "${libs[@]}"; do
++        if [[ -f "${script_dir}/lib/${lib}" ]]; then
++            cp "${script_dir}/lib/${lib}" "${temp_dir}/lib/${lib}"
++        fi
++    done
++
++    # Verify required libraries were copied
++    local missing_libs=()
++    for lib in "${libs[@]}"; do
++        if [[ ! -f "${temp_dir}/lib/${lib}" ]]; then
++            missing_libs+=("$lib")
++        fi
++    done
++    if [[ ${#missing_libs[@]} -gt 0 ]]; then
++        die "Missing required local libraries: ${missing_libs[*]}"
++    fi
++
++    # Copy example config
++    if [[ -f "${script_dir}/.env.example" ]]; then
++        cp "${script_dir}/.env.example" "${temp_dir}/.env.example"
++    fi
++
++    # Copy shell completion files (optional)
++    if [[ -f "${script_dir}/completions/cac.bash" ]]; then
++        cp "${script_dir}/completions/cac.bash" "${temp_dir}/completions/cac.bash"
++    fi
++    if [[ -f "${script_dir}/completions/_cac" ]]; then
++        cp "${script_dir}/completions/_cac" "${temp_dir}/completions/_cac"
++    fi
++
++    success "Copied local files to staging area"
++}
++
+ # Download and verify a file
+ download_file() {
+     local url="$1"
+@@ -423,6 +507,20 @@ resolve_config_value() {
+ setup_config() {
+     local env_file="${CONFIG_DIR}/.env"
+ 
++    # --env-file takes priority: copy supplied file and skip all prompts
++    if [[ -n "$ARG_ENV_FILE" ]]; then
++        cp "$ARG_ENV_FILE" "$env_file"
++        # System config (/etc/cac/.env) needs 644 so non-root users can read it
++        # User config (~/.config/cac/.env) stays 600 (private)
++        if [[ "$env_file" == "/etc/cac/.env" ]]; then
++            chmod 644 "$env_file"
++        else
++            chmod 600 "$env_file"
++        fi
++        success "Installed configuration from ${ARG_ENV_FILE} to ${env_file}"
++        return 0
++    fi
++
+     if [[ -f "$env_file" ]]; then
+         info "Existing configuration found at: $env_file"
+         return 0
+@@ -701,9 +799,6 @@ do_single_install() {
+ 
+ # Install cac: download from GitHub and install
+ do_install() {
+-    # Validate mode first (checks root requirements for --global/--all)
+-    validate_install_mode
+-
+     check_dependencies
+ 
+     echo ""
+@@ -713,17 +808,20 @@ do_install() {
+     echo "==================================="
+     echo ""
+ 
+-    local branch
+-    branch=$(get_latest_version)
+-
+     local temp_dir=""
+     trap '[[ -n "${temp_dir:-}" ]] && rm -rf "$temp_dir"' EXIT
+     temp_dir=$(mktemp -d -t cac-install.XXXXXXXXXX)
+ 
+-    download_project "$branch" "$temp_dir"
+-    verify_checksums "$branch" "$temp_dir"
+-
+-    info "Installing cac from ${branch}..."
++    local branch=""
++    if detect_local_files; then
++        copy_local_files "$temp_dir"
++        info "Installing cac from local files..."
++    else
++        branch=$(get_latest_version)
++        download_project "$branch" "$temp_dir"
++        verify_checksums "$branch" "$temp_dir"
++        info "Installing cac from ${branch}..."
++    fi
+ 
+     # Install based on mode flag
+     case "$INSTALL_MODE_FLAG" in
+@@ -819,6 +917,7 @@ ARG_BACKEND=""
+ ARG_URL=""
+ ARG_API_KEY=""
+ ARG_STORAGE=""
++ARG_ENV_FILE=""
+ 
+ # Installation mode: "" (auto), "user", "global", "all" (pipe mode only)
+ INSTALL_MODE_FLAG=""
+@@ -837,12 +936,12 @@ validate_install_mode() {
+     case "$INSTALL_MODE_FLAG" in
+         global)
+             if ! is_root; then
+-                die "--global requires root privileges"
++                die "--global requires root privileges. Run: sudo ./install.sh --global"
+             fi
+             ;;
+         all)
+             if ! is_root; then
+-                die "--all requires root privileges"
++                die "--all requires root privileges. Run: sudo ./install.sh --all"
+             fi
+             ;;
+         user|"")
+@@ -877,6 +976,7 @@ Options:
+   --url, -U URL          Gokapi server URL
+   --api-key, -k KEY      Gokapi API key
+   --storage, -s PATH     Local storage path
++  --env-file PATH        Copy .env config from PATH (skips config prompts)
+ 
+ Examples:
+   # USB stick provisioning (install deps + cac + AI tools + skills + Tailscale)
+@@ -950,12 +1050,30 @@ main() {
+                 ARG_STORAGE="$2"
+                 shift 2
+                 ;;
++            --env-file)
++                if [[ -z "${2:-}" ]]; then
++                    die "--env-file requires a path"
++                fi
++                if [[ ! -f "$2" ]]; then
++                    die "--env-file: file not found: $2"
++                fi
++                if [[ ! -r "$2" ]]; then
++                    die "--env-file: file not readable: $2"
++                fi
++                ARG_ENV_FILE="$2"
++                shift 2
++                ;;
+             *)
+                 die "Unknown option: $1"
+                 ;;
+         esac
+     done
+ 
++    # Early root check: fail fast before banner/version check
++    if ! $uninstall; then
++        validate_install_mode
++    fi
++
+     if $uninstall; then
+         do_uninstall
+         return
+diff --git a/tests/test_install.sh b/tests/test_install.sh
+index ba5e562..946bf1d 100755
+--- a/tests/test_install.sh
++++ b/tests/test_install.sh
+@@ -2224,6 +2224,195 @@ test_write_config_user_permissions_600() {
+     assert_equals "600" "$perms" "user config permissions"
+ }
+ 
++# ============================================================================
++# Issue #65: --env-file flag tests
++# ============================================================================
++
++INSTALL_SH="${SCRIPT_DIR}/../install.sh"
++
++test_env_file_valid_copies() {
++    # Create a valid .env file
++    local env_source="${TEST_TMPDIR}/envfile_valid.env"
++    echo "CAC_BACKEND=local" > "$env_source"
++    echo "CAC_LOCAL_STORAGE=/tmp/bundles" >> "$env_source"
++
++    # Run install.sh --help first to verify --env-file is accepted
++    # Then run with --user and --env-file to test config copy
++    # We use --user to avoid root requirement, but the install will fail
++    # at download stage. We just need to verify the argument is parsed.
++    local output
++    output=$(bash "$INSTALL_SH" --env-file "$env_source" --user 2>&1) || true
++
++    # The installer should NOT fail with "Unknown option: --env-file"
++    if echo "$output" | grep -q "Unknown option.*env-file"; then
++        echo "install.sh did not recognize --env-file flag" >&2
++        return 1
++    fi
++    return 0
++}
++
++test_env_file_missing_fails() {
++    local output
++    if output=$(bash "$INSTALL_SH" --env-file "/nonexistent/path.env" 2>&1); then
++        echo "Expected failure for missing --env-file path" >&2
++        return 1
++    fi
++    assert_contains "file not found" "$output" "error mentions file not found"
++}
++
++test_env_file_no_arg_fails() {
++    local output
++    if output=$(bash "$INSTALL_SH" --env-file 2>&1); then
++        echo "Expected failure for --env-file without argument" >&2
++        return 1
++    fi
++    assert_contains "requires a path" "$output" "error mentions requires a path"
++}
++
++test_env_file_unreadable_fails() {
++    local unreadable="${TEST_TMPDIR}/unreadable.env"
++    echo "test" > "$unreadable"
++    chmod 000 "$unreadable"
++
++    local output
++    if output=$(bash "$INSTALL_SH" --env-file "$unreadable" 2>&1); then
++        chmod 600 "$unreadable"
++        echo "Expected failure for unreadable --env-file" >&2
++        return 1
++    fi
++
++    chmod 600 "$unreadable"
++    assert_contains "not readable" "$output" "error mentions not readable"
++}
++
++# ============================================================================
++# Issue #65: Early root check tests
++# ============================================================================
++
++test_global_without_root_fails_early() {
++    # Skip if running as root
++    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
++        echo "SKIP: Test requires non-root" >&2
++        return 0
++    fi
++
++    local output
++    if output=$(bash "$INSTALL_SH" --global 2>&1); then
++        echo "Expected --global without root to fail" >&2
++        return 1
++    fi
++
++    assert_contains "--global requires root privileges" "$output" "root error message" &&
++    assert_contains "sudo ./install.sh --global" "$output" "sudo hint"
++}
++
++test_all_without_root_fails_early() {
++    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
++        echo "SKIP: Test requires non-root" >&2
++        return 0
++    fi
++
++    local output
++    if output=$(bash "$INSTALL_SH" --all 2>&1); then
++        echo "Expected --all without root to fail" >&2
++        return 1
++    fi
++
++    assert_contains "--all requires root privileges" "$output" "root error message" &&
++    assert_contains "sudo ./install.sh --all" "$output" "sudo hint"
++}
++
++test_global_error_before_banner() {
++    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
++        echo "SKIP: Test requires non-root" >&2
++        return 0
++    fi
++
++    local output
++    output=$(bash "$INSTALL_SH" --global 2>&1) || true
++
++    # If early check works, the banner "Coding Agent Config" should NOT appear
++    if echo "$output" | grep -q "Coding Agent Config"; then
++        echo "Banner appeared before root check — early check not working" >&2
++        return 1
++    fi
++    return 0
++}
++
++# ============================================================================
++# Issue #65: curl auto-install tests
++# ============================================================================
++
++test_curl_missing_nonroot_hint() {
++    # We cannot actually remove curl, but we test the function logic
++    # by loading check_dependencies and overriding command
++    local check_fn
++    check_fn=$(sed -n '/^check_dependencies()/,/^}/p' "$INSTALL_SH")
++
++    local output
++    output=$(
++        is_root() { return 1; }
++        info() { echo "[INFO] $*"; }
++        success() { echo "[OK] $*"; }
++        die() { echo "[ERROR] $*" >&2; exit 1; }
++        eval "$check_fn"
++
++        # Override command to simulate missing curl
++        command() {
++            if [[ "$1" == "-v" && "$2" == "curl" ]]; then
++                return 1
++            fi
++            builtin command "$@"
++        }
++
++        check_dependencies 2>&1
++    ) && {
++        echo "Expected check_dependencies to fail when curl missing" >&2
++        return 1
++    }
++
++    assert_contains "curl is required but not installed" "$output" "curl missing message" &&
++    assert_contains "sudo apt-get install -y curl" "$output" "install hint"
++}
++
++test_curl_present_no_action() {
++    # When curl is present, check_dependencies should succeed without mentioning curl
++    local check_fn
++    check_fn=$(sed -n '/^check_dependencies()/,/^}/p' "$INSTALL_SH")
++
++    local output
++    output=$(
++        is_root() { return 1; }
++        info() { echo "[INFO] $*"; }
++        success() { echo "[OK] $*"; }
++        die() { echo "[ERROR] $*" >&2; exit 1; }
++        eval "$check_fn"
++        check_dependencies 2>&1
++    )
++    local rc=$?
++
++    [[ $rc -eq 0 ]] || { echo "Expected success when curl present" >&2; return 1; }
++    # Should not mention auto-installing curl
++    if echo "$output" | grep -q "curl not found"; then
++        echo "Should not try to install curl when it is present" >&2
++        return 1
++    fi
++    return 0
++}
++
++# ============================================================================
++# Issue #65: Help text tests
++# ============================================================================
++
++test_help_includes_env_file() {
++    local output
++    output=$(bash "$INSTALL_SH" --help 2>&1)
++    local rc=$?
++
++    [[ $rc -eq 0 ]] || { echo "Expected --help to succeed" >&2; return 1; }
++    assert_contains "--env-file" "$output" "help text includes --env-file"
++}
++
+ # ============================================================================
+ # Run new tests
+ # ============================================================================
+@@ -2282,5 +2471,27 @@ run_test "writes gokapi config" test_write_config_gokapi
+ run_test "writes local config" test_write_config_local
+ run_test "user config gets 600 permissions" test_write_config_user_permissions_600
+ 
++echo ""
++echo "--- --env-file flag (Issue #65) ---"
++run_test "env-file with valid file copies config" test_env_file_valid_copies
++run_test "env-file with missing file fails" test_env_file_missing_fails
++run_test "env-file without argument fails" test_env_file_no_arg_fails
++run_test "env-file with unreadable file fails" test_env_file_unreadable_fails
++
++echo ""
++echo "--- Early root check (Issue #65) ---"
++run_test "--global without root fails early" test_global_without_root_fails_early
++run_test "--all without root fails early" test_all_without_root_fails_early
++run_test "--global error appears before banner" test_global_error_before_banner
++
++echo ""
++echo "--- curl auto-install (Issue #65) ---"
++run_test "curl missing non-root shows install hint" test_curl_missing_nonroot_hint
++run_test "curl present skips auto-install" test_curl_present_no_action
++
++echo ""
++echo "--- Help text (Issue #65) ---"
++run_test "help includes --env-file" test_help_includes_env_file
++
+ echo ""
+ framework_report

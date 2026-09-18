@@ -1,0 +1,116 @@
+diff --git a/bin/cac b/bin/cac
+index 31604af..70dfcaa 100755
+--- a/bin/cac
++++ b/bin/cac
+@@ -72,7 +72,7 @@ COMMANDS:
+     check [TOOL] [--user USER]      Verify AI tool credentials work
+     test [--user USER]              (Alias for check) Test API connectivity
+     update [--check]                Self-update cac to the latest version
+-    env install [TOOL] [--user|--global] [--tmux]  Install AI tool environments
++    env install [TOOL|all] [--user|--global] [--tmux]  Install AI tool environments
+     env update [TOOL] [--user|--global]   Update AI tool environments
+     env status [--parseable] [--check-updates]  Show AI tool installation status
+     env check [TOOL] [--parseable]        Health-check installed AI tool environments
+@@ -129,6 +129,7 @@ EXAMPLES:
+     cac env status --check-updates  Show status with update availability
+     cac env install claude      Install Claude Code CLI
+     cac env install mistral     Install Mistral Vibe CLI
++    cac env install all         Install ALL tools including optional (e.g. Playwright)
+     cac env install --global    Install all AI tools system-wide (requires root)
+     cac env update codex        Update Codex CLI
+     cac env check                   Health-check all installed tools
+@@ -658,7 +659,7 @@ USAGE:
+     cac env <subcommand> [options]
+ 
+ SUBCOMMANDS:
+-    install [TOOL] [--user|--global] [--yes] [--tmux]  Install AI tool environments
++    install [TOOL|all] [--user|--global] [--yes] [--tmux]  Install AI tool environments
+     update [TOOL] [--user|--global]           Update AI tool environments
+     status [--parseable] [--check-updates]    Show installation status
+     check [TOOL] [--parseable]               Health-check installed tools
+@@ -684,6 +685,7 @@ EXAMPLES:
+     cac env status                    Show status of all AI tools
+     cac env install                   Interactive tool selection
+     cac env install claude            Install Claude Code
++    cac env install all               Install ALL tools including optional
+     cac env install --global          Install all tools system-wide
+     cac env update codex              Update Codex CLI
+     cac env status --parseable        Machine-readable status output
+diff --git a/lib/env.sh b/lib/env.sh
+index 5f87680..9a0a226 100644
+--- a/lib/env.sh
++++ b/lib/env.sh
+@@ -682,20 +682,33 @@ env_update_tool() {
+     fi
+ }
+ 
+-# Install all core tools
+-# Usage: env_install_all <scope> [flags...]
++# Install all core tools (or all tools including optional)
++# Usage: env_install_all <scope> [include_optional] [flags...]
++# Args:  include_optional - "true" to include optional tools, default core only
+ # Returns: 0 all succeeded, 1 partial, 2 all failed
+ env_install_all() {
+     local scope="${1:-user}"
+     shift || true
++    local include_optional="false"
++    if [[ "${1:-}" == "true" || "${1:-}" == "false" ]]; then
++        include_optional="$1"
++        shift || true
++    fi
+     local -a extra_flags=("$@")
+     local success=0
+     local updated=0
+     local failed=0
+ 
+-    echo "Installing all core AI tools..."
++    if [[ "$include_optional" == "true" ]]; then
++        echo "Installing all AI tools (including optional)..."
++    else
++        echo "Installing all core AI tools..."
++    fi
+     echo ""
+ 
++    local tool_list_cmd="env_get_core_tools"
++    [[ "$include_optional" == "true" ]] && tool_list_cmd="env_get_all_tools"
++
+     while IFS= read -r tool; do
+         # Issue #49: installed tools get updated via env_install_tool
+         if env_is_installed "$tool"; then
+@@ -712,7 +725,7 @@ env_install_all() {
+             fi
+         fi
+         echo ""
+-    done < <(env_get_core_tools)
++    done < <($tool_list_cmd)
+ 
+     echo "=== Installation Summary ==="
+     echo "Installed: $success"
+@@ -2046,11 +2059,17 @@ env_cmd_install() {
+     [[ "$ENV_PARSED_YES" == "true" ]] && extra_flags+=("--yes")
+     [[ "$ENV_PARSED_TMUX" == "true" ]] && extra_flags+=("--tmux")
+ 
++    # Issue #64: "all" keyword installs all tools including optional
++    if [[ ${#ENV_PARSED_TOOLS[@]} -eq 1 && "${ENV_PARSED_TOOLS[0]}" == "all" ]]; then
++        env_install_all "$scope" "true" "${extra_flags[@]+"${extra_flags[@]}"}"
++        return $?
++    fi
++
+     # No tools specified
+     if [[ ${#ENV_PARSED_TOOLS[@]} -eq 0 ]]; then
+         if [[ "${ENV_PARSED_YES}" == "true" ]]; then
+             # --yes flag: skip interactive menu, install all core tools
+-            env_install_all "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"
++            env_install_all "$scope" "false" "${extra_flags[@]+"${extra_flags[@]}"}"
+             return $?
+         elif [[ -t 0 ]]; then
+             # Interactive terminal: show selection menu
+@@ -2059,7 +2078,7 @@ env_cmd_install() {
+         else
+             # Non-interactive (piped): install all core tools
+             echo "Non-interactive mode: installing all core tools"
+-            env_install_all "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"
++            env_install_all "$scope" "false" "${extra_flags[@]+"${extra_flags[@]}"}"
+             return $?
+         fi
+     fi

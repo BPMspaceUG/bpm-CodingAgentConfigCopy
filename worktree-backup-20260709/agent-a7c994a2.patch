@@ -1,0 +1,49 @@
+diff --git a/README.md b/README.md
+index 049ca61..51c03d8 100644
+--- a/README.md
++++ b/README.md
+@@ -8,6 +8,7 @@ A production-grade CLI tool for managing versioned ZIP-based configuration bundl
+ - **Codex CLI** (OpenAI)
+ - **Gemini CLI** (Google)
+ - **Mistral Vibe** (<a href="https://mistral.ai" target="_blank">Mistral AI</a>)
++- **Playwright** (Microsoft) — optional, for browser automation testing
+ 
+ ## Installation
+ 
+@@ -86,14 +87,17 @@ cd bpm-CodingAgentConfigCopy
+ ### Uninstall
+ 
+ ```bash
+-# User-local
++# User-local (binary and libraries only)
+ ./uninstall.sh
+ 
+-# System-wide
++# System-wide (binary and libraries only)
+ sudo ./uninstall.sh
+ 
+-# Complete removal including config
++# Also remove configuration files
+ ./uninstall.sh --purge
++
++# Remove everything: config, skill libraries, and AI tool installations
++./uninstall.sh --full-purge
+ ```
+ 
+ ## Configuration
+@@ -277,6 +281,7 @@ cac env install codex
+ cac env install gemini
+ cac env install mistral
+ cac env install continuous-claude
++cac env install playwright
+ 
+ # Install with --yes to skip confirmation prompts
+ cac env install claude --yes
+@@ -349,6 +354,7 @@ cac env skills --list
+ | Gemini CLI | npm | No |
+ | continuous-claude | curl installer | Yes |
+ | Mistral Vibe | curl installer | No |
++| Playwright | npm | Yes |
+ 
+ **Automated installation with cac installer:**
+ 

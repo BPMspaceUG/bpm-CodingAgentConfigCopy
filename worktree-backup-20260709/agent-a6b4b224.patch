@@ -1,0 +1,76 @@
+diff --git a/uninstall.sh b/uninstall.sh
+index 01d936f..61f5001 100755
+--- a/uninstall.sh
++++ b/uninstall.sh
+@@ -239,37 +239,35 @@ remove_ai_tools() {
+ }
+ 
+ # Uninstall from system-wide location
++# Sets _SYS_REMOVED to number of items removed
+ uninstall_system() {
+-    local removed=0
++    _SYS_REMOVED=0
+ 
+-    remove_file "${SYS_BIN_DIR}/cac" && { ((removed++)) || true; }
+-    remove_dir "$SYS_LIB_DIR" && { ((removed++)) || true; }
++    remove_file "${SYS_BIN_DIR}/cac" && { ((_SYS_REMOVED++)) || true; }
++    remove_dir "$SYS_LIB_DIR" && { ((_SYS_REMOVED++)) || true; }
+ 
+     if $PURGE; then
+-        remove_dir "$SYS_CONFIG_DIR" && { ((removed++)) || true; }
++        remove_dir "$SYS_CONFIG_DIR" && { ((_SYS_REMOVED++)) || true; }
+     elif [[ -d "$SYS_CONFIG_DIR" ]]; then
+         warn "Configuration preserved: ${SYS_CONFIG_DIR}"
+         info "Use --purge to remove, or: rm -rf ${SYS_CONFIG_DIR}"
+     fi
+-
+-    echo "$removed"
+ }
+ 
+ # Uninstall from user-local location
++# Sets _USER_REMOVED to number of items removed
+ uninstall_user() {
+-    local removed=0
++    _USER_REMOVED=0
+ 
+-    remove_file "${USER_BIN_DIR}/cac" && { ((removed++)) || true; }
+-    remove_dir "$USER_LIB_DIR" && { ((removed++)) || true; }
++    remove_file "${USER_BIN_DIR}/cac" && { ((_USER_REMOVED++)) || true; }
++    remove_dir "$USER_LIB_DIR" && { ((_USER_REMOVED++)) || true; }
+ 
+     if $PURGE; then
+-        remove_dir "$USER_CONFIG_DIR" && { ((removed++)) || true; }
++        remove_dir "$USER_CONFIG_DIR" && { ((_USER_REMOVED++)) || true; }
+     elif [[ -d "$USER_CONFIG_DIR" ]]; then
+         warn "Configuration preserved: ${USER_CONFIG_DIR}"
+         info "Use --purge to remove, or: rm -rf ${USER_CONFIG_DIR}"
+     fi
+-
+-    echo "$removed"
+ }
+ 
+ # Main uninstall logic
+@@ -288,9 +286,8 @@ do_uninstall() {
+     if is_root || [[ -f "${SYS_BIN_DIR}/cac" ]] || [[ -d "$SYS_LIB_DIR" ]]; then
+         if is_root; then
+             info "Checking system-wide installation..."
+-            local sys_removed
+-            sys_removed=$(uninstall_system)
+-            total_removed=$((total_removed + sys_removed))
++            uninstall_system
++            total_removed=$((total_removed + _SYS_REMOVED))
+             ((locations_checked++)) || true
+         elif [[ -f "${SYS_BIN_DIR}/cac" ]] || [[ -d "$SYS_LIB_DIR" ]]; then
+             warn "System-wide installation found but running as non-root"
+@@ -301,9 +298,8 @@ do_uninstall() {
+     # Check user-local installation
+     if [[ -f "${USER_BIN_DIR}/cac" ]] || [[ -d "$USER_LIB_DIR" ]] || [[ -d "$USER_CONFIG_DIR" ]]; then
+         info "Checking user-local installation..."
+-        local user_removed
+-        user_removed=$(uninstall_user)
+-        total_removed=$((total_removed + user_removed))
++        uninstall_user
++        total_removed=$((total_removed + _USER_REMOVED))
+         ((locations_checked++)) || true
+     fi
+ 

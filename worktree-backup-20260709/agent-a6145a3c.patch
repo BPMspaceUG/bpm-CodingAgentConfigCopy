@@ -1,0 +1,99 @@
+diff --git a/lib/config.sh b/lib/config.sh
+index cf0e88e..ccc2399 100644
+--- a/lib/config.sh
++++ b/lib/config.sh
+@@ -211,8 +211,12 @@ config_validate() {
+         local)
+             utils_require_var CAC_LOCAL_STORAGE "CAC_LOCAL_STORAGE not set for local backend" || return 1
+             if [[ ! -d "$CAC_LOCAL_STORAGE" ]]; then
+-                utils_error "Local storage directory does not exist: $CAC_LOCAL_STORAGE"
+-                return 1
++                if ! mkdir -p "$CAC_LOCAL_STORAGE" 2>/dev/null; then
++                    utils_error "Cannot create local storage directory: $CAC_LOCAL_STORAGE"
++                    return 1
++                fi
++                chmod 700 "$CAC_LOCAL_STORAGE"
++                utils_verbose "Created local storage directory: $CAC_LOCAL_STORAGE"
+             fi
+             ;;
+         gokapi)
+diff --git a/lib/env.sh b/lib/env.sh
+index 5f87680..33a699e 100644
+--- a/lib/env.sh
++++ b/lib/env.sh
+@@ -490,6 +490,8 @@ env_install_tool() {
+ 
+     echo "Installing $display_name..."
+ 
++    local exit_code=0
++
+     case "$install_type" in
+         curl)
+             local url="${_ENV_INSTALL_URLS[$tool]}"
+@@ -520,7 +522,7 @@ env_install_tool() {
+                 fi
+             fi
+ 
+-            curl -fsSL "$url" | bash
++            curl -fsSL "$url" | bash || exit_code=$?
+ 
+             # Issue #57: Symlink curl-installed binary into /usr/local/bin for global scope
+             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
+@@ -551,12 +553,10 @@ env_install_tool() {
+             fi
+ 
+             utils_verbose "Running: $cmd"
+-            eval "$cmd"
++            eval "$cmd" || exit_code=$?
+             ;;
+     esac
+ 
+-    local exit_code=$?
+-
+     # Rehash to find newly installed binaries
+     hash -r
+ 
+@@ -1939,8 +1939,8 @@ _env_configure_claude_settings() {
+         if command -v tmux &>/dev/null; then
+             snippet='{"env":{"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS":"1"},"teammateMode":"tmux"}'
+         else
+-            log_warn "tmux is not installed — skipping teammateMode configuration"
+-            log_warn "Install with: sudo apt install tmux"
++            utils_warn "tmux is not installed — skipping teammateMode configuration"
++            utils_warn "Install with: sudo apt install tmux"
+         fi
+     fi
+ 
+@@ -2146,7 +2146,7 @@ env_cmd_status() {
+ # Predefined Claude Code skills installed via 'npx skills add'
+ # Format: skills_id|display_name|description
+ # skills_id = owner/repo@skill as used by 'npx skills add'
+-readonly -a _ENV_SKILLS_REGISTRY=(
++_ENV_SKILLS_REGISTRY=(
+     "aktsmm/agent-skills@skill-finder|Skill Finder|Discover and install agent skills"
+     "askyourpdf/ai-pdf-filler@ai-pdf-filler-cli|PDF Filler|Fill, read, merge, split, and OCR PDF files"
+     "willem4130/claude-code-skills@elite-powerpoint-designer|PowerPoint|Create and edit PowerPoint presentations"
+diff --git a/lib/utils.sh b/lib/utils.sh
+index 61848e7..a651b89 100644
+--- a/lib/utils.sh
++++ b/lib/utils.sh
+@@ -308,11 +308,19 @@ utils_parse_filter_args() {
+     while [[ $# -gt 0 ]]; do
+         case "$1" in
+             --tool)
++                if [[ $# -lt 2 ]]; then
++                    utils_error "--tool requires a value"
++                    return 1
++                fi
+                 # shellcheck disable=SC2034  # Variables are used by callers
+                 FILTER_TOOL="$2"
+                 shift 2
+                 ;;
+             --user)
++                if [[ $# -lt 2 ]]; then
++                    utils_error "--user requires a value"
++                    return 1
++                fi
+                 # shellcheck disable=SC2034  # Variables are used by callers
+                 FILTER_USER="$2"
+                 shift 2
