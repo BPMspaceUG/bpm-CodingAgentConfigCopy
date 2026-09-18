@@ -179,141 +179,22 @@ shellcheck bin/cac lib/*.sh install.sh uninstall.sh tests/*.sh
 - `check_all_tools(user)` - Verify all configured tools
 - `check_tool_claude/codex/gemini(user)` - Provider-specific verification
 
-## Milestone-Based Issue Lifecycle (MANDATORY)
+## Agent skills
 
-Every issue in this repository MUST follow the milestone-based lifecycle. No exceptions.
+Work in this repo follows the mattpocock-skills workflow. The former milestone lifecycle, Codex gates and SoD rules were retired on 2026-09-18.
 
-| Milestone | Set By | Meaning |
-|-----------|--------|---------|
-| `new` | Team Lead | Issue created, not yet planned |
-| `planned` | Team Lead | Agent submitted a plan (posted as issue comment) |
-| `plan-approved` | Team Lead + Codex | Both reviewed and approved the plan |
-| `test-designed` | Team Lead | Agent submitted test design as issue comment |
-| `test-design-approved` | Team Lead + Codex | Both approved test design |
-| `implemented` | Team Lead | Code written, agent reports completion |
-| `tested-success` | Team Lead | All tests pass |
-| `tested-failed` | Team Lead | Tests fail — bounces back with documented reason |
-| `test-approved` | Team Lead + Codex | Final automated gate — independent verification passed |
-| `DONE` | **Human only** | Final sign-off. Agents NEVER set this. |
+### Issue tracker
 
-**Lifecycle flow:**
-```
-new -> planned -> plan-approved -> test-designed -> test-design-approved
-  -> implemented -> tested-success / tested-failed -> test-approved -> DONE
-```
+Issues live as GitHub issues in `BPMspaceUG/bpm-CodingAgentConfigCopy`, managed with the `gh` CLI. `gh issue view <N>` without `--json` fails here. See `docs/agents/issue-tracker.md`.
 
-**Rules (Non-Negotiable):**
-1. One milestone at a time per issue — no skipping states
-2. Dual approval required at every gate — Team Lead AND Codex must both approve
-3. `DONE` is human-only — agents must NEVER set this milestone
-4. One issue per discrete change — all phases documented as comments on that issue
-5. Every Codex response posted as comment on the GitHub Issue
-6. **No side-car status files.** Plans, progress and per-issue status live in the
-   GitHub Issue, never in a repo file. `SHARED_TASK_NOTES.md` was removed for
-   this reason (#97) — do not recreate it. If you need shared context, write it
-   as an issue comment.
+### Triage labels
 
-**Mechanical enforcement (Issue #90):**
-- A harness `[Plan Approved]` message is **NOT** a Codex gate. It is an auditable
-  MANUAL control, not a technical one: the Team Lead **MUST paste the real
-  `codex exec` output as an issue comment** before every transition. Approval of
-  unknown provenance = NO approval.
-- Before `test-approved`, the Team Lead **MUST run**
-  `tests/verify_gate.sh <issue> <default-branch>` and paste its output into the
-  issue; the milestone may not advance unless it exits `0`. It asserts a commit
-  referencing the issue is reachable from the integration branch **and** no
-  tracked files have uncommitted changes. Naming the merge branch is a manual step.
+The five canonical triage roles, using the default label strings. See `docs/agents/triage-labels.md`.
 
-See `/my-team-milestones` skill for full details including Codex gate patterns and compact lifecycle variant.
+### Domain docs
 
-### Reading Issues — `gh issue view` is broken in this repo
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
-`gh issue view <N>` and `gh issue view <N> --comments` **fail here**: they exit `1`
-and print only a GraphQL deprecation notice — **no title, no body, no comments**.
-The message names the deprecation, not your command, so it reads like *"the issue
-is unavailable"*. It is not. The issue is fine; the render path is broken.
+## Status: v1 is frozen
 
-```
-$ gh issue view 93
-GraphQL: Projects (classic) is being deprecated in favor of the new Projects experience,
-see: https://github.blog/changelog/2024-05-23-sunset-notice-projects-classic/. (repository.issue.projectCards)
-$ echo $?
-1
-```
-
-**Never advance a milestone against an issue you could not read.** In the audit
-trail, a gate advanced on assumptions is indistinguishable from one advanced on
-the issue text — the same failure class as #87 and #90. If a read fails, fix the
-command; do not proceed.
-
-Use one of these instead (all measured working 2026-07-26, `gh` 2.46.0):
-
-```bash
-# title + milestone + labels + body
-gh issue view <N> --json number,title,milestone,labels,body \
-  --jq '"#\(.number) [\(.milestone.title)] \(.title)\n\n\(.body)"'
-
-# comments
-gh issue view <N> --json comments \
-  --jq '.comments[] | "--- \(.author.login)\n\(.body)"'
-
-# REST equivalent — avoids the GraphQL path entirely
-gh api repos/BPMspaceUG/bpm-CodingAgentConfigCopy/issues/<N> --jq .body
-gh api repos/BPMspaceUG/bpm-CodingAgentConfigCopy/issues/<N>/comments \
-  --jq '.[] | "--- \(.user.login)\n\(.body)"'
-```
-
-**Unaffected:** `gh issue list` (plain *and* `--json`), `gh issue comment`, and —
-per Team Lead measurement — `gh issue create` and `gh issue edit --milestone`.
-Only the single-issue `gh issue view` render path requests
-`repository.issue.projectCards`; `--json` never asks for that field, so it works.
-
-**Recheck trigger — delete this subsection once it stops reproducing.** The error
-names a field *the client requests*, so any `gh` release that stops requesting
-`projectCards` fixes this with no change here; the pinned Ubuntu package `gh
-2.46.0` (2025-01-13) is well behind. Recheck after every `gh` upgrade:
-
-```bash
-gh issue view 93 >/dev/null 2>&1 \
-  && echo "FIXED — remove this subsection (#103)" \
-  || echo "still broken — keep"
-```
-
-## Multi-Agent Workflow
-
-This project uses a multi-agent development workflow:
-
-- **Claude** - Primary orchestrator and main executor
-- **Codex** - Primary review and approval authority
-- **Gemini** - Consensus and fallback reviewer
-
-### Segregation of Duty (SoD)
-
-**Default Rule:** No LLM may review or approve work it has performed itself.
-
-**Controlled Exception:** Claude may self-review only if:
-1. Work was NOT performed by Claude
-2. Codex is rate-limited or unavailable
-3. Gemini is rate-limited or unavailable
-4. Exception is documented in the issue with "SEGREGATION OF DUTY EXCEPTION APPLIED"
-
-### Consensus and Fallback Logic
-
-- When Claude and Codex disagree, Gemini provides independent assessment
-- Codex rate-limit fallback: gpt-5.1-codex-mini → Gemini → Claude (with SoD exception)
-- Gemini rate-limit fallback: gemini-2.5-flash-lite → Codex → Claude (with SoD exception)
-- Claude rate-limit: STOP - no release allowed without orchestrator
-
-### Required Approvals Before Git Push
-
-All must be documented in the issue:
-1. PLAN AND AGENT/SKILL ASSIGNMENT APPROVED
-2. IMPLEMENTATION APPROVED
-3. TEST DESIGN APPROVED
-4. TEST RESULTS APPROVED
-5. DOCUMENTATION UPDATED AND CONSISTENT APPROVED
-
-### Related Documentation
-
-- [agent.md](agent.md) - Full multi-agent model, skill selection, SoD rules, approval workflow
-- [gemini.md](gemini.md) - Consensus process, fallback logic, exception handling
+cac v1 receives crash and security fixes only. New work happens in the v2 rewrite, `BPMspaceUG/bpm-CodingAgentConfigCopy2`, whose `docs/spec/` distils this repo's issue history.

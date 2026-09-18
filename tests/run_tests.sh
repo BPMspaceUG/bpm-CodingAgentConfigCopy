@@ -328,26 +328,10 @@ main() {
         echo ""
     fi
 
-    # Run landing-gate tests (Issue #90)
-    if $run_all || [[ "$filter" == "verify_gate" ]] || [[ "$filter" == "90" ]]; then
-        if ! run_test_suite "Verify Gate Tests" "test_verify_gate.sh"; then
-            exit_code=1
-        fi
-        echo ""
-    fi
-
     # Run suite-registration guard (Issue #101) — fails if any suite file is
     # unregistered or non-executable.
     if $run_all || [[ "$filter" == "suite_registration" ]] || [[ "$filter" == "101" ]]; then
         if ! run_test_suite "Suite Registration Guard" "test_suite_registration.sh"; then
-            exit_code=1
-        fi
-        echo ""
-    fi
-
-    # Run landing sweep tests (Issue #104)
-    if $run_all || [[ "$filter" == "gate_sweep" ]] || [[ "$filter" == "104" ]]; then
-        if ! run_test_suite "Gate Sweep Tests" "test_gate_sweep.sh"; then
             exit_code=1
         fi
         echo ""
