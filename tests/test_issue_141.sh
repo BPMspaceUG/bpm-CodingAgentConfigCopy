@@ -159,6 +159,44 @@ test_141_5_check_explains_dead_session() {
     assert_contains "cac push" "$out" "fix named" || return 1
 }
 
+# 141.6 [anti-bug]: only the claudeAiOauth object counts. An MCP OAuth entry
+#       earlier in the file must not decide the session state.
+test_141_6_state_reads_claude_object_only() {
+    local d="$TEST_TMPDIR/1416"; mkdir -p "$d"
+    printf '{"mcpOAuth":{"x":{"accessToken":"mcp-at","refreshToken":"mcp-rt","expiresAt":%s}},"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}' \
+        "$(future_ms)" > "$d/wiped.json"
+    printf '{"mcpOAuth":{"x":{"accessToken":"mcp-at","expiresAt":1000}},"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":%s}}' \
+        "$(future_ms)" > "$d/live.json"
+
+    assert_equals "empty" "$(tools_claude_session_state "$d/wiped.json")" "wiped behind live MCP entry" || return 1
+    assert_contains "valid " "$(tools_claude_session_state "$d/live.json")" "live behind old MCP entry"
+}
+
+# 141.7: tokens without expiresAt are not declared expired (unknown, so the
+#        file is handled exactly as before #141).
+test_141_7_missing_expiry_is_unknown() {
+    local d="$TEST_TMPDIR/1417"; mkdir -p "$d"
+    printf '{"claudeAiOauth":{"accessToken":"a","refreshToken":"r"}}' > "$d/c.json"
+    assert_equals "unknown" "$(tools_claude_session_state "$d/c.json")" "no expiresAt"
+}
+
+# 141.8: a cached FAILED still explains the dead session.
+test_141_8_cached_failure_explains_too() {
+    local d="$TEST_TMPDIR/1418"; mkdir -p "$d/home/rob/.claude"
+    echo '{}' > "$d/home/rob/.claude.json"
+    creds "" "" 0 > "$d/home/rob/$CRED"
+    stub_claude_login_expired "$d/bin"
+
+    PATH="$d/bin:$PATH" XDG_CACHE_HOME="$d/cache" \
+        check_single_tool claude false rob "$d/home/rob" >/dev/null 2>&1
+    local out
+    out=$(PATH="$d/bin:$PATH" XDG_CACHE_HOME="$d/cache" \
+        check_single_tool claude false rob "$d/home/rob" 2>&1) && return 1
+
+    assert_contains "FAILED (cached)" "$out" "served from cache" || return 1
+    assert_contains "cac push" "$out" "fix named"
+}
+
 # ============================================================================
 # Run
 # ============================================================================
@@ -168,5 +206,9 @@ run_test "141.2 stale bundle keeps a working local login"        test_141_2_stal
 run_test "141.3 stale bundle applied with warning + fix"         test_141_3_stale_bundle_applied_with_warning
 run_test "141.4 fresh bundle applied without warning"            test_141_4_fresh_bundle_applied
 run_test "141.5 check explains a wiped Claude session"           test_141_5_check_explains_dead_session
+
+run_test "141.6 state reads the claudeAiOauth object only"     test_141_6_state_reads_claude_object_only
+run_test "141.7 missing expiresAt is unknown, not expired"     test_141_7_missing_expiry_is_unknown
+run_test "141.8 cached FAILED still explains the session"      test_141_8_cached_failure_explains_too
 
 framework_report

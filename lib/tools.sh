@@ -151,7 +151,7 @@ tools_count_existing() {
 # session can only continue through a refresh, which fails once any other copy
 # has refreshed since the bundle was pushed.
 # Usage: tools_claude_session_state <credentials.json>
-# Prints: "unknown" (missing, unreadable or no claudeAiOauth object),
+# Prints: "unknown" (missing, unreadable, no claudeAiOauth object, or no expiresAt),
 #         "empty" (claudeAiOauth without tokens), "expired <epoch-s>" or "valid <epoch-s>"
 tools_claude_session_state() {
     local file="$1"
@@ -163,16 +163,27 @@ tools_claude_session_state() {
         return 0
     fi
 
-    access=$(printf '%s' "$content" | grep -o '"accessToken"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
-    refresh=$(printf '%s' "$content" | grep -o '"refreshToken"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
-    expires_ms=$(printf '%s' "$content" | grep -o '"expiresAt"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+    # Look only inside the claudeAiOauth object (it holds no nested objects),
+    # so MCP OAuth entries elsewhere in the file cannot decide the state.
+    local oauth="${content#*\"claudeAiOauth\"}"
+    oauth="${oauth%%\}*}"
+
+    access=$(printf '%s' "$oauth" | grep -o '"accessToken"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    refresh=$(printf '%s' "$oauth" | grep -o '"refreshToken"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    expires_ms=$(printf '%s' "$oauth" | grep -o '"expiresAt"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
 
     if [[ -z "$access" && -z "$refresh" ]]; then
         echo "empty"
         return 0
     fi
 
-    local expires_s=$(( ${expires_ms:-0} / 1000 ))
+    # Tokens without an expiry: nothing reliable to judge, treat as before #141
+    if [[ -z "$expires_ms" ]]; then
+        echo "unknown"
+        return 0
+    fi
+
+    local expires_s=$(( expires_ms / 1000 ))
     if (( expires_s <= $(date +%s) )); then
         echo "expired $expires_s"
     else

@@ -217,14 +217,6 @@ _bundle_ensure_dir() {
     return 0
 }
 
-# Rewrite baked-in source-user home paths in an extracted file to the target home.
-# Issue #81: .claude.json embeds absolute /home/<sourceuser> paths (hook commands,
-# MCP server binaries, per-project keys). On a cross-user pull these must point at
-# the target user's home or hooks/MCP break and the session reads as not-logged-in.
-# The rewrite is boundary-anchored (source home must be followed by '/' or '"'),
-# so a longer prefix like /home/robert is never corrupted. No-op when the source
-# and destination homes are identical (own-host / own-user pull).
-# Usage: _bundle_rewrite_home_paths <file> <src_home> <dst_home> <username>
 # Format an epoch (seconds) as local "YYYY-MM-DD HH:MM" (GNU and BSD date)
 _bundle_fmt_epoch() {
     date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$1"
@@ -258,6 +250,14 @@ _bundle_claude_session_gate() {
     return 0
 }
 
+# Rewrite baked-in source-user home paths in an extracted file to the target home.
+# Issue #81: .claude.json embeds absolute /home/<sourceuser> paths (hook commands,
+# MCP server binaries, per-project keys). On a cross-user pull these must point at
+# the target user's home or hooks/MCP break and the session reads as not-logged-in.
+# The rewrite is boundary-anchored (source home must be followed by '/' or '"'),
+# so a longer prefix like /home/robert is never corrupted. No-op when the source
+# and destination homes are identical (own-host / own-user pull).
+# Usage: _bundle_rewrite_home_paths <file> <src_home> <dst_home> <username>
 _bundle_rewrite_home_paths() {
     local file="$1"
     local src_home="$2"

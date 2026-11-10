@@ -605,6 +605,7 @@ check_single_tool() {
             return $CHECK_EXIT_SUCCESS
         else
             echo "FAILED (cached)"
+            [[ "$tool" == "claude" ]] && _check_explain_claude_session "$home_dir"
             return $CHECK_EXIT_AUTH_FAIL
         fi
     fi
