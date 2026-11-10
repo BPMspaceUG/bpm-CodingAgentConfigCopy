@@ -211,6 +211,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #141 tests (stale Claude session on pull/check)
+    if $run_all || [[ "$filter" == "issue_141" ]] || [[ "$filter" == "141" ]]; then
+        if ! run_test_suite "Issue #141 Tests" "test_issue_141.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #80 tests (opencode registry + check wiring)
     if $run_all || [[ "$filter" == "issue_80" ]] || [[ "$filter" == "80" ]]; then
         if ! run_test_suite "Issue #80 Tests" "test_issue_80.sh"; then

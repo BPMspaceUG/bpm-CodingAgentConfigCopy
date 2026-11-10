@@ -144,3 +144,38 @@ tools_count_existing() {
 
     tools_collect_existing "$home_dir" "$tool" "$settings_flag" | wc -l
 }
+
+# Issue #141: state of the Claude OAuth session in a .credentials.json file.
+# Claude's refresh token is single-use: the copy that refreshes first
+# invalidates every other copy. An expired access token therefore means the
+# session can only continue through a refresh, which fails once any other copy
+# has refreshed since the bundle was pushed.
+# Usage: tools_claude_session_state <credentials.json>
+# Prints: "unknown" (missing, unreadable or no claudeAiOauth object),
+#         "empty" (claudeAiOauth without tokens), "expired <epoch-s>" or "valid <epoch-s>"
+tools_claude_session_state() {
+    local file="$1"
+    local content access refresh expires_ms
+
+    if [[ ! -f "$file" ]] || ! content=$(tr -d '\n' < "$file" 2>/dev/null) \
+        || [[ "$content" != *'"claudeAiOauth"'* ]]; then
+        echo "unknown"
+        return 0
+    fi
+
+    access=$(printf '%s' "$content" | grep -o '"accessToken"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    refresh=$(printf '%s' "$content" | grep -o '"refreshToken"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    expires_ms=$(printf '%s' "$content" | grep -o '"expiresAt"[[:space:]]*:[[:space:]]*[0-9]*' | head -1 | grep -o '[0-9]*$')
+
+    if [[ -z "$access" && -z "$refresh" ]]; then
+        echo "empty"
+        return 0
+    fi
+
+    local expires_s=$(( ${expires_ms:-0} / 1000 ))
+    if (( expires_s <= $(date +%s) )); then
+        echo "expired $expires_s"
+    else
+        echo "valid $expires_s"
+    fi
+}

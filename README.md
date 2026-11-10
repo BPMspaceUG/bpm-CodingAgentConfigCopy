@@ -442,6 +442,58 @@ Settings are always included in `cac push` bundles but only extracted by `cac pu
 
 **Note:** Host+user matching relies on the bundle filename convention (`CodingAgentConfig_<HOST>_<USER>_<TOOL>_<TIMESTAMP>.zip`). If a bundle is renamed or pulled by Gokapi file ID instead of its original filename, settings extraction is skipped as a safety measure.
 
+### Sharing a Claude login across hosts
+
+A Claude or Codex subscription login is an OAuth session: a short-lived access
+token plus a refresh token. `cac` copies the session as it was at `cac push`.
+The refresh token can be used **once**. Each refresh returns a new refresh
+token and invalidates the old one (Issue #141).
+
+What follows from that:
+
+- **The copy that refreshes first wins.** Every other copy keeps the old
+  refresh token, which is now dead. That copy works until its access token
+  expires, then its refresh is rejected. Claude Code empties
+  `.claude/.credentials.json` and shows `Login expired · Please run /login`.
+- **Claude refreshes often.** The access token lives for about 8 hours, so a
+  Claude bundle is typically stale a few hours after the push, once the source
+  host has used Claude again. Observed 2026-11-08 on contabo04 and 2026-11-09 on
+  contabo03 with bundles from ICO-ROB-01.
+- **Codex refreshes rarely.** Codex refreshes when `last_refresh` in
+  `~/.codex/auth.json` is older than about 8 days, or after a 401. Its tokens
+  rotate the same way. OpenAI documents that one `auth.json` copy belongs to one
+  machine or one serialized job stream, and that you should reseed from a
+  trusted machine when the refresh stops working
+  ([Codex CI/CD auth](https://learn.chatgpt.com/docs/auth/ci-cd-auth)). Shared
+  Codex bundles therefore break about every 8 days, not every few hours.
+
+What `cac` does about it:
+
+- `cac pull` never installs an empty Claude session (source was logged out)
+  and never replaces a working local Claude login with a bundled session whose
+  access token has already expired. When nothing usable exists locally, it
+  applies the expired session (it still works if the source has not refreshed
+  since) and warns, naming the source host.
+- `cac check claude` explains a dead local session (tokens wiped or expired)
+  instead of printing a bare `FAILED`.
+
+Supported flows:
+
+1. **Move, don't share (default).** Use the login on one host at a time. After
+   using Claude on the source, run `cac push` there and `cac pull` on the target
+   right away. The source copy dies at its next refresh. Log in again there or
+   pull back.
+2. **Long-lived token, all hosts at once.** Run `claude setup-token` once on a
+   machine with a browser. It prints a one-year OAuth token that is not
+   refreshed, so copies cannot invalidate each other. Set it as
+   `CLAUDE_CODE_OAUTH_TOKEN` in the environment of each target user. It takes
+   precedence over `.credentials.json`. Limitation: the token can only make
+   model requests, so Remote Control and claude.ai connectors do not work with
+   it ([Claude Code authentication](https://code.claude.com/docs/en/authentication.md#generate-a-long-lived-token)).
+   `cac` does not distribute this token; v1 is frozen.
+3. **Codex:** an API key login (`OPENAI_API_KEY`) does not use a refresh
+   token. For a ChatGPT login, use the move flow above.
+
 ## Security
 
 - User `.env` file must have 600 permissions (owner read/write only)

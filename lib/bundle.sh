@@ -225,6 +225,39 @@ _bundle_ensure_dir() {
 # so a longer prefix like /home/robert is never corrupted. No-op when the source
 # and destination homes are identical (own-host / own-user pull).
 # Usage: _bundle_rewrite_home_paths <file> <src_home> <dst_home> <username>
+# Format an epoch (seconds) as local "YYYY-MM-DD HH:MM" (GNU and BSD date)
+_bundle_fmt_epoch() {
+    date -d "@$1" '+%Y-%m-%d %H:%M' 2>/dev/null || date -r "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$1"
+}
+
+# Issue #141: decide whether a bundled Claude session should replace the local
+# one. Prints the reason and returns 1 to skip the entry, 0 to install it.
+# Usage: _bundle_claude_session_gate <bundled-file> <local-file> <bundle_host>
+_bundle_claude_session_gate() {
+    local src="$1" dst="$2" bundle_host="$3"
+    local bstate lstate
+    bstate=$(tools_claude_session_state "$src")
+
+    case "$bstate" in
+        empty)
+            echo "  skipped (no Claude session in bundle; ${bundle_host} was logged out when it pushed): .claude/.credentials.json"
+            return 1
+            ;;
+        expired\ *)
+            local when
+            when=$(_bundle_fmt_epoch "${bstate#expired }")
+            lstate=$(tools_claude_session_state "$dst")
+            if [[ "$lstate" == valid\ * ]]; then
+                echo "  skipped (stale): .claude/.credentials.json (bundle's Claude access token expired ${when}; keeping the working local login)"
+                return 1
+            fi
+            utils_warn "Claude session in this bundle is stale: its access token expired ${when}. If ${bundle_host} has used Claude since, the refresh token is already used up and Claude will say 'Login expired'. Fix: run 'cac push' on ${bundle_host}, then 'cac pull' here."
+            return 0
+            ;;
+    esac
+    return 0
+}
+
 _bundle_rewrite_home_paths() {
     local file="$1"
     local src_home="$2"
@@ -377,6 +410,13 @@ bundle_extract() {
 
         local src_file="${temp_dir}/${entry}"
         local dst_file="${home_dir}/${entry}"
+
+        # Issue #141: never install an empty or stale Claude session over a
+        # working local login, and never apply a stale one silently.
+        if [[ "$entry" == ".claude/.credentials.json" ]] \
+            && ! _bundle_claude_session_gate "$src_file" "$dst_file" "$bundle_host"; then
+            continue
+        fi
 
         if ! _bundle_ensure_dir "$(dirname "$dst_file")" "$username"; then
             extract_failed="true"

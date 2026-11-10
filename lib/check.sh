@@ -542,6 +542,20 @@ check_tool_opencode() {
     return $CHECK_EXIT_SUCCESS
 }
 
+# Issue #141: after a failed Claude check, say why when the local session is
+# dead (tokens wiped by Claude Code after a rejected refresh, or expired).
+# Usage: _check_explain_claude_session <home_dir>
+_check_explain_claude_session() {
+    local home_dir="$1"
+    local state
+    state=$(tools_claude_session_state "${home_dir}/.claude/.credentials.json")
+    case "$state" in
+        empty|expired\ *)
+            utils_warn "Claude session in ${home_dir}/.claude/.credentials.json is dead (${state%% *}). A session copied by cac stops working once another copy refreshes it (single-use refresh token). Fix: run 'cac push' on the host where Claude works, then 'cac pull' here, or set up 'claude setup-token' (see README, 'Sharing a Claude login across hosts')."
+            ;;
+    esac
+}
+
 # Check a single tool
 # Usage: check_single_tool <tool> <use_sudo> <target_user> <home_dir>
 # Returns: 0=success, 1=auth fail, 2=unknown tool, 3=timeout, 4=missing dep
@@ -630,6 +644,7 @@ check_single_tool() {
         "$CHECK_EXIT_AUTH_FAIL")
             echo "FAILED"
             _check_cache_set "$tool" "$cache_key" "FAIL"
+            [[ "$tool" == "claude" ]] && _check_explain_claude_session "$home_dir"
             ;;
         "$CHECK_EXIT_TIMEOUT")
             echo "TIMEOUT"
