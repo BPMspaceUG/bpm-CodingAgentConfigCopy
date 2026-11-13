@@ -195,6 +195,6 @@ The five canonical triage roles, using the default label strings. See `docs/agen
 
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
-## Status: v1 is frozen
+## Status: v1 is the active codebase
 
-cac v1 receives crash and security fixes only. New work happens in the v2 rewrite, `BPMspaceUG/bpm-CodingAgentConfigCopy2`, whose `docs/spec/` distils this repo's issue history.
+The v1 freeze declared in #135 was lifted by the owner on 2026-11-13 (#147): new work, not only crash and security fixes, happens in this repo. The spec-first rewrite in `BPMspaceUG/bpm-CodingAgentConfigCopy2` is paused; its `docs/spec/` is a reference for this repo's issue history, not the place for new work.

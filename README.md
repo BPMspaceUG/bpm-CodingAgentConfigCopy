@@ -490,7 +490,7 @@ Supported flows:
    precedence over `.credentials.json`. Limitation: the token can only make
    model requests, so Remote Control and claude.ai connectors do not work with
    it ([Claude Code authentication](https://code.claude.com/docs/en/authentication.md#generate-a-long-lived-token)).
-   `cac` does not distribute this token; v1 is frozen.
+   `cac` does not distribute this token.
 3. **Codex:** an API key login (`OPENAI_API_KEY`) does not use a refresh
    token. For a ChatGPT login, use the move flow above.
 
