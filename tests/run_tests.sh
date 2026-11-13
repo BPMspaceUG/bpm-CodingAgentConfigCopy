@@ -219,6 +219,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #142 tests (cac check without a TTY)
+    if $run_all || [[ "$filter" == "issue_142" ]] || [[ "$filter" == "142" ]]; then
+        if ! run_test_suite "Issue #142 Tests" "test_issue_142.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #143 tests (fail() inside run_test turns the test red)
     if $run_all || [[ "$filter" == "issue_143" ]] || [[ "$filter" == "143" ]]; then
         if ! run_test_suite "Issue #143 Tests" "test_issue_143.sh"; then

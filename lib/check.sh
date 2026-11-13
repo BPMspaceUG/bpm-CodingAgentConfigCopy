@@ -159,17 +159,22 @@ _check_spinner() {
     local frames=('|' '/' '-' '\')
     local i=0
 
-    # Only show spinner if terminal is available
-    [[ -c /dev/tty ]] || return 0
+    # Only show spinner if a terminal can actually be opened (Issue #142):
+    # the /dev/tty node exists even without a controlling terminal (ssh with
+    # a command, cron, containers), so [[ -c /dev/tty ]] is not enough; only
+    # opening it tells. Open it once and draw on that descriptor.
+    local tty_fd
+    { exec {tty_fd}>/dev/tty; } 2>/dev/null || return 0
 
     while kill -0 "$pid" 2>/dev/null; do
-        printf '%s\b' "${frames[i]}" > /dev/tty
+        printf '%s\b' "${frames[i]}" >&"$tty_fd"
         i=$(( (i + 1) % 4 ))
         sleep 0.2
     done
 
     # Clear spinner character
-    printf ' \b' > /dev/tty
+    printf ' \b' >&"$tty_fd"
+    exec {tty_fd}>&-
 }
 
 # Run command with timeout and spinner
