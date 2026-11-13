@@ -227,6 +227,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #146 tests (pull --all applies the newest bundle per tool)
+    if $run_all || [[ "$filter" == "issue_146" ]] || [[ "$filter" == "146" ]]; then
+        if ! run_test_suite "Issue #146 Tests" "test_issue_146.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #80 tests (opencode registry + check wiring)
     if $run_all || [[ "$filter" == "issue_80" ]] || [[ "$filter" == "80" ]]; then
         if ! run_test_suite "Issue #80 Tests" "test_issue_80.sh"; then

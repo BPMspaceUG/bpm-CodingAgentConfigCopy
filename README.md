@@ -182,6 +182,9 @@ sudo cac pull --user bob
 
 # Pull to ALL users with AI tool configs (requires root)
 sudo cac pull --all
+
+# Give every such user rob's bundles (requires root)
+sudo cac pull --all --user rob
 ```
 
 Without `--tool`, both `cac push` and `cac pull` operate **per tool** — they loop over every supported tool (`claude`, `codex`, `gemini`, `mistral`):
@@ -195,7 +198,7 @@ The three source semantics are distinct:
 
 - **no `--user`** — uploader-agnostic: applies the newest bundle **per tool**, regardless of who uploaded it.
 - **`--user <UPLOADER>`** — narrows the source to bundles **uploaded by** that user (targeting another user's home requires root).
-- **`--all`** — root-only per-local-user discovery + fan-out: scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`, `.vibe`, `.config/opencode`, `.local/share/opencode`) or files (`.claude.json`) and pulls each discovered user's own newest bundle.
+- **`--all`** — root-only per-local-user discovery + fan-out: scans `/home/*` and `/root` for users with AI tool config directories (`.claude`, `.codex`, `.gemini`, `.vibe`, `.config/opencode`, `.local/share/opencode`) or files (`.claude.json`) and applies to each discovered user the newest bundle **per tool** that this user uploaded. `--all --user <UPLOADER>` applies UPLOADER's bundles to every discovered user instead (e.g. one login shared by all host users). Users without matching bundles are skipped.
 
 ### List Bundles
 
