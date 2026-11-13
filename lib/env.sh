@@ -409,8 +409,10 @@ _env_warn_legacy_removal_advice() {
     local dir="$1" tool="$2"
     if _env_repair_preflight_safe_to_delete "$dir" "$tool"; then
         utils_warn "Remove with: sudo rm -rf $dir"
+    elif [[ "$_ENV_LIVENESS_REASON" == "cannot verify"* ]]; then
+        utils_warn "Not advising removal: $_ENV_LIVENESS_REASON"
     else
-        utils_warn "Do not remove it: still in use (${_ENV_LIVENESS_REASON:-liveness could not be verified})"
+        utils_warn "Do not remove it: still in use ($_ENV_LIVENESS_REASON)"
     fi
 }
 
@@ -1972,8 +1974,9 @@ env_get_latest_version() {
 env_show_status() {
     local check_updates="${1:-false}"
 
-    # Check for legacy Bun-based installations (non-fatal warning)
-    _env_warn_legacy_bun_install 2>/dev/null || true
+    # Check for legacy Bun-based installations (non-fatal warning, on stderr;
+    # Issue #137: shown, no longer discarded with 2>/dev/null)
+    _env_warn_legacy_bun_install || true
 
     if [[ "$check_updates" == "true" ]]; then
         printf "%-20s %-12s %-20s %-20s %-10s\n" "Tool" "Status" "Version" "Latest" "Optional"
@@ -2599,7 +2602,7 @@ _env_repair_preflight_safe_to_delete() {
             real=$(readlink -f "$resolved" 2>/dev/null || true)
             case "$real" in
                 "$ndir"|"$ndir"/*)
-                    _ENV_LIVENESS_REASON="active binary '$binary' resolves into $ndir ($real)"
+                    _ENV_LIVENESS_REASON="active binary '$resolved' resolves into $ndir ($real)"
                     return 1
                     ;;
             esac

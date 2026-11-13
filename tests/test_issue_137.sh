@@ -24,6 +24,13 @@ source "$SCRIPT_DIR/test_framework.sh"
 
 framework_init
 
+# Run "$@" in a child bash that has sourced lib/logging, utils and env.
+# Output on stdout+stderr; the caller sets HOME/PATH via env.
+in_env_child() {
+    bash -c 'source "$1/lib/logging.sh"; source "$1/lib/utils.sh" 2>/dev/null
+             source "$1/lib/env.sh"; shift; "$@"' _ "$REPO_DIR" "$@" 2>&1
+}
+
 # Run env_install_tool <tool> <scope> in a child bash with a fake HOME, a stub
 # curl that serves <installer_body>, and PATH limited to the stub dir plus
 # system dirs. A stale binary of the tool sits in $HOME/.local/bin, which the
@@ -34,17 +41,16 @@ run_install() {
     mkdir -p "$d/home/.local/bin" "$d/stub"
     printf '#!/bin/sh\necho "%s 0.0.1-stale"\n' "$stale_binary" > "$d/home/.local/bin/$stale_binary"
     chmod +x "$d/home/.local/bin/$stale_binary"
-    # curl stub: prints the installer script for `curl -fsSL <url>`.
-    printf '#!/bin/sh\ncat <<'"'"'EOS'"'"'\n%s\nEOS\n' "$installer_body" > "$d/stub/curl"
-    chmod +x "$d/stub/curl"
 
-    OUT=$(HOME="$d/home" PATH="$d/stub:/usr/bin:/bin" bash -c '
-        source "$1/lib/logging.sh"
-        source "$1/lib/utils.sh" 2>/dev/null
-        source "$1/lib/env.sh"
-        env_install_tool "$2" "$3" --yes
-    ' _ "$REPO_DIR" "$tool" "$scope" 2>&1)
+    write_curl_stub_serving "$d/stub/curl" "$installer_body"
+    OUT=$(HOME="$d/home" PATH="$d/stub:/usr/bin:/bin" in_env_child env_install_tool "$tool" "$scope" --yes)
     RC=$?
+}
+
+# curl stub that prints <installer_body> as the downloaded script.
+write_curl_stub_serving() {
+    printf '#!/bin/sh\ncat <<'"'"'EOS'"'"'\n%s\nEOS\n' "$2" > "$1"
+    chmod +x "$1"
 }
 
 # 137.1 [anti-bug]: a refused installer is a failed install, even though a
@@ -73,15 +79,11 @@ test_137_2_successful_installer_unchanged() {
 #       even without pipefail in the caller.
 test_137_3_failed_download_is_failure() {
     local d="$TEST_TMPDIR/1373"
-    run_install 1373 mistral user 'exit 0' vibe
+    mkdir -p "$d/home" "$d/stub"
     printf '#!/bin/sh\necho "curl: (22) The requested URL returned error: 503" >&2\nexit 22\n' > "$d/stub/curl"
-    OUT=$(HOME="$d/home" PATH="$d/stub:/usr/bin:/bin" bash -c '
-        set +o pipefail
-        source "$1/lib/logging.sh"
-        source "$1/lib/utils.sh" 2>/dev/null
-        source "$1/lib/env.sh"
-        env_install_tool mistral user --yes
-    ' _ "$REPO_DIR" 2>&1)
+    chmod +x "$d/stub/curl"
+    # The child shell runs without pipefail (in_env_child sets none).
+    OUT=$(HOME="$d/home" PATH="$d/stub:/usr/bin:/bin" in_env_child env_install_tool mistral user --yes)
     RC=$?
 
     [[ "$RC" -ne 0 ]] || { echo "rc 0 after failed download: $OUT" >&2; return 1; }
@@ -112,12 +114,7 @@ test_137_5_live_legacy_dir_no_rm_advice() {
     chmod +x "$d/bin/claude"
 
     local out
-    out=$(PATH="$d/bin:/usr/bin:/bin" bash -c '
-        source "$1/lib/logging.sh"
-        source "$1/lib/utils.sh" 2>/dev/null
-        source "$1/lib/env.sh"
-        _env_warn_legacy_bun_install "$2/opt/claude-code" "$2/opt/nonexistent-cc"
-    ' _ "$REPO_DIR" "$d" 2>&1)
+    out=$(PATH="$d/bin:/usr/bin:/bin" in_env_child _env_warn_legacy_bun_install "$d/opt/claude-code" "$d/opt/nonexistent-cc")
 
     if [[ "$out" == *"rm -rf"* ]]; then
         echo "rm -rf advised for a live install: $out" >&2
@@ -127,18 +124,64 @@ test_137_5_live_legacy_dir_no_rm_advice() {
     assert_contains "Legacy Bun-based" "$out" "legacy dir still reported" || return 1
 }
 
+# 137.7: a launcher that is a SYMLINK into the legacy dir is named by its path.
+test_137_7_symlinked_launcher_named() {
+    local d="$TEST_TMPDIR/1377"
+    mkdir -p "$d/opt/claude-code/node_modules/.bin" "$d/bin"
+    printf '#!/bin/sh\necho claude\n' > "$d/opt/claude-code/node_modules/.bin/claude"
+    chmod +x "$d/opt/claude-code/node_modules/.bin/claude"
+    ln -s "$d/opt/claude-code/node_modules/.bin/claude" "$d/bin/claude"
+
+    local out
+    out=$(PATH="$d/bin:/usr/bin:/bin" in_env_child _env_warn_legacy_bun_install "$d/opt/claude-code" "$d/opt/nonexistent-cc")
+
+    if [[ "$out" == *"rm -rf"* ]]; then
+        echo "rm -rf advised for a live install: $out" >&2
+        return 1
+    fi
+    assert_contains "$d/bin/claude" "$out" "symlinked launcher named by path"
+}
+
+# 137.8: when liveness cannot be verified, no removal advice and no claim
+#        that the dir is in use.
+test_137_8_unverifiable_is_not_called_in_use() {
+    local d="$TEST_TMPDIR/1378"
+    mkdir -p "$d/opt/claude-code" "$d/bin"
+    printf '#!/bin/sh\nexit 1\n' > "$d/bin/ps"; chmod +x "$d/bin/ps"
+
+    local out
+    out=$(PATH="$d/bin:/usr/bin:/bin" _ENV_PROC_ROOT="$d/noproc" \
+        in_env_child _env_warn_legacy_bun_install "$d/opt/claude-code" "$d/opt/nonexistent-cc")
+
+    if [[ "$out" == *"rm -rf"* ]]; then
+        echo "rm -rf advised although liveness is unknown: $out" >&2
+        return 1
+    fi
+    if [[ "$out" == *"still in use"* ]]; then
+        echo "claims use that was not shown: $out" >&2
+        return 1
+    fi
+    assert_contains "cannot verify" "$out" "reason shown" || return 1
+}
+
+# 137.9: `env status` shows the legacy warning instead of discarding it.
+test_137_9_env_status_shows_warning() {
+    local d="$TEST_TMPDIR/1379"
+    mkdir -p "$d/opt/claude-code"
+    local out
+    out=$(in_env_child bash -c 'source "$0/lib/logging.sh"; source "$0/lib/utils.sh" 2>/dev/null; source "$0/lib/env.sh"
+        _env_warn_legacy_bun_install() { utils_warn "LEGACY-WARNING-SEEN"; return 0; }
+        env_show_status' "$REPO_DIR")
+    assert_contains "LEGACY-WARNING-SEEN" "$out" "warning reaches the operator"
+}
+
 # 137.6: an unused legacy dir keeps the existing removal advice.
 test_137_6_unused_legacy_dir_keeps_advice() {
     local d="$TEST_TMPDIR/1376"
     mkdir -p "$d/opt/claude-code"
 
     local out
-    out=$(PATH="/usr/bin:/bin" bash -c '
-        source "$1/lib/logging.sh"
-        source "$1/lib/utils.sh" 2>/dev/null
-        source "$1/lib/env.sh"
-        _env_warn_legacy_bun_install "$2/opt/claude-code" "$2/opt/nonexistent-cc"
-    ' _ "$REPO_DIR" "$d" 2>&1)
+    out=$(PATH="/usr/bin:/bin" in_env_child _env_warn_legacy_bun_install "$d/opt/claude-code" "$d/opt/nonexistent-cc")
 
     assert_contains "Remove with: sudo rm -rf $d/opt/claude-code" "$out" "removal advice kept"
 }
@@ -156,5 +199,8 @@ run_test_if "$IS_ROOT" "137.4 global failure creates no /usr/local/bin symlink" 
     test_137_4_global_failure_creates_no_symlink "needs root"
 run_test "137.5 live legacy dir: no rm -rf advice, launcher named" test_137_5_live_legacy_dir_no_rm_advice
 run_test "137.6 unused legacy dir: removal advice kept" test_137_6_unused_legacy_dir_keeps_advice
+run_test "137.7 symlinked launcher into legacy dir is named" test_137_7_symlinked_launcher_named
+run_test "137.8 unverifiable liveness: no advice, not called in use" test_137_8_unverifiable_is_not_called_in_use
+run_test "137.9 env status shows the legacy warning" test_137_9_env_status_shows_warning
 
 framework_report
