@@ -45,6 +45,8 @@ build_bundle() {
     rm -rf "$stage"
 }
 
+# Claude credentials JSON (one line, as Claude Code writes it).
+# Usage: creds <accessToken> <refreshToken> <expiresAt-ms>
 creds() {
     printf '{"claudeAiOauth":{"accessToken":"%s","refreshToken":"%s","expiresAt":%s,"scopes":["user:inference"],"subscriptionType":"max"}}' \
         "$1" "$2" "$3"
@@ -108,7 +110,7 @@ test_146_2_uploader_mapped_to_other_user() {
 }
 
 # 146.3: without a mapping, a user with no own uploads gets nothing and the
-#        step says so instead of failing.
+#        step reports a skip (exit 2), not a failure and not a success.
 test_146_3_no_own_uploads_skipped() {
     local store home; new_fixture 1463
     store_rob_per_tool "$store" "$(creds "rob-at" "rob-rt" "$(future_ms)")"
@@ -116,7 +118,7 @@ test_146_3_no_own_uploads_skipped() {
     local out rc=0
     out=$(_pull_all_user false matt "$home" matt 2>&1) || rc=$?
 
-    assert_equals 0 "$rc" "exit code for a user without bundles" || return 1
+    assert_equals 2 "$rc" "exit code for a user without bundles (skip)" || return 1
     [[ ! -e "$home/.codex/auth.json" ]] || { echo "codex was applied to matt" >&2; return 1; }
     assert_contains "No bundle found for matt" "$out" "skip reason" || return 1
 }
@@ -150,6 +152,36 @@ test_146_5_dry_run_lists_every_tool() {
     [[ ! -e "$home/.codex/auth.json" ]] || { echo "dry-run wrote files" >&2; return 1; }
 }
 
+# 146.7: a backend error (e.g. Gokapi unreachable) is a failure, never a
+#        "No bundle found" skip.
+test_146_7_backend_error_is_failure() {
+    local store home; new_fixture 1467
+    backend_call() { echo "ERROR: Failed to connect to gokapi.example" >&2; return 1; }
+
+    local out rc=0
+    out=$(_pull_all_user false rob "$home" rob 2>&1) || rc=$?
+
+    assert_equals 1 "$rc" "exit code on backend error" || return 1
+    assert_contains "Failed to connect" "$out" "backend error surfaced" || return 1
+    if [[ "$out" == *"No bundle found"* ]]; then
+        echo "backend error reported as a skip: $out" >&2
+        return 1
+    fi
+}
+
+# 146.8: `cac pull --all --user rob` hands rob to cmd_pull_all as the uploader;
+#        plain --all hands no uploader. (run_test's subshell scopes the stub.)
+test_146_8_all_user_reaches_cmd_pull_all() {
+    local spy=""
+    cmd_pull_all() { spy="$1|${2:-}"; }
+
+    cmd_pull --all --user rob --dry-run >/dev/null 2>&1
+    assert_equals "true|rob" "$spy" "cmd_pull_all args for --all --user rob --dry-run" || return 1
+
+    cmd_pull --all >/dev/null 2>&1
+    assert_equals "false|" "$spy" "cmd_pull_all args for plain --all" || return 1
+}
+
 # 146.6: help states which bundles --all picks and how to map an uploader.
 test_146_6_help_text() {
     local out; out=$(show_help)
@@ -167,5 +199,7 @@ run_test "146.3 a user without own uploads is skipped, not failed" test_146_3_no
 run_test "146.4 #141 stale-session guard holds on the --all path" test_146_4_stale_claude_guard
 run_test "146.5 dry-run names every tool's bundle and writes nothing" test_146_5_dry_run_lists_every_tool
 run_test "146.6 help text documents --all bundle selection" test_146_6_help_text
+run_test "146.7 a backend error is a failure, not a skip" test_146_7_backend_error_is_failure
+run_test "146.8 --all --user hands the uploader to cmd_pull_all" test_146_8_all_user_reaches_cmd_pull_all
 
 framework_report

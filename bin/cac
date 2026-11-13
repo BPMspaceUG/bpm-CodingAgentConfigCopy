@@ -384,6 +384,8 @@ cmd_pull() {
     local explicit_tool=""
     local tool_provided="false"
     local bundle_id=""
+    # --user value seen in pre-parse: the --all branch returns before
+    # utils_init_command_context sets PARSED_USER, so it needs its own copy.
     local user_value=""
     local args=()
 
@@ -727,15 +729,23 @@ _pull_all_find_users() {
 # Pull the newest bundle per tool into one local user's home: the per-user
 # step of `cac pull --all` (Issue #146). <uploader> is whose bundles are
 # applied: the user's own name by default, or the --all --user value.
-# A user with no bundles from <uploader> is skipped, not failed.
+# A user with no bundles from <uploader> is skipped; a backend error is a
+# failure, never a skip.
 # Usage: _pull_all_user <dry_run> <username> <home_dir> <uploader>
-# Returns: 0 applied or skipped, 1 if any tool failed.
+# Returns: 0 applied, 1 failed (backend error or a tool failed), 2 skipped.
 _pull_all_user() {
     local dry_run="$1" username="$2" home_dir="$3" uploader="$4"
 
-    if ! backend_call get_newest --user "$uploader" >/dev/null 2>&1; then
-        echo "  No bundle found for $uploader, skipping $username"
-        return 0
+    local probe_err rc=0
+    probe_err=$(backend_call get_newest --user "$uploader" 2>&1 >/dev/null) || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        if grep -qE '^ERROR: No bundles? found( matching:|[[:space:]])' <<<"$probe_err"; then
+            echo "  No bundle found for $uploader, skipping $username"
+            return 2
+        fi
+        utils_error "Backend error while looking up bundles for $uploader:"
+        sed 's/^/  /' <<<"$probe_err" >&2
+        return 1
     fi
 
     _pull_newest_per_tool "$home_dir" "$username" "$dry_run" --user "$uploader"
@@ -778,6 +788,7 @@ cmd_pull_all() {
     echo ""
 
     local success=0
+    local skipped=0
     local failed=0
 
     for username in "${users_found[@]}"; do
@@ -790,18 +801,18 @@ cmd_pull_all() {
             home_dir="/home/$username"
         fi
 
-        if _pull_all_user "$dry_run" "$username" "$home_dir" "${uploader:-$username}"; then
-            echo "  OK"
-            ((success++)) || true
-        else
-            echo "  FAILED"
-            ((failed++)) || true
-        fi
+        local rc=0
+        _pull_all_user "$dry_run" "$username" "$home_dir" "${uploader:-$username}" || rc=$?
+        case "$rc" in
+            0) echo "  OK"; ((success++)) || true ;;
+            2) ((skipped++)) || true ;;
+            *) echo "  FAILED"; ((failed++)) || true ;;
+        esac
         echo ""
     done
 
     echo "=== Summary ==="
-    echo "Success: $success, Failed: $failed, Total: ${#users_found[@]}"
+    echo "Success: $success, Skipped: $skipped, Failed: $failed, Total: ${#users_found[@]}"
 }
 
 # Silent alias: 'cac get' redirects to 'cac pull' for backward compatibility
