@@ -376,6 +376,9 @@ env_get_version() {
 
 # Warn if legacy Bun-based installs exist in /opt directories.
 # Warning-only — does not block or modify other output.
+# Issue #137: removal is advised only when the #85 preflight finds the dir
+# unused; a dir the launcher on PATH still runs from is reported as in use, so
+# the warning never tells an operator to delete a live install by hand.
 # Usage: _env_warn_legacy_bun_install [claude_dir] [cc_dir]
 # Returns: 0 if legacy dirs found, 1 if clean
 # shellcheck disable=SC2120
@@ -386,17 +389,29 @@ _env_warn_legacy_bun_install() {
 
     if [[ -d "$claude_dir" ]]; then
         utils_warn "Legacy Bun-based Claude Code install found at $claude_dir"
-        utils_warn "Remove with: sudo rm -rf $claude_dir"
+        _env_warn_legacy_removal_advice "$claude_dir" claude
         found=true
     fi
 
     if [[ -d "$cc_dir" ]]; then
         utils_warn "Legacy Bun-based continuous-claude install found at $cc_dir"
-        utils_warn "Remove with: sudo rm -rf $cc_dir"
+        _env_warn_legacy_removal_advice "$cc_dir" continuous-claude
         found=true
     fi
 
     $found
+}
+
+# Second line of the legacy warning (Issue #137): removal advice only when the
+# #85 liveness preflight says the dir is safe to delete, otherwise why not.
+# Usage: _env_warn_legacy_removal_advice <dir> <tool>
+_env_warn_legacy_removal_advice() {
+    local dir="$1" tool="$2"
+    if _env_repair_preflight_safe_to_delete "$dir" "$tool"; then
+        utils_warn "Remove with: sudo rm -rf $dir"
+    else
+        utils_warn "Do not remove it: still in use (${_ENV_LIVENESS_REASON:-liveness could not be verified})"
+    fi
 }
 
 # ============================================================================
@@ -912,7 +927,17 @@ env_install_tool() {
                 fi
             fi
 
-            curl -fsSL "$url" | bash
+            # Issue #137: the installer's own status decides. A refused or
+            # failed installer (e.g. claude.ai/install.sh under sudo) or a
+            # failed download is a failed install, even if a stale binary of
+            # the tool is found on PATH afterwards. pipefail in a subshell so a
+            # curl failure counts whatever the caller set.
+            local installer_rc=0
+            ( set -o pipefail; curl -fsSL "$url" | bash ) || installer_rc=$?
+            if [[ "$installer_rc" -ne 0 ]]; then
+                utils_error "Failed to install $display_name: the installer from $url exited with status $installer_rc"
+                return 1
+            fi
 
             # Issue #57: Symlink curl-installed binary into /usr/local/bin for global scope
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then

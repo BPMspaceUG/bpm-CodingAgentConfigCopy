@@ -211,6 +211,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #137 tests (failed curl installer is a failed install)
+    if $run_all || [[ "$filter" == "issue_137" ]] || [[ "$filter" == "137" ]]; then
+        if ! run_test_suite "Issue #137 Tests" "test_issue_137.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #141 tests (stale Claude session on pull/check)
     if $run_all || [[ "$filter" == "issue_141" ]] || [[ "$filter" == "141" ]]; then
         if ! run_test_suite "Issue #141 Tests" "test_issue_141.sh"; then
