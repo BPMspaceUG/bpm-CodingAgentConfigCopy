@@ -180,6 +180,23 @@ test_141_7_missing_expiry_is_unknown() {
     assert_equals "unknown" "$(tools_claude_session_state "$d/c.json")" "no expiresAt"
 }
 
+# 141.8: a cached FAILED still explains the dead session.
+test_141_8_cached_failure_explains_too() {
+    local d="$TEST_TMPDIR/1418"; mkdir -p "$d/home/rob/.claude"
+    echo '{}' > "$d/home/rob/.claude.json"
+    creds "" "" 0 > "$d/home/rob/$CRED"
+    stub_claude_login_expired "$d/bin"
+
+    PATH="$d/bin:$PATH" XDG_CACHE_HOME="$d/cache" \
+        check_single_tool claude false rob "$d/home/rob" >/dev/null 2>&1
+    local out
+    out=$(PATH="$d/bin:$PATH" XDG_CACHE_HOME="$d/cache" \
+        check_single_tool claude false rob "$d/home/rob" 2>&1) && return 1
+
+    assert_contains "FAILED (cached)" "$out" "served from cache" || return 1
+    assert_contains "cac push" "$out" "fix named"
+}
+
 # 141.9 [#144]: the parser reads real-shape credential files: a live session
 #       behind an expired MCP OAuth entry, a wiped session behind a live one,
 #       and the live file with its expiry moved into the past. Fixtures in
@@ -196,24 +213,9 @@ test_141_9_state_on_real_shape_fixtures() {
     # Same file, Claude expiry in the past; the MCP entry keeps its own value.
     sed 's/"expiresAt":4102444800000,"refreshTokenExpiresAt"/"expiresAt":1000000,"refreshTokenExpiresAt"/' \
         "$fx/claude-credentials.json" > "$d/expired.json"
+    grep -q '"expiresAt":1000000,' "$d/expired.json" \
+        || { echo "fixture layout changed: the expiry sed matched nothing" >&2; return 1; }
     assert_equals "expired 1000" "$(tools_claude_session_state "$d/expired.json")" "expired fixture"
-}
-
-# 141.8: a cached FAILED still explains the dead session.
-test_141_8_cached_failure_explains_too() {
-    local d="$TEST_TMPDIR/1418"; mkdir -p "$d/home/rob/.claude"
-    echo '{}' > "$d/home/rob/.claude.json"
-    creds "" "" 0 > "$d/home/rob/$CRED"
-    stub_claude_login_expired "$d/bin"
-
-    PATH="$d/bin:$PATH" XDG_CACHE_HOME="$d/cache" \
-        check_single_tool claude false rob "$d/home/rob" >/dev/null 2>&1
-    local out
-    out=$(PATH="$d/bin:$PATH" XDG_CACHE_HOME="$d/cache" \
-        check_single_tool claude false rob "$d/home/rob" 2>&1) && return 1
-
-    assert_contains "FAILED (cached)" "$out" "served from cache" || return 1
-    assert_contains "cac push" "$out" "fix named"
 }
 
 # ============================================================================
