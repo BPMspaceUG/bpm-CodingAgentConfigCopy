@@ -27,38 +27,6 @@ cac list                    # List available bundles
 cac test                    # Test AI tool API connectivity
 ```
 
-## Repository Structure
-
-```
-bpm-CodingAgentConfigCopy/
-├── bin/
-│   └── cac                      # Main CLI entrypoint
-├── lib/
-│   ├── backend_gokapi.sh        # Gokapi REST API integration (7-day max TTL)
-│   ├── backend_local.sh         # Local filesystem backend
-│   ├── bundle.sh                # ZIP creation/extraction logic
-│   ├── check.sh                 # Credential verification with caching
-│   ├── config.sh                # Configuration loading (.env)
-│   ├── env.sh                   # AI tool environment management (install/update/status)
-│   ├── logging.sh               # Logging utilities (info, warn, error, verbose)
-│   ├── security.sh              # Permission checks, zip-slip protection
-│   ├── tools.sh                 # Tool-specific file mappings
-│   ├── update.sh                # Self-update logic (scope detection, version check)
-│   └── utils.sh                 # Shared utilities (JSON parsing, retry, filters)
-├── tests/
-│   ├── run_tests.sh             # Test runner
-│   ├── test_bundle.sh           # Bundle tests
-│   ├── test_security.sh         # Security validation tests
-│   ├── test_integration.sh      # End-to-end tests
-│   ├── test_env_settings.sh     # Claude Code settings.json merge tests
-│   └── test_update.sh           # Self-update module tests
-├── install.sh                   # Bootstrap installer
-├── uninstall.sh                 # Clean removal script
-├── cpaiagentconfig.sh           # Legacy single-host copy script
-├── .env.example                 # Configuration template
-└── README.md                    # User documentation
-```
-
 ## Architecture
 
 ### CLI Commands
@@ -87,6 +55,8 @@ bpm-CodingAgentConfigCopy/
 - **check.sh**: Credential verification via real API calls; 5-minute cache, 10-second timeout per provider
 - **env.sh**: AI tool environment management; install/update/status for Claude, Codex, Gemini, Mistral Vibe, continuous-claude; `--tmux` flag sets `teammateMode` in settings.json
 - **logging.sh**: Structured logging (info, warn, error, verbose, spinner)
+- **platform.sh**: Platform detection and wrappers (Linux, macOS, WSL, Windows Git Bash) for filesystem, user and system operations
+- **skill.sh**: Skill library management (`cac skill install/update/list/status` from Git repositories)
 - **update.sh**: Self-update logic; detects install scope (user/global), compares local vs remote version, downloads and re-runs install.sh
 - **utils.sh**: Shared utilities (JSON field extraction, retry with backoff, filter parsing, command context)
 
@@ -141,8 +111,11 @@ Settings are bundled with `cac push` but only extracted by `cac pull` when the b
 # Install dependencies
 sudo apt-get install zip unzip
 
-# Run all tests
+# Run all tests (over 2 minutes: start it in the background)
 ./tests/run_tests.sh
+
+# Run one registered suite by issue number or key (not shown by --help)
+./tests/run_tests.sh 141
 
 # Run specific suite
 ./tests/test_bundle.sh
@@ -197,7 +170,7 @@ Reviewers check `CODING_STANDARDS.md` (credential and config parsers are tested 
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Single-context. No glossary or ADRs exist yet; `/domain-modeling` creates them when needed. See `docs/agents/domain.md`.
 
 ## Status: v1 is the active codebase
 
