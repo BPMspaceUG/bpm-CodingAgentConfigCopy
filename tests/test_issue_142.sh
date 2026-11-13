@@ -5,8 +5,9 @@
 # "/dev/tty: No such device or address" repeatedly. The spinner guarded with
 # [[ -c /dev/tty ]], which is true whenever the device node exists, even in a
 # process with no controlling terminal; only opening it fails. Every caller
-# captures `_check_with_timeout ... 2>&1`, so those errors also landed in the
-# output the credential check then parses.
+# captures `_check_with_timeout ... 2>&1`, so the errors landed in the captured
+# output. The callers grep that output, so the status stayed right, but
+# --verbose prints it on failure: noise, not a wrong verdict.
 #
 # Seam: _check_with_timeout, run in a child process. setsid detaches it from
 # any controlling terminal (the non-TTY case); script(1) gives it a pseudo-TTY
@@ -54,7 +55,7 @@ test_142_1_no_tty_output_clean() {
 #        output stays clean.
 test_142_2_tty_spinner_unchanged() {
     local log="$TEST_TMPDIR/tty.log"
-    script -qec "bash '$CHILD'" "$log" </dev/null >/dev/null 2>&1
+    timeout 30 script -qec "bash '$CHILD'" "$log" </dev/null >/dev/null 2>&1
 
     local seen; seen=$(cat "$log")
     assert_contains "OUT=[credential-ok] RC=0" "$seen" "captured output and exit code" || return 1
@@ -65,15 +66,12 @@ echo "========================================"
 echo "Issue #142: cac check without a TTY"
 echo "========================================"
 
-if framework_has_command setsid; then
-    run_test "142.1 no TTY: no /dev/tty errors, output and exit code intact" test_142_1_no_tty_output_clean
-else
-    skip "142.1 no TTY: no /dev/tty errors" "setsid not installed"
-fi
-if framework_has_command script; then
-    run_test "142.2 with a TTY: spinner still drawn, output intact" test_142_2_tty_spinner_unchanged
-else
-    skip "142.2 with a TTY: spinner still drawn" "script(1) not installed"
-fi
+HAS_SETSID=false; framework_has_command setsid && HAS_SETSID=true
+HAS_SCRIPT=false; framework_has_command script && HAS_SCRIPT=true
+
+run_test_if "$HAS_SETSID" "142.1 no TTY: no /dev/tty errors, output and exit code intact" \
+    test_142_1_no_tty_output_clean "setsid not installed"
+run_test_if "$HAS_SCRIPT" "142.2 with a TTY: spinner still drawn, output intact" \
+    test_142_2_tty_spinner_unchanged "script(1) not installed"
 
 framework_report

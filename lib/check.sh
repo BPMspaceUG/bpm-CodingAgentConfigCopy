@@ -162,18 +162,19 @@ _check_spinner() {
     # Only show spinner if a terminal can actually be opened (Issue #142):
     # the /dev/tty node exists even without a controlling terminal (ssh with
     # a command, cron, containers), so [[ -c /dev/tty ]] is not enough; only
-    # opening it tells. Open it once and draw on that descriptor.
+    # opening it tells. Open it once and draw on that descriptor; writes stay
+    # silent too, in case the terminal goes away mid-spin.
     local tty_fd
     { exec {tty_fd}>/dev/tty; } 2>/dev/null || return 0
 
     while kill -0 "$pid" 2>/dev/null; do
-        printf '%s\b' "${frames[i]}" >&"$tty_fd"
+        { printf '%s\b' "${frames[i]}" >&"$tty_fd"; } 2>/dev/null
         i=$(( (i + 1) % 4 ))
         sleep 0.2
     done
 
     # Clear spinner character
-    printf ' \b' >&"$tty_fd"
+    { printf ' \b' >&"$tty_fd"; } 2>/dev/null
     exec {tty_fd}>&-
 }
 
