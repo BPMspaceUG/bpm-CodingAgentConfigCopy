@@ -197,4 +197,4 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/
 
 ## Status: v1 is the active codebase
 
-The v1 freeze declared in #135 was lifted by the owner on 2026-11-13 (#147): new work, not only crash and security fixes, happens in this repo. The spec-first rewrite in `BPMspaceUG/bpm-CodingAgentConfigCopy2` is paused; its `docs/spec/` is a reference for this repo's issue history, not the place for new work.
+The v1 freeze declared in #135 was lifted by the owner on 2026-11-13 (#147): new work, not only crash and security fixes, happens in this repo. The spec-first rewrite in `BPMspaceUG/bpm-CodingAgentConfigCopy2` is paused; its `docs/spec/` summarises this repo's issue history and is reference only, not the place for new work.
