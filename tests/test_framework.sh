@@ -92,15 +92,24 @@ skip() {
 # Run a test function and record result
 # Usage: run_test "test_name" test_function
 #
-# The test function should return 0 for success, non-zero for failure.
-# Test functions are run in a subshell to catch failures without exiting.
+# The test fails if the function returns non-zero OR calls fail() (#143).
+# Test functions are run in a subshell to catch failures without exiting;
+# fail() only bumps the subshell's copy of TESTS_FAILED, so the subshell
+# compares it against the value it started with before it exits.
 run_test() {
     local test_name="$1"
     local test_func="$2"
     TESTS_RUN=$((TESTS_RUN + 1))
 
     # Run test in subshell to catch failures without exiting main script
-    if (set +e; $test_func); then
+    if (
+        set +e
+        failed_before=$TESTS_FAILED
+        $test_func
+        rc=$?
+        [[ $TESTS_FAILED -eq $failed_before ]] || exit 1
+        exit "$rc"
+    ); then
         pass "$test_name"
     else
         fail "$test_name"

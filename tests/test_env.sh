@@ -347,9 +347,13 @@ test_env_install_claude_uses_curl_not_bun() {
 }
 
 test_env_update_curl_no_bun_redirect() {
-    # Verify no bun global functions exist
-    if declare -f _env_global_install_exists &>/dev/null; then
-        fail "_env_global_install_exists should not exist"
+    # Verify no bun global functions exist.
+    # _env_global_install_exists is NOT checked by name: the Bun-era function
+    # (probing /opt via _ENV_CLAUDE_GLOBAL_BIN/_ENV_CC_GLOBAL_BIN) was removed
+    # in #56, and #71 reused the name for the /usr/local/bin dual-install guard
+    # that #71/#79 depend on (#143). Check the Bun-era state it read instead.
+    if [[ -n "${_ENV_CLAUDE_GLOBAL_BIN+set}" || -n "${_ENV_CC_GLOBAL_BIN+set}" ]]; then
+        fail "Bun-era _ENV_CLAUDE_GLOBAL_BIN/_ENV_CC_GLOBAL_BIN should not exist"
     fi
     if declare -f _env_update_claude_global &>/dev/null; then
         fail "_env_update_claude_global should not exist"
