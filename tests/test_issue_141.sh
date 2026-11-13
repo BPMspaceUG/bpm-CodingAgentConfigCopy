@@ -180,6 +180,25 @@ test_141_7_missing_expiry_is_unknown() {
     assert_equals "unknown" "$(tools_claude_session_state "$d/c.json")" "no expiresAt"
 }
 
+# 141.9 [#144]: the parser reads real-shape credential files: a live session
+#       behind an expired MCP OAuth entry, a wiped session behind a live one,
+#       and the live file with its expiry moved into the past. Fixtures in
+#       tests/fixtures/ mirror what Claude Code writes (keys, order, one line).
+test_141_9_state_on_real_shape_fixtures() {
+    local fx="$REPO_DIR/tests/fixtures"
+    local d="$TEST_TMPDIR/1419"; mkdir -p "$d"
+
+    assert_equals "valid 4102444800" "$(tools_claude_session_state "$fx/claude-credentials.json")" \
+        "live fixture" || return 1
+    assert_equals "empty" "$(tools_claude_session_state "$fx/claude-credentials-wiped.json")" \
+        "wiped fixture" || return 1
+
+    # Same file, Claude expiry in the past; the MCP entry keeps its own value.
+    sed 's/"expiresAt":4102444800000,"refreshTokenExpiresAt"/"expiresAt":1000000,"refreshTokenExpiresAt"/' \
+        "$fx/claude-credentials.json" > "$d/expired.json"
+    assert_equals "expired 1000" "$(tools_claude_session_state "$d/expired.json")" "expired fixture"
+}
+
 # 141.8: a cached FAILED still explains the dead session.
 test_141_8_cached_failure_explains_too() {
     local d="$TEST_TMPDIR/1418"; mkdir -p "$d/home/rob/.claude"
@@ -210,5 +229,6 @@ run_test "141.5 check explains a wiped Claude session"           test_141_5_chec
 run_test "141.6 state reads the claudeAiOauth object only"     test_141_6_state_reads_claude_object_only
 run_test "141.7 missing expiresAt is unknown, not expired"     test_141_7_missing_expiry_is_unknown
 run_test "141.8 cached FAILED still explains the session"      test_141_8_cached_failure_explains_too
+run_test "141.9 state on real-shape credential fixtures (#144)" test_141_9_state_on_real_shape_fixtures
 
 framework_report

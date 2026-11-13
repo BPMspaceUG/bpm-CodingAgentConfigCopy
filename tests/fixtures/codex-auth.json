@@ -1,0 +1,16 @@
+{
+  "auth_mode": "chatgpt",
+  "OPENAI_API_KEY": null,
+  "tokens": {
+    "id_token": "eyJGSVhUVVJFIjoiaWQtdG9rZW4ifQ.eyJGSVhUVVJFIjoibm90LXJlYWwifQ.FIXTURE-SIGNATURE",
+    "access_token": "eyJGSVhUVVJFIjoiYWNjZXNzLXRva2VuIn0.eyJGSVhUVVJFIjoibm90LXJlYWwifQ.FIXTURE-SIGNATURE",
+    "refresh_token": "rt.1.FIXTURE-REFRESH-TOKEN-NOT-REAL",
+    "account_id": "00000000-0000-4000-8000-000000000000",
+    "login_owner_id": "FIXTURE-LOGIN-OWNER",
+    "oauth_provenance": {
+      "issuer": "https://auth.openai.com",
+      "client_id": "app_FIXTURE"
+    }
+  },
+  "last_refresh": "2026-11-03T13:48:19.449827174Z"
+}

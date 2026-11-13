@@ -191,6 +191,10 @@ Issues live as GitHub issues in `BPMspaceUG/bpm-CodingAgentConfigCopy`, managed 
 
 The five canonical triage roles, using the default label strings. See `docs/agents/triage-labels.md`.
 
+### Coding standards
+
+Reviewers check `CODING_STANDARDS.md` (credential and config parsers are tested against real-shape fixtures in `tests/fixtures/`).
+
 ### Domain docs
 
 Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
