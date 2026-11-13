@@ -63,7 +63,7 @@ cac test                    # Test AI tool API connectivity
 ### Bundle Naming Convention
 
 ```
-CodingAgentConfig_<HOST>_<USER>_<YYMMDD-HHMMSS>.zip
+CodingAgentConfig_<HOST>_<USER>_<TOOL>_<YYMMDD-HHMMSS>.zip
 ```
 
 ### Credential Files (portable across hosts)
