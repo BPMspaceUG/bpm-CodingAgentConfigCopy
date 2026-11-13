@@ -114,7 +114,9 @@ sudo apt-get install zip unzip
 # Run all tests (over 2 minutes: start it in the background)
 ./tests/run_tests.sh
 
-# Run one registered suite by issue number or key (not shown by --help)
+# Run one registered suite by issue number or key, e.g. 141. The runner has no
+# --help: an unknown key runs nothing and still prints "All test suites passed!",
+# so check "Test suites passed: 1".
 ./tests/run_tests.sh 141
 
 # Run specific suite
@@ -170,7 +172,7 @@ Reviewers check `CODING_STANDARDS.md` (credential and config parsers are tested 
 
 ### Domain docs
 
-Single-context. No glossary or ADRs exist yet; `/domain-modeling` creates them when needed. See `docs/agents/domain.md`.
+Single-context. Where the glossary and ADRs live, and how to read them: `docs/agents/domain.md`.
 
 ## Status: v1 is the active codebase
 
