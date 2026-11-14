@@ -163,10 +163,61 @@ check_dependencies() {
     fi
 }
 
+# _install_github_api_get <url> <max_time>
+# Issue #131: GET a GitHub API URL, authenticated when a token is available.
+# Copy of _update_github_api_get in lib/update.sh (install.sh runs standalone
+# and cannot source lib/); keep the two in step. Token source: GH_TOKEN,
+# GITHUB_TOKEN, `gh auth token`; sent ONLY to https://api.github.com/, via a
+# 0600 temp file (`-H @file`), never on curl's argv.
+# Prints the body on stdout. Returns 0 on success, 2 when rate-limited (warning
+# with the reset time already on stderr), 1 on any other failure.
+_install_github_api_get() {
+    local url="$1" max_time="$2"
+    local token="" tmp rc=0 status remaining reset body
+
+    if [[ "$url" == https://api.github.com/* ]]; then
+        token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+        if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
+            token=$(gh auth token 2>/dev/null) || token=""
+        fi
+    fi
+
+    tmp=$(umask 077; mktemp -d) || return 1
+    local -a auth=()
+    if [[ -n "$token" ]]; then
+        printf 'Authorization: Bearer %s\n' "$token" > "$tmp/auth"
+        auth=(-H "@$tmp/auth")
+    fi
+
+    body=$(curl -sSL --max-time "$max_time" -D "$tmp/headers" \
+        "${auth[@]+"${auth[@]}"}" "$url" 2>/dev/null) || rc=$?
+
+    status=$(tr -d '\r' < "$tmp/headers" 2>/dev/null | awk '/^HTTP\//{s=$2} END{print s}')
+    remaining=$(tr -d '\r' < "$tmp/headers" 2>/dev/null | awk -F': *' 'tolower($1)=="x-ratelimit-remaining"{v=$2} END{print v}')
+    reset=$(tr -d '\r' < "$tmp/headers" 2>/dev/null | awk -F': *' 'tolower($1)=="x-ratelimit-reset"{v=$2} END{print v}')
+    rm -rf "$tmp"
+
+    if [[ $rc -eq 0 ]] && [[ -z "$status" || "$status" == 2* ]]; then
+        printf '%s\n' "$body"
+        return 0
+    fi
+
+    if [[ "$status" == "403" || "$status" == "429" ]] && [[ "$remaining" == "0" ]]; then
+        local when="unknown"
+        if [[ "$reset" =~ ^[0-9]+$ ]]; then
+            when=$(date -d "@$reset" '+%H:%M %Z' 2>/dev/null || date -r "$reset" '+%H:%M %Z' 2>/dev/null || echo "epoch $reset")
+        fi
+        # stderr: callers capture stdout, and warn() writes to stdout.
+        warn "GitHub API rate limit reached (resets at $when). Set GH_TOKEN or log in with 'gh auth login' to lift the limit." >&2
+        return 2
+    fi
+    return 1
+}
+
 # Fetch the latest release tag from GitHub
 get_latest_version() {
     local version
-    version=$(curl -fsSL "${GITHUB_API_BASE}/releases/latest" 2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4)
+    version=$(_install_github_api_get "${GITHUB_API_BASE}/releases/latest" 15 | grep '"tag_name"' | head -1 | cut -d'"' -f4)
 
     if [[ -z "$version" ]]; then
         echo "main"
@@ -330,7 +381,7 @@ stamp_version() {
 _resolve_install_version() {
     local api_url="${CAC_INSTALL_API_URL:-https://api.github.com/repos/BPMspaceUG/bpm-CodingAgentConfigCopy/commits/main}"
     local api_response="" commit_date="" ver=""
-    if api_response=$(curl -fsSL --max-time 10 "$api_url" 2>/dev/null); then
+    if api_response=$(_install_github_api_get "$api_url" 10); then
         commit_date=$(echo "$api_response" | grep '"date"' | tail -1 | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}' | head -1) || true
         if [[ -n "$commit_date" ]]; then
             ver=$(echo "$commit_date" | sed 's/^20\([0-9][0-9]\)-\([0-9][0-9]\)-\([0-9][0-9]\)T\([0-9][0-9]\):\([0-9][0-9]\)/\1\2\3-\4\5/')

@@ -39,6 +39,8 @@ _load_install_fns() {
     local install_sh="${PROJECT_ROOT}/install.sh"
     eval "$(sed -n '/^stamp_version()/,/^}/p' "$install_sh")"
     eval "$(sed -n '/^_resolve_install_version()/,/^}/p' "$install_sh")"
+    # Issue #131: _resolve_install_version fetches through this helper.
+    eval "$(sed -n '/^_install_github_api_get()/,/^}/p' "$install_sh")"
     # stamp_version references warn() on an error path
     warn() { echo "WARN: $*" >&2; }
 }

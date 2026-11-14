@@ -211,6 +211,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #131 tests (authenticated GitHub API calls, rate-limit message)
+    if $run_all || [[ "$filter" == "issue_131" ]] || [[ "$filter" == "131" ]]; then
+        if ! run_test_suite "Issue #131 Tests" "test_issue_131.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #133 tests (unreachable root copy refused before the installer)
     if $run_all || [[ "$filter" == "issue_133" ]] || [[ "$filter" == "133" ]]; then
         if ! run_test_suite "Issue #133 Tests" "test_issue_133.sh"; then

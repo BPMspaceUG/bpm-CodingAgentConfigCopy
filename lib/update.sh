@@ -185,6 +185,68 @@ update_get_local_version() {
     echo "$version"
 }
 
+# _update_github_api_get <url> <max_time>
+# Issue #131: GET a GitHub API URL, authenticated when a token is available.
+#
+# Unauthenticated calls share GitHub's 60 req/h per-IP quota; a token lifts it
+# to 5,000 req/h. Token source, first hit wins: GH_TOKEN, GITHUB_TOKEN,
+# `gh auth token`. The token is sent ONLY to https://api.github.com/ — an
+# overridden base URL (UPDATE_GITHUB_API_BASE, used by tests and mirrors) on any
+# other host never receives it. It travels in a 0600 temp file via `-H @file`,
+# so it never appears in curl's argv (visible in ps).
+#
+# install.sh carries a copy (_install_github_api_get): it runs standalone and
+# cannot source lib/. Keep the two in step.
+#
+# Prints the response body on stdout. Returns 0 on success, 2 when rate-limited
+# (message with the reset time already on stderr), 1 on any other failure.
+_update_github_api_get() {
+    local url="$1" max_time="$2"
+    local token="" tmp rc=0 status remaining reset
+
+    if [[ "$url" == https://api.github.com/* ]]; then
+        token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+        if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
+            token=$(gh auth token 2>/dev/null) || token=""
+        fi
+    fi
+
+    tmp=$(umask 077; mktemp -d) || return 1
+    local -a auth=()
+    if [[ -n "$token" ]]; then
+        printf 'Authorization: Bearer %s\n' "$token" > "$tmp/auth"
+        auth=(-H "@$tmp/auth")
+    fi
+
+    local body
+    body=$(curl -sSL --max-time "$max_time" -D "$tmp/headers" \
+        "${auth[@]+"${auth[@]}"}" "$url" 2>/dev/null) || rc=$?
+
+    # Last status line wins (-L may follow redirects). No headers at all (a
+    # file:// URL in tests) counts as success when curl itself succeeded.
+    status=$(tr -d '\r' < "$tmp/headers" 2>/dev/null | awk '/^HTTP\//{s=$2} END{print s}')
+    remaining=$(tr -d '\r' < "$tmp/headers" 2>/dev/null | awk -F': *' 'tolower($1)=="x-ratelimit-remaining"{v=$2} END{print v}')
+    reset=$(tr -d '\r' < "$tmp/headers" 2>/dev/null | awk -F': *' 'tolower($1)=="x-ratelimit-reset"{v=$2} END{print v}')
+
+    if [[ $rc -eq 0 ]] && [[ -z "$status" || "$status" == 2* ]]; then
+        printf '%s\n' "$body"
+        rm -rf "$tmp"
+        return 0
+    fi
+    rm -rf "$tmp"
+
+    if [[ "$status" == "403" || "$status" == "429" ]] && [[ "$remaining" == "0" ]]; then
+        local when="unknown"
+        if [[ "$reset" =~ ^[0-9]+$ ]]; then
+            when=$(date -d "@$reset" '+%H:%M %Z' 2>/dev/null || date -r "$reset" '+%H:%M %Z' 2>/dev/null || echo "epoch $reset")
+        fi
+        utils_error "GitHub API rate limit reached (resets at $when)."
+        echo "  Set GH_TOKEN or log in with 'gh auth login' to lift the limit (60 -> 5,000 requests per hour)." >&2
+        return 2
+    fi
+    return 1
+}
+
 # Fetch the version of the latest cac from GitHub using the commit date.
 # Uses the GitHub API to get the latest commit on main and extracts the
 # committer date, formatting it as YYMMDD-HHMM to match stamp_version().
@@ -192,9 +254,12 @@ update_get_local_version() {
 # Returns: version string on stdout, 1 on failure
 update_get_remote_version() {
     local api_url="${UPDATE_GITHUB_API_BASE:-https://api.github.com/repos/BPMspaceUG/bpm-CodingAgentConfigCopy}/commits/main"
-    local response
+    local response rc=0
 
-    if ! response=$(curl -fsSL --max-time 15 "$api_url" 2>/dev/null); then
+    response=$(_update_github_api_get "$api_url" 15) || rc=$?
+    if [[ $rc -eq 2 ]]; then
+        return 1                      # rate-limit message already printed
+    elif [[ $rc -ne 0 ]]; then
         utils_error "Failed to fetch remote version from GitHub API"
         return 1
     fi
