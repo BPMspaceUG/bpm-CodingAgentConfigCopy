@@ -192,8 +192,8 @@ update_get_local_version() {
 # to 5,000 req/h. Token source, first hit wins: GH_TOKEN, GITHUB_TOKEN,
 # `gh auth token`. The token is sent ONLY to https://api.github.com/ — an
 # overridden base URL (UPDATE_GITHUB_API_BASE, used by tests and mirrors) on any
-# other host never receives it. It travels in a 0600 temp file via `-H @file`,
-# so it never appears in curl's argv (visible in ps).
+# other host never receives it. It reaches curl through `-H @<(printf …)`, so
+# it is neither written to disk nor visible on any argv (ps).
 #
 # install.sh carries a copy (_install_github_api_get): it runs standalone and
 # cannot source lib/. Keep the two in step.
@@ -202,7 +202,7 @@ update_get_local_version() {
 # (message with the reset time already on stderr), 1 on any other failure.
 _update_github_api_get() {
     local url="$1" max_time="$2"
-    local token="" tmp rc=0 status remaining reset
+    local token="" hdr rc=0 body status remaining reset
 
     if [[ "$url" == https://api.github.com/* ]]; then
         token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
@@ -211,37 +211,43 @@ _update_github_api_get() {
         fi
     fi
 
-    tmp=$(umask 077; mktemp -d) || return 1
-    local -a auth=()
+    # Only the response headers touch the disk; the token never does.
+    hdr=$(umask 077; mktemp) || return 1
     if [[ -n "$token" ]]; then
-        printf 'Authorization: Bearer %s\n' "$token" > "$tmp/auth"
-        auth=(-H "@$tmp/auth")
+        # Process substitution: curl reads the header from a pipe, printf is a
+        # builtin, so the token is neither on disk nor on any argv.
+        body=$(curl -sSL --max-time "$max_time" -D "$hdr" \
+            -H @<(printf 'Authorization: Bearer %s\n' "$token") "$url" 2>/dev/null) || rc=$?
+    else
+        body=$(curl -sSL --max-time "$max_time" -D "$hdr" "$url" 2>/dev/null) || rc=$?
     fi
 
-    local body
-    body=$(curl -sSL --max-time "$max_time" -D "$tmp/headers" \
-        "${auth[@]+"${auth[@]}"}" "$url" 2>/dev/null) || rc=$?
+    # One pass over the headers. Last status line wins (-L may follow
+    # redirects); no headers at all (a file:// URL in tests) counts as success
+    # when curl itself succeeded.
+    read -r status remaining reset < <(tr -d '\r' < "$hdr" 2>/dev/null | awk -F': *' '
+        /^HTTP\//                              { split($0, a, " "); s = a[2] }
+        tolower($1) == "x-ratelimit-remaining" { r = $2 }
+        tolower($1) == "x-ratelimit-reset"     { t = $2 }
+        END { print (s == "" ? "-" : s), (r == "" ? "-" : r), (t == "" ? "-" : t) }')
+    rm -f "$hdr"
 
-    # Last status line wins (-L may follow redirects). No headers at all (a
-    # file:// URL in tests) counts as success when curl itself succeeded.
-    status=$(tr -d '\r' < "$tmp/headers" 2>/dev/null | awk '/^HTTP\//{s=$2} END{print s}')
-    remaining=$(tr -d '\r' < "$tmp/headers" 2>/dev/null | awk -F': *' 'tolower($1)=="x-ratelimit-remaining"{v=$2} END{print v}')
-    reset=$(tr -d '\r' < "$tmp/headers" 2>/dev/null | awk -F': *' 'tolower($1)=="x-ratelimit-reset"{v=$2} END{print v}')
-
-    if [[ $rc -eq 0 ]] && [[ -z "$status" || "$status" == 2* ]]; then
+    if [[ $rc -eq 0 ]] && [[ "$status" == "-" || "$status" == 2* ]]; then
         printf '%s\n' "$body"
-        rm -rf "$tmp"
         return 0
     fi
-    rm -rf "$tmp"
 
     if [[ "$status" == "403" || "$status" == "429" ]] && [[ "$remaining" == "0" ]]; then
-        local when="unknown"
+        local when="unknown" remedy
         if [[ "$reset" =~ ^[0-9]+$ ]]; then
             when=$(date -d "@$reset" '+%H:%M %Z' 2>/dev/null || date -r "$reset" '+%H:%M %Z' 2>/dev/null || echo "epoch $reset")
         fi
-        utils_error "GitHub API rate limit reached (resets at $when)."
-        echo "  Set GH_TOKEN or log in with 'gh auth login' to lift the limit (60 -> 5,000 requests per hour)." >&2
+        if [[ -n "$token" ]]; then
+            remedy="The token in use has hit its limit too; wait for the reset."
+        else
+            remedy="Set GH_TOKEN or log in with 'gh auth login' to lift the limit (60 -> 5,000 requests per hour)."
+        fi
+        utils_error "GitHub API rate limit reached (resets at $when). $remedy"
         return 2
     fi
     return 1

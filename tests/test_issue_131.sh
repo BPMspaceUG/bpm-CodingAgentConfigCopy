@@ -44,7 +44,9 @@ hdr=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -D) hdr="$2"; shift 2 ;;
-        -H) if [[ "$2" == @* ]]; then printf 'HDR:%s\n' "$(cat "${2#@}")" >> "$STUB_LOG"
+        -H) if [[ "$2" == @* ]]; then
+                [[ -f "${2#@}" ]] && printf 'HDRFILE:regular\n' >> "$STUB_LOG"
+                printf 'HDR:%s\n' "$(cat "${2#@}")" >> "$STUB_LOG"
             else printf 'HDR:%s\n' "$2" >> "$STUB_LOG"; fi
             shift 2 ;;
         -o|--max-time|-w) shift 2 ;;
@@ -156,10 +158,63 @@ test_131_6_rate_limit_message() {
     run_remote_version STUB_STATUS=403 STUB_BODY='{"message":"API rate limit exceeded"}' \
         STUB_HEADERS="x-ratelimit-remaining: 0\r\nx-ratelimit-reset: $reset"
 
-    [[ "$RC" -ne 0 ]] || { echo "rc 0 when rate limited: $OUT" >&2; return 1; }
+    assert_equals 1 "$RC" "update_get_remote_version exit code when rate limited" || { echo "$OUT" >&2; return 1; }
     assert_contains "rate limit" "$OUT" "limit named" || return 1
     assert_contains "$(date -d "@$reset" '+%H:%M')" "$OUT" "reset time named" || return 1
     assert_contains "GH_TOKEN" "$OUT" "how to lift it" || return 1
+}
+
+# 131.6b: update_check keeps its error exit (2) when rate limited.
+test_131_6b_update_check_exit() {
+    make_stubs 1316b
+    local rc=0
+    env -u GH_TOKEN -u GITHUB_TOKEN PATH="$STUB/bin:/usr/bin:/bin" STUB_LOG="$STUB_LOG" \
+        STUB_STATUS=403 STUB_HEADERS="x-ratelimit-remaining: 0\r\nx-ratelimit-reset: 1794677447" \
+        bash -c 'source "$1/lib/logging.sh"; source "$1/lib/utils.sh" 2>/dev/null
+                 source "$1/lib/update.sh"
+                 update_get_local_version() { echo "260101-0000"; }
+                 update_check' _ "$REPO_DIR" >/dev/null 2>&1 || rc=$?
+    assert_equals 2 "$rc" "update_check exit code when rate limited"
+}
+
+# 131.12: with a token in use, the remedy does not tell the user to set one.
+test_131_12_rate_limited_with_token() {
+    make_stubs 13112
+    run_remote_version GH_TOKEN="$TOKEN" STUB_STATUS=403 \
+        STUB_HEADERS="x-ratelimit-remaining: 0\r\nx-ratelimit-reset: 1794677447"
+
+    assert_contains "token in use" "$OUT" "token-aware remedy" || return 1
+    if [[ "$OUT" == *"Set GH_TOKEN"* ]]; then
+        echo "tells a token user to set a token: $OUT" >&2
+        return 1
+    fi
+}
+
+# 131.10: the token is never written to a regular file.
+test_131_10_token_not_on_disk() {
+    make_stubs 13110
+    run_remote_version GH_TOKEN="$TOKEN" STUB_BODY="$COMMIT_JSON"
+    run_install_fn _resolve_install_version GH_TOKEN="$TOKEN" STUB_BODY="$COMMIT_JSON"
+
+    assert_contains "HDR:Authorization" "$(cat "$STUB_LOG")" "header sent" || return 1
+    if grep -q '^HDRFILE:regular' "$STUB_LOG"; then
+        echo "token header read from a regular file" >&2
+        return 1
+    fi
+}
+
+# 131.11: the two helper copies (install.sh runs standalone) stay identical
+#         apart from their name and the message line.
+test_131_11_helper_copies_in_step() {
+    local norm='s/_(update|install)_github_api_get/HELPER/; /rate limit reached/d; /callers capture stdout/d'
+    local a b
+    a=$(sed -n '/^_update_github_api_get()/,/^}/p' "$REPO_DIR/lib/update.sh" | sed -E "$norm")
+    b=$(sed -n '/^_install_github_api_get()/,/^}/p' "$REPO_DIR/install.sh" | sed -E "$norm")
+    [[ -n "$a" ]] || { echo "helper not found in lib/update.sh" >&2; return 1; }
+    if [[ "$a" != "$b" ]]; then
+        diff <(echo "$a") <(echo "$b") >&2
+        return 1
+    fi
 }
 
 # 131.7: any other HTTP error keeps the generic message.
@@ -211,6 +266,10 @@ run_test "131.3 overridden API host never receives the token" test_131_3_no_toke
 run_test "131.4 gh auth token used when no env token" test_131_4_gh_auth_token
 run_test "131.5 no token: unauthenticated call still works" test_131_5_no_token_unauthenticated
 run_test "131.6 rate limited: limit, reset time and remedy named" test_131_6_rate_limit_message
+run_test "131.6b update_check keeps exit 2 when rate limited" test_131_6b_update_check_exit
+run_test "131.12 with a token in use, no 'set a token' remedy" test_131_12_rate_limited_with_token
+run_test "131.10 the token is never written to a regular file" test_131_10_token_not_on_disk
+run_test "131.11 helper copies in lib/update.sh and install.sh stay in step" test_131_11_helper_copies_in_step
 run_test "131.7 other HTTP error keeps the generic message" test_131_7_other_error_generic
 run_test "131.8 install.sh _resolve_install_version: token, rate limit, dev" test_131_8_install_resolve_version
 run_test "131.9 install.sh get_latest_version: token, rate limit, main" test_131_9_install_latest_version
