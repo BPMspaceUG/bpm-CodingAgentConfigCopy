@@ -307,8 +307,13 @@ test_8_e2e_unreachable_refused() {
     local rootlike="$T/rootlike"
     local mark="$T/installed"
     _mkbin "$rootlike/.local/bin/claude100"
+    # Issue #133: an install that is ALREADY unreachable is refused before the
+    # installer runs (tests/test_issue_133.sh). This case covers the second line
+    # of defence: the copy on PATH is reachable before the update, and the
+    # installer is what moves it into root's private home.
+    _mkbin "$T/before/bin/claude100"
     mkdir -p "$T/.local/bin"
-    ln -sf "$rootlike/.local/bin/claude100" "$T/.local/bin/claude100"
+    ln -sf "$T/before/bin/claude100" "$T/.local/bin/claude100"
 
     local out rc=0
     out=$(
@@ -324,7 +329,11 @@ test_8_e2e_unreachable_refused() {
         _env_installer_can_update() { return 0; }
         _env_diag_preflight_curl() { return 0; }
         env_check_curl() { return 0; }
-        _env_curl_update_with_capture() { : > "$mark"; return 0; }
+        _env_curl_update_with_capture() {
+            : > "$mark"
+            ln -sf "$rootlike/.local/bin/claude100" "$T/.local/bin/claude100"
+            return 0
+        }
         env_update_tool claude user 2>&1
     ) || rc=$?
 

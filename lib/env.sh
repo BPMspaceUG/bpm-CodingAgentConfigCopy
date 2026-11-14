@@ -1519,6 +1519,38 @@ env_update_tool() {
                 return 1
             fi
 
+            # Issue #133: an install already unreachable for non-root users is
+            # refused HERE, before anything is downloaded, probed or run. The
+            # #94/#95 guard above accepts the #57 layout (/usr/local/bin/x ->
+            # /root/.local/bin/x) because the installer does write it; running
+            # it there only rewrites root's private copy (Mistral even
+            # bootstraps uv into /root/.local/bin) and the #99/#100 check after
+            # the installer then refuses anyway. Same root-only, side-effect-
+            # free contract as the guard above; the post-install check stays as
+            # the second line of defence for installs that BECOME unreachable.
+            if _env_is_root; then
+                local _pre_bin _pre_launcher
+                _pre_bin=$(_env_tool_to_binary "$tool" 2>/dev/null || true)
+                _pre_launcher=""
+                [[ -n "$_pre_bin" ]] && _pre_launcher=$(type -P "$_pre_bin" 2>/dev/null || true)
+                if [[ -n "$_pre_launcher" ]] && ! _env_binary_reachable_by_all "$_pre_launcher"; then
+                    local _cause="copy on PATH is unreachable for non-root users; not running the installer"
+                    utils_error "$display_name: $_cause"
+                    echo "  Launcher on PATH: $_pre_launcher" >&2
+                    echo "  Resolves to:      $(readlink -f "$_pre_launcher" 2>/dev/null || echo "$_pre_launcher")" >&2
+                    echo "  Problem:          $_ENV_VERIFY_REASON" >&2
+                    echo "  Nothing was downloaded or changed." >&2
+                    echo "Remediation: this is a layout defect (see Issue #99); run 'cac env repair $tool'." >&2
+                    if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
+                        echo "  If $SUDO_USER has a user-scope install, update it as $SUDO_USER without sudo: cac env update $tool" >&2
+                    fi
+                    if [[ -n "${ENV_DIAG_CAUSE_FILE:-}" ]]; then
+                        printf '%s\n' "$_cause" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
+                    fi
+                    return 1
+                fi
+            fi
+
             if ! _env_diag_preflight_curl "$tool"; then
                 return 1
             fi

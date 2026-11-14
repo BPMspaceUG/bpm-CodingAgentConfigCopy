@@ -55,6 +55,12 @@ source "${SCRIPT_DIR}/test_framework.sh"
 source "${REPO_DIR}/lib/env.sh"
 
 framework_init
+# Issue #133: in root context env_update_tool now refuses a binary that is not
+# reachable by every user before the installer runs. framework_init creates
+# TEST_TMPDIR 0700, which would make every fixture here unreachable and trip
+# that refusal for a reason unrelated to these tests (see the HARNESS NOTE in
+# tests/test_issue_100.sh).
+chmod 755 "$TEST_TMPDIR"
 
 # Build a scratch dir for one test.
 _scratch() {
