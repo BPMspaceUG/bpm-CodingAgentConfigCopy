@@ -1503,6 +1503,8 @@ env_update_tool() {
             #    for a non-root caller. A tool it classifies "local" is updated
             #    in-process as that non-root user and can never reach this
             #    guard.
+            # 1c. Issue #133: copy on PATH already unreachable for non-root
+            #    users -> refuse. Same root-only, side-effect-free contract.
             # 2. Issue #73 pre-flight: writability + disk-space.
             if _env_is_root && ! _env_installer_can_update "$tool"; then
                 local _cause="installer cannot update the copy on PATH ($_ENV_INSTALLER_REAL_PATH)"
@@ -1540,7 +1542,7 @@ env_update_tool() {
                     echo "  Resolves to:      $(readlink -f "$_pre_launcher" 2>/dev/null || echo "$_pre_launcher")" >&2
                     echo "  Problem:          $_ENV_VERIFY_REASON" >&2
                     echo "  Nothing was downloaded or changed." >&2
-                    echo "Remediation: this is a layout defect (see Issue #99); run 'cac env repair $tool'." >&2
+                    echo "Remediation: this is a layout defect (see Issue #99); run 'cac env check $tool' to see the layout, then 'cac env repair $tool'." >&2
                     if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != "root" ]]; then
                         echo "  If $SUDO_USER has a user-scope install, update it as $SUDO_USER without sudo: cac env update $tool" >&2
                     fi
@@ -1683,13 +1685,13 @@ env_update_tool() {
             # context the promise on offer is a system-wide install, so the
             # promise is what gets verified.
             #
-            # This is the AFTER side of Issues #94/#95. That guard refuses
-            # BEFORE the installer runs when the installer cannot write the
-            # copy on PATH; it deliberately ACCEPTS the Issue #57 layout
-            # (/usr/local/bin/x -> /root/.local/bin/x) because the installer
-            # genuinely does write that target. Accepting it is correct there
-            # and wrong to report as success here — the two checks compose,
-            # they do not overlap.
+            # This is the AFTER side of Issues #94/#95 and #133. The #94/#95
+            # guard accepts the Issue #57 layout (/usr/local/bin/x ->
+            # /root/.local/bin/x) because the installer does write that
+            # target; since Issue #133 the 1c check refuses that layout before
+            # the installer when it is ALREADY unreachable. What remains for
+            # this check is an install the installer itself made unreachable,
+            # and launchers the pre-check cannot see through (script wrappers).
             if _env_is_root && ! _env_binary_reachable_by_all "$resolved"; then
                 local _cause="update produced an install unreachable for non-root users"
                 utils_error "$display_name: $_cause"

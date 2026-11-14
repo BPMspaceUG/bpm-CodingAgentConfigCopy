@@ -36,33 +36,35 @@ _mkbin() {
     chmod 755 "$1"
 }
 
-# Build a layout under $TEST_TMPDIR/<name>: a launcher $T/bin/vibe133 that is a
-# symlink to <target_kind>: "roothome" (inside the fake root home) or "shared"
-# (a world-reachable dir). Sets T, ROOTLIKE, MARK, PROBE.
+# Build a layout under $TEST_TMPDIR/<name>: a launcher $T/bin/vibe133 that is
+# <kind>: "roothome" (symlink into the fake root home) or "file" (a real,
+# world-reachable file). Sets T, ROOTLIKE, MARK, PROBE.
 make_layout() {
     T="$TEST_TMPDIR/$1"
     mkdir -p "$T"; chmod 755 "$T"
     ROOTLIKE="$T/rootlike"
     MARK="$T/installer-ran"
     PROBE="$T/tool-executed"
-    local payload
     case "$2" in
-        roothome) payload="$ROOTLIKE/.local/bin/vibe133" ;;
-        shared)   payload="$T/shared/bin/vibe133" ;;
+        roothome)
+            _mkbin "$ROOTLIKE/.local/bin/vibe133"
+            mkdir -p "$T/bin"
+            ln -sf "$ROOTLIKE/.local/bin/vibe133" "$T/bin/vibe133"
+            ;;
+        file) _mkbin "$T/bin/vibe133" ;;
     esac
-    _mkbin "$payload"
-    mkdir -p "$T/bin"
-    ln -sf "$payload" "$T/bin/vibe133"
 }
 
-# Run env_update_tool mistral user in root context against the layout.
-# Extra env assignments (e.g. SUDO_USER=rob) come as arguments. Sets OUT, RC.
+# Run env_update_tool mistral user against the layout, in root context
+# (IS_ROOT_CTX=true, the default) or not. Extra env assignments (e.g.
+# SUDO_USER=rob) come as arguments. Sets OUT, RC.
 run_root_update() {
+    local root_ctx="${IS_ROOT_CTX:-true}"
     RC=0
     OUT=$(
         export HOME="$T" PATH="$T/bin:/bin:/usr/bin"
         for kv in "$@"; do export "${kv?}"; done
-        _env_is_root() { return 0; }
+        _env_is_root() { [[ "$root_ctx" == "true" ]]; }
         _env_root_home() { echo "$ROOTLIKE"; }
         _env_verify_check_path() { echo "$T/bin:/bin:/usr/bin"; }
         _env_tool_to_binary() { echo "vibe133"; }
@@ -117,7 +119,7 @@ test_133_3_cause_file() {
 
 # 133.4 [control]: a world-reachable binary in root context is still updated.
 test_133_4_reachable_still_updated() {
-    make_layout 1334 shared
+    make_layout 1334 file
     run_root_update
 
     assert_equals 0 "$RC" "exit code for a reachable install" || { echo "$OUT" >&2; return 1; }
@@ -127,24 +129,35 @@ test_133_4_reachable_still_updated() {
 # 133.5 [control]: a non-root update is not subject to the root-only check.
 test_133_5_non_root_unaffected() {
     make_layout 1335 roothome
+    IS_ROOT_CTX=false run_root_update
+
+    assert_equals 0 "$RC" "exit code for a non-root update" || { echo "$OUT" >&2; return 1; }
+    [[ -e "$MARK" ]] || { echo "non-root update was refused: $OUT" >&2; return 1; }
+}
+
+# 133.6 [root only]: the real layout from the field report. No seams for root
+#       or root's home: a launcher in /usr/local/bin symlinked into
+#       /root/.local/bin is refused and the installer never runs.
+test_133_6_real_root_layout() {
+    local name="cac133probe$$"
+    local payload="/root/.local/bin/$name" launcher="/usr/local/bin/$name"
+    T="$TEST_TMPDIR/1336"; mkdir -p "$T"; MARK="$T/installer-ran"
+    _mkbin "$payload"
+    ln -sf "$payload" "$launcher"
     RC=0
     OUT=$(
-        export HOME="$T" PATH="$T/bin:/bin:/usr/bin"
-        _env_is_root() { return 1; }
-        _env_root_home() { echo "$ROOTLIKE"; }
-        _env_verify_check_path() { echo "$T/bin:/bin:/usr/bin"; }
-        _env_tool_to_binary() { echo "vibe133"; }
-        _env_installer_target_dirs() { printf '%s\n' "$T/bin"; }
+        export PATH="/usr/local/bin:/usr/bin:/bin"
+        _env_tool_to_binary() { echo "$name"; }
         env_is_installed() { return 0; }
-        env_get_version() { [[ -e "$MARK" ]] && echo "2.0.0" || echo "1.0.0"; }
         _env_global_install_exists() { return 1; }
-        _env_diag_preflight_curl() { return 0; }
-        env_check_curl() { return 0; }
         _env_curl_update_with_capture() { : > "$MARK"; return 0; }
         env_update_tool mistral user 2>&1
     ) || RC=$?
+    rm -f "$launcher" "$payload"
 
-    [[ -e "$MARK" ]] || { echo "non-root update was refused: $OUT" >&2; return 1; }
+    [[ "$RC" -ne 0 ]] || { echo "rc 0: $OUT" >&2; return 1; }
+    [[ ! -e "$MARK" ]] || { echo "installer ran: $OUT" >&2; return 1; }
+    assert_contains "unreachable for non-root users; not running the installer" "$OUT" "refused up front" || return 1
 }
 
 echo "========================================"
@@ -156,5 +169,8 @@ run_test "133.2 under sudo: names the invoking user and command" test_133_2_name
 run_test "133.3 refusal cause reaches the batch summary" test_133_3_cause_file
 run_test "133.4 reachable binary in root context still updated" test_133_4_reachable_still_updated
 run_test "133.5 non-root update unaffected" test_133_5_non_root_unaffected
+IS_ROOT=false; [[ "$EUID" -eq 0 ]] && IS_ROOT=true
+run_test_if "$IS_ROOT" "133.6 real /usr/local/bin -> /root/.local/bin layout refused" \
+    test_133_6_real_root_layout "needs root"
 
 framework_report
