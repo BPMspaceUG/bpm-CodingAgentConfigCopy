@@ -91,7 +91,7 @@ test_140_2_stamp_version_is_utc() {
 test_140_3_resolve_install_version_committer_date() {
     load_install_fns
     local compact="$TEST_TMPDIR/compact.json" ver
-    jq -c . "$FIXTURE" > "$compact"
+    tr -d '\n' < "$FIXTURE" > "$compact"   # same JSON on one line
     ver=$(CAC_INSTALL_API_URL="file://$FIXTURE" _resolve_install_version)
     assert_equals "$EXPECTED" "$ver" "pretty-printed response" || return 1
     ver=$(CAC_INSTALL_API_URL="file://$compact" _resolve_install_version)
@@ -103,7 +103,7 @@ mk_api_base() {
     API_BASE="$TEST_TMPDIR/api_$1"
     mkdir -p "$API_BASE/commits"
     if [[ "$1" == compact ]]; then
-        jq -c . "$FIXTURE" > "$API_BASE/commits/main"
+        tr -d '\n' < "$FIXTURE" > "$API_BASE/commits/main"
     else
         cp "$FIXTURE" "$API_BASE/commits/main"
     fi
@@ -171,11 +171,29 @@ test_140_6_update_check_up_to_date() {
     assert_equals 1 "$RC" "update_check rc (1 = up to date)" || return 1
 }
 
+# 140.7: the committer-date parser exists twice (install.sh runs standalone);
+#        both copies stay identical, as 131.11 does for the API helper.
+_parser_lines() {
+    grep -E "tr -d '\\\\n' \\| grep -oE '\"committer\"|^ *\\| grep -oE '(\"date\"|\\[0-9\\]\\{4\\})" "$1" \
+        | sed -E 's/^ *//; s/printf .%s. "\$[a-z_]+" \| //; s/^commit_date=\$\(//; s/\) (\|\| .*)?$//'
+}
+test_140_7_parser_copies_in_step() {
+    local a b
+    a=$(_parser_lines "$REPO_DIR/lib/update.sh")
+    b=$(_parser_lines "$REPO_DIR/install.sh")
+    [[ $(wc -l <<< "$a") -eq 3 ]] || { echo "parser not found in lib/update.sh: $a" >&2; return 1; }
+    if [[ "$a" != "$b" ]]; then
+        diff <(echo "$a") <(echo "$b") >&2
+        return 1
+    fi
+}
+
 run_test "140.1 bin/cac --version from a checkout is the UTC committer date" test_140_1_checkout_version_is_utc
 run_test "140.2 stamp_version stamps the UTC committer date" test_140_2_stamp_version_is_utc
 run_test "140.3 _resolve_install_version uses the committer date" test_140_3_resolve_install_version_committer_date
 run_test "140.4 update_get_remote_version uses the committer date" test_140_4_remote_version_committer_date
 run_test "140.5 checkout and download install report the same version" test_140_5_checkout_and_download_install_agree
 run_test "140.6 update --check on a checkout install of the remote commit is up to date" test_140_6_update_check_up_to_date
+run_test "140.7 committer-date parser copies in lib/update.sh and install.sh stay in step" test_140_7_parser_copies_in_step
 
 framework_report
