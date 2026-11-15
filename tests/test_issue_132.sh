@@ -6,8 +6,9 @@
 #
 # Seams:
 #   - update_self (lib/update.sh), with the version lookups and the install.sh
-#     download stubbed. After a real update the report must come from the newly
-#     installed cac binary, not from the code loaded in the running process.
+#     download stubbed. The report comes from the installed cac binary: after a
+#     real update that is the new binary, not the code loaded in the running
+#     process.
 #   - print_usage_summary (install.sh), loaded the way test_issue_77 loads
 #     install.sh functions.
 #
@@ -26,8 +27,8 @@ source "${PROJECT_ROOT}/lib/update.sh"
 framework_init
 
 # Write a fake installed cac at $1 with version $2. On `env status
-# --check-updates` it prints NEW-BINARY-REPORT, touches <itself>.called and exits
-# with ${3:-0}.
+# --check-updates` it touches <itself>.called, sleeps $REPORT_SLEEP seconds
+# (read when it runs), prints REPORT-FROM-<version> and exits with ${3:-0}.
 _mk_cac() {
     mkdir -p "$(dirname "$1")"
     cat > "$1" <<EOF
@@ -35,7 +36,8 @@ _mk_cac() {
 VERSION="$2"
 if [[ "\$*" == "env status --check-updates" ]]; then
     : > "\$0.called"
-    echo "NEW-BINARY-REPORT"
+    sleep "\${REPORT_SLEEP:-0}"
+    echo "REPORT-FROM-$2"
     exit ${3:-0}
 fi
 exit 0
@@ -60,6 +62,8 @@ run_update_self() {
     OUT=$(
         export HOME="$home" PATH="$home/.local/bin:/usr/bin:/bin"
         update_get_remote_version() { echo "$remote"; }
+        export REPORT_SLEEP="${REPORT_SLEEP:-0}"
+        # Trap for 132.2: the old in-process code must not produce the report.
         env_show_status() { echo "IN-PROCESS-REPORT check_updates=$1"; return "${REPORT_RC:-0}"; }
         # The install.sh download: a script that installs the new binary.
         curl() {
@@ -75,13 +79,14 @@ run_update_self() {
     ) || RC=$?
 }
 
-# 132.1: up to date: hint lines and the in-process report, exit 0.
+# 132.1: up to date: hint lines and the installed binary's report, exit 0.
 test_132_1_up_to_date_shows_report() {
     run_update_self 1321 uptodate
     assert_equals 0 "$RC" "exit code" || { echo "$OUT" >&2; return 1; }
     assert_contains "Already up to date" "$OUT" "up-to-date line" || return 1
     assert_contains "cac env update" "$OUT" "env update hint" || return 1
-    assert_contains "IN-PROCESS-REPORT check_updates=true" "$OUT" "report with update checks" || return 1
+    assert_contains "cac env status --check-updates" "$OUT" "env status hint" || return 1
+    assert_contains "REPORT-FROM-260101-0000" "$OUT" "report from the installed binary" || return 1
 }
 
 # 132.2 [anti-bug]: after a real update the report comes from the newly
@@ -91,7 +96,7 @@ test_132_2_report_from_new_binary() {
     assert_equals 0 "$RC" "exit code" || { echo "$OUT" >&2; return 1; }
     assert_contains "Update complete: 260101-0000 -> 260201-0000" "$OUT" "update line" || return 1
     [[ -e "$CAC.called" ]] || { echo "new binary was not asked for the report: $OUT" >&2; return 1; }
-    assert_contains "NEW-BINARY-REPORT" "$OUT" "report from the new binary" || return 1
+    assert_contains "REPORT-FROM-260201-0000" "$OUT" "report from the new binary" || return 1
     if [[ "$OUT" == *"IN-PROCESS-REPORT"* ]]; then
         echo "report came from the old in-process code: $OUT" >&2
         return 1
@@ -131,6 +136,7 @@ test_132_6_install_usage_summary() {
     out=$(
         eval "$(sed -n '/^print_usage_summary()/,/^}/p' "$PROJECT_ROOT/install.sh")"
         declare -F print_usage_summary >/dev/null || { echo "print_usage_summary not found"; exit 1; }
+        # Trap: print_usage_summary must not call the status table.
         env_show_status() { echo "TABLE"; }
         print_usage_summary
     ) || { echo "$out" >&2; return 1; }
@@ -144,15 +150,39 @@ test_132_6_install_usage_summary() {
     fi
 }
 
+# 132.7: a hung report is cut off and `cac update` still exits 0.
+test_132_7_hung_report_times_out() {
+    local start=$SECONDS
+    REPORT_SLEEP=30 UPDATE_REPORT_TIMEOUT=1 run_update_self 1327 uptodate
+    local took=$(( SECONDS - start ))
+    assert_equals 0 "$RC" "exit code with hung report" || { echo "$OUT" >&2; return 1; }
+    (( took < 15 )) || { echo "cac update waited ${took}s for a hung report" >&2; return 1; }
+}
+
+# 132.8: the hint lines in lib/update.sh and install.sh stay identical
+# (install.sh cannot source lib/, so it carries its own copy).
+test_132_8_hint_copies_identical() {
+    local lib_hints install_hints
+    lib_hints=$(_update_print_env_hints | grep 'cac env')
+    install_hints=$(
+        eval "$(sed -n '/^print_usage_summary()/,/^}/p' "$PROJECT_ROOT/install.sh")"
+        print_usage_summary | grep 'cac env'
+    )
+    [[ -n "$lib_hints" ]] || { echo "no hint lines in lib/update.sh" >&2; return 1; }
+    assert_equals "$lib_hints" "$install_hints" "hint lines in both copies" || return 1
+}
+
 echo "========================================"
 echo "Issue #132: env-update hint and tool report after cac update"
 echo "========================================"
 
-run_test "132.1 up to date: hint and in-process report, exit 0" test_132_1_up_to_date_shows_report
+run_test "132.1 up to date: hint and installed binary's report, exit 0" test_132_1_up_to_date_shows_report
 run_test "132.2 after update: report from the new binary" test_132_2_report_from_new_binary
 run_test "132.3 failing report after update keeps exit 0" test_132_3_failing_report_after_update
 run_test "132.4 failing report when up to date keeps exit 0" test_132_4_failing_report_up_to_date
 run_test "132.5 --check prints no report" test_132_5_check_has_no_report
 run_test "132.6 install.sh usage names env commands, no table" test_132_6_install_usage_summary
+run_test "132.7 hung report is cut off, exit 0" test_132_7_hung_report_times_out
+run_test "132.8 hint lines identical in update.sh and install.sh" test_132_8_hint_copies_identical
 
 framework_report

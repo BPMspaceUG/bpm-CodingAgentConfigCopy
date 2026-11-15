@@ -377,7 +377,7 @@ update_self() {
 
     if _update_version_ge "$old_clean" "$remote_clean"; then
         echo "Already up to date (version: $old_version)."
-        # The loaded code is current: report in-process.
+        _update_print_env_hints
         _update_print_tool_report
         return 0
     fi
@@ -416,29 +416,35 @@ update_self() {
     echo ""
     echo "Update complete: $old_version -> $new_version"
 
-    # This process still runs the old libraries: ask the new binary.
-    # (install.sh already printed the env hint lines in its usage summary.)
-    local new_cac
-    if new_cac=$(_update_local_cac_path); then
-        echo ""
-        "$new_cac" env status --check-updates || true
-    fi
+    # install.sh already printed the env hint lines in its usage summary.
+    _update_print_tool_report
     return 0
 }
 
-# Issue #132: after `cac update` on an up-to-date install, point at `cac env
-# update` and show whether the AI tools are current. Informational only: a
-# failing report never changes the exit code of `cac update`.
-# Usage: _update_print_tool_report
-_update_print_tool_report() {
+# Issue #132: the two hint lines after `cac update`. install.sh's
+# print_usage_summary carries the same two lines (it cannot source lib/);
+# tests/test_issue_132.sh keeps the copies identical.
+_update_print_env_hints() {
     echo ""
     echo "  cac env update    - Update all installed AI tools (sudo for global installs)"
     echo "  cac env status --check-updates - Show which AI tools have updates"
-    if declare -F env_show_status >/dev/null; then
-        echo ""
-        env_show_status true || true
+}
+
+# Issue #132: print `cac env status --check-updates` from the installed cac.
+# After a real update this process still runs the old libraries, so the report
+# always comes from the installed binary (the same one when up to date). It
+# runs in its own process so a hung version lookup is cut off after
+# UPDATE_REPORT_TIMEOUT seconds (default 60). Informational only: a failing,
+# empty or timed-out report never changes the exit code of `cac update`.
+_update_print_tool_report() {
+    local cac_bin
+    cac_bin=$(_update_local_cac_path) || return 0
+    echo ""
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${UPDATE_REPORT_TIMEOUT:-60}" "$cac_bin" env status --check-updates || true
+    else
+        "$cac_bin" env status --check-updates || true
     fi
-    return 0
 }
 
 # ============================================================================
