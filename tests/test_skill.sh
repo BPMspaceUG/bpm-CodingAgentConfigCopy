@@ -118,15 +118,13 @@ _mock_git_setup() {
 _assert_git_called_with() {
     local expected="$1"
     if [[ ! -s "$MOCK_GIT_LOG" ]]; then
-        echo "FAIL: No git calls recorded" >&2
-        return 1
+        _assertion_failed "FAIL: No git calls recorded"
     fi
     if grep -q "$expected" "$MOCK_GIT_LOG"; then
         return 0
     else
-        echo "FAIL: Expected git call containing '${expected}' but got:" >&2
         cat "$MOCK_GIT_LOG" >&2
-        return 1
+        _assertion_failed "FAIL: Expected git call containing '${expected}' (calls above)"
     fi
 }
 
@@ -136,9 +134,8 @@ _assert_git_not_called_with() {
         return 0
     fi
     if grep -q "$unexpected" "$MOCK_GIT_LOG"; then
-        echo "FAIL: Expected no git call containing '${unexpected}' but found:" >&2
         cat "$MOCK_GIT_LOG" >&2
-        return 1
+        _assertion_failed "FAIL: Expected no git call containing '${unexpected}' (calls above)"
     fi
     return 0
 }

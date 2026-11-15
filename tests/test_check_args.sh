@@ -76,8 +76,7 @@ run_check() {
 assert_not_contains() {
     local needle="$1" haystack="$2" description="${3:-value}"
     if [[ "$haystack" == *"$needle"* ]]; then
-        echo "Expected ${description} NOT to contain '$needle', got: '$haystack'" >&2
-        return 1
+        _assertion_failed "Expected ${description} NOT to contain '$needle', got: '$haystack'"
     fi
     return 0
 }

@@ -186,6 +186,20 @@ framework_has_command() {
 # ============================================================================
 # Assertion Helpers
 # ============================================================================
+#
+# Every failed assertion is recorded like fail() does: it bumps TESTS_FAILED
+# (inside run_test's subshell), so run_test fails the test wherever the
+# assertion stands in the test function, with or without `|| return 1` (#149).
+# The return code stays 1 so `|| return 1` keeps stopping the test early.
+
+# Record a failed assertion: print the message to stderr, count the failure.
+# Usage: _assertion_failed "message"
+# Returns: 1
+_assertion_failed() {
+    echo "$1" >&2
+    TESTS_FAILED=$((TESTS_FAILED + 1))
+    return 1
+}
 
 # Assert that two values are equal
 # Usage: assert_equals <expected> <actual> [description]
@@ -201,8 +215,7 @@ assert_equals() {
     if [[ "$actual" == "$expected" ]]; then
         return 0
     else
-        echo "Expected ${description}: '$expected', got: '$actual'" >&2
-        return 1
+        _assertion_failed "Expected ${description}: '$expected', got: '$actual'"
     fi
 }
 
@@ -220,8 +233,7 @@ assert_match() {
     if [[ "$value" =~ $pattern ]]; then
         return 0
     else
-        echo "Expected ${description} to match pattern '$pattern', got: '$value'" >&2
-        return 1
+        _assertion_failed "Expected ${description} to match pattern '$pattern', got: '$value'"
     fi
 }
 
@@ -239,8 +251,7 @@ assert_contains() {
     if [[ "$haystack" == *"$needle"* ]]; then
         return 0
     else
-        echo "Expected ${description} to contain '$needle', got: '$haystack'" >&2
-        return 1
+        _assertion_failed "Expected ${description} to contain '$needle', got: '$haystack'"
     fi
 }
 
@@ -257,8 +268,7 @@ assert_file_exists() {
     if [[ -f "$path" ]]; then
         return 0
     else
-        echo "Expected ${description} to exist: '$path'" >&2
-        return 1
+        _assertion_failed "Expected ${description} to exist: '$path'"
     fi
 }
 
@@ -275,8 +285,7 @@ assert_success() {
     if "$@" >/dev/null 2>&1; then
         return 0
     else
-        echo "Expected ${description} to succeed, but it failed" >&2
-        return 1
+        _assertion_failed "Expected ${description} to succeed, but it failed"
     fi
 }
 
@@ -291,8 +300,7 @@ assert_fails() {
     shift
 
     if "$@" >/dev/null 2>&1; then
-        echo "Expected ${description} to fail, but it succeeded" >&2
-        return 1
+        _assertion_failed "Expected ${description} to fail, but it succeeded"
     else
         return 0
     fi

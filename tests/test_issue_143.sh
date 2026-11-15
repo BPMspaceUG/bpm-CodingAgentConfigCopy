@@ -51,6 +51,15 @@ test_fail_without_return_turns_suite_red() {
     fi
 }
 
+# #149: an assert_* that fails but is not the last command, and has no
+# `|| return 1`, used to print its message and still let the test pass.
+test_failed_assertion_then_passing_one_is_red() {
+    _run_child_suite '    assert_equals "a" "b" "first value"
+    assert_equals "c" "c" "second value"'
+    assert_equals 1 "$CHILD_RC" "child suite exit code" || return 1
+    assert_contains "0/1 passed" "$CHILD_OUT" "child summary" || return 1
+}
+
 test_fail_then_return_zero_still_red() {
     _run_child_suite '    fail "inner check"
     return 0'
@@ -69,10 +78,11 @@ test_clean_test_stays_green() {
 }
 
 echo "========================================"
-echo "Issue #143: fail() inside run_test turns the test red"
+echo "Issue #143/#149: fail() and failed assertions inside run_test turn the test red"
 echo "========================================"
 
 run_test "fail without return 1 makes the test and suite FAIL" test_fail_without_return_turns_suite_red
+run_test "a failing assertion followed by a passing one FAILs (#149)" test_failed_assertion_then_passing_one_is_red
 run_test "fail followed by return 0 still FAILs" test_fail_then_return_zero_still_red
 run_test "return 1 makes the test FAIL" test_return_one_turns_suite_red
 run_test "a test with no fail stays green" test_clean_test_stays_green
