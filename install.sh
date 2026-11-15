@@ -803,6 +803,21 @@ do_single_install() {
     setup_config
 }
 
+# Closing usage summary of the installer (also shown after `cac update`, which
+# re-runs this script). Issue #132: names the AI-tool commands; no tool table,
+# a fresh install usually has no tools yet.
+print_usage_summary() {
+    echo "Usage:"
+    echo "  cac push          - Bundle and upload your config"
+    echo "  cac pull          - Download and apply newest config"
+    echo "  cac list          - List available bundles"
+    echo "  cac update        - Update cac to latest version"
+    echo "  cac env update    - Update all installed AI tools (sudo for global installs)"
+    echo "  cac env status --check-updates - Show which AI tools have updates"
+    echo "  cac test          - Test AI tool connectivity"
+    echo "  cac --help        - Show all commands"
+}
+
 # Install cac: download from GitHub and install
 do_install() {
     # Validate mode first (checks root requirements for --global/--all)
@@ -874,13 +889,7 @@ do_install() {
     success "Installation complete! (cac v${version})"
     echo "==================================="
     echo ""
-    echo "Usage:"
-    echo "  cac push          - Bundle and upload your config"
-    echo "  cac pull          - Download and apply newest config"
-    echo "  cac list          - List available bundles"
-    echo "  cac update        - Update cac to latest version"
-    echo "  cac test          - Test AI tool connectivity"
-    echo "  cac --help        - Show all commands"
+    print_usage_summary
     echo ""
     if [[ "$INSTALL_MODE_FLAG" == "all" ]]; then
         echo "Configuration: ${USER_CONFIG_DIR}/.env (user) and ${SYS_CONFIG_DIR}/.env (system)"

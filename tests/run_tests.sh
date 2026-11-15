@@ -219,6 +219,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #132 tests (env-update hint and tool report after cac update)
+    if $run_all || [[ "$filter" == "issue_132" ]] || [[ "$filter" == "132" ]]; then
+        if ! run_test_suite "Issue #132 Tests" "test_issue_132.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #133 tests (unreachable root copy refused before the installer)
     if $run_all || [[ "$filter" == "issue_133" ]] || [[ "$filter" == "133" ]]; then
         if ! run_test_suite "Issue #133 Tests" "test_issue_133.sh"; then
