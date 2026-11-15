@@ -110,6 +110,7 @@ _assert_mock_method() {
 
     if [[ ! -s "$MOCK_CURL_LOG" ]]; then
         _assertion_failed "No mock curl calls recorded"
+        return 1
     fi
 
     local log_line
@@ -127,6 +128,7 @@ _assert_mock_endpoint() {
 
     if [[ ! -s "$MOCK_CURL_LOG" ]]; then
         _assertion_failed "No mock curl calls recorded"
+        return 1
     fi
 
     local log_line

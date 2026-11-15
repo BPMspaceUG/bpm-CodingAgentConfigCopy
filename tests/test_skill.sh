@@ -119,12 +119,14 @@ _assert_git_called_with() {
     local expected="$1"
     if [[ ! -s "$MOCK_GIT_LOG" ]]; then
         _assertion_failed "FAIL: No git calls recorded"
+        return 1
     fi
     if grep -q "$expected" "$MOCK_GIT_LOG"; then
         return 0
     else
         cat "$MOCK_GIT_LOG" >&2
         _assertion_failed "FAIL: Expected git call containing '${expected}' (calls above)"
+        return 1
     fi
 }
 
@@ -136,6 +138,7 @@ _assert_git_not_called_with() {
     if grep -q "$unexpected" "$MOCK_GIT_LOG"; then
         cat "$MOCK_GIT_LOG" >&2
         _assertion_failed "FAIL: Expected no git call containing '${unexpected}' (calls above)"
+        return 1
     fi
     return 0
 }
