@@ -74,7 +74,7 @@ _mk_upstream() {
 test_issue77_dirty_source_bakes_clean() {
     _load_install_fns
     local repo="${TEST_TMPDIR}/i77_dirty_repo"
-    _mk_repo "$repo" "2026-03-24T13:04:00"
+    _mk_repo "$repo" "2026-03-24T13:04:00+0000"
     echo "uncommitted change" > "$repo/file.txt"
 
     local target="${TEST_TMPDIR}/i77_dirty_target"
@@ -91,7 +91,7 @@ test_issue77_dirty_source_bakes_clean() {
 test_issue77_unpushed_source_bakes_clean() {
     _load_install_fns
     local repo="${TEST_TMPDIR}/i77_draft_repo"
-    _mk_repo "$repo" "2026-04-20T16:15:00"
+    _mk_repo "$repo" "2026-04-20T16:15:00+0000"
     # No upstream configured => "draft" at runtime, but install bakes clean.
 
     local target="${TEST_TMPDIR}/i77_draft_target"
@@ -108,7 +108,7 @@ test_issue77_unpushed_source_bakes_clean() {
 test_issue77_clean_pushed_source_bakes_clean() {
     _load_install_fns
     local repo="${TEST_TMPDIR}/i77_clean_repo"
-    _mk_repo "$repo" "2026-02-15T10:30:00"
+    _mk_repo "$repo" "2026-02-15T10:30:00+0000"
     _mk_upstream "$repo"
 
     local target="${TEST_TMPDIR}/i77_clean_target"
@@ -150,7 +150,7 @@ test_issue77_no_git_offline_uses_dev_sentinel() {
 test_issue77_stamp_replaces_version_line() {
     _load_install_fns
     local repo="${TEST_TMPDIR}/i77_e2e_repo"
-    _mk_repo "$repo" "2026-05-09T09:14:00"
+    _mk_repo "$repo" "2026-05-09T09:14:00+0000"
     _mk_upstream "$repo"
 
     # Two VERSION= lines: only the FIRST must be replaced (first-occurrence semantics).

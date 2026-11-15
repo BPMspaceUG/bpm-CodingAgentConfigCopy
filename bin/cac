@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-# Version: YYMMDD-HHMM from HEAD commit
+# Version: YYMMDD-HHMM, the HEAD commit's committer date in UTC (#140)
 #   clean + pushed   → 260218-1330         (release)
 #   clean + unpushed → 260218-1330-draft   (push pending)
 #   uncommitted      → 260218-1655-dirty   (uncommitted changes)
@@ -12,7 +12,7 @@ set -euo pipefail
 VERSION="dev"
 _tool_dir="$(dirname "${BASH_SOURCE[0]:-$0}")"
 if git -C "$_tool_dir" rev-parse --git-dir &>/dev/null; then
-    VERSION=$(git -C "$_tool_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "dev")
+    VERSION=$(TZ=UTC git -C "$_tool_dir" log -1 --format='%cd' --date=format-local:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "dev")
     if ! git -C "$_tool_dir" diff --quiet HEAD 2>/dev/null || ! git -C "$_tool_dir" diff --cached --quiet HEAD 2>/dev/null; then
         VERSION="${VERSION}-dirty"
     elif ! git -C "$_tool_dir" diff --quiet HEAD "@{upstream}" 2>/dev/null; then

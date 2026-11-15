@@ -261,7 +261,8 @@ _update_github_api_get() {
 
 # Fetch the version of the latest cac from GitHub using the commit date.
 # Uses the GitHub API to get the latest commit on main and extracts the
-# committer date, formatting it as YYMMDD-HHMM to match stamp_version().
+# committer date, formatting it in UTC as YYMMDD-HHMM to match stamp_version()
+# and the version bin/cac derives from a checkout (#140).
 # Usage: update_get_remote_version
 # Returns: version string on stdout, 1 on failure
 update_get_remote_version() {
@@ -276,12 +277,17 @@ update_get_remote_version() {
         return 1
     fi
 
-    # Extract committer date from JSON response.
-    # The GitHub commits API returns "commit.committer.date" in ISO 8601 format:
-    #   "date": "2026-02-25T15:42:33Z"
-    # We grab the last "date" field (committer date, after author date).
+    # Extract the committer date (not the author date) from the JSON response.
+    # The GitHub commits API returns "commit.committer.date" in UTC:
+    #   "committer": { "name": …, "email": …, "date": "2026-02-25T15:42:33Z" }
+    # commit.committer is the first "committer" object that carries a date (the
+    # top-level "committer" is a user object without one). The response may be
+    # pretty-printed or on one line, so newlines are dropped first. Only a "Z"
+    # date is accepted: an offset would make the version local time (#140).
     local commit_date
-    commit_date=$(echo "$response" | grep '"date"' | tail -1 | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}' | head -1) || {
+    commit_date=$(printf '%s' "$response" | tr -d '\n' | grep -oE '"committer"[[:space:]]*:[[:space:]]*\{[^}]*\}' | head -1 \
+        | grep -oE '"date"[[:space:]]*:[[:space:]]*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"' \
+        | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}') || {
         utils_error "Cannot parse commit date from GitHub API response"
         return 1
     }

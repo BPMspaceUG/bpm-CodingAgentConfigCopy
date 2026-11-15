@@ -349,7 +349,8 @@ update_cli_lib_path() {
 
 # Stamp version into installed cac binary (bakes in the version at install time).
 # An installed cac represents the committed/pushed release, so the baked-in
-# version is always the CLEAN HEAD commit date (YYMMDD-HHMM, no suffix). The
+# version is always the CLEAN HEAD committer date in UTC (YYMMDD-HHMM, no
+# suffix), the same string the GitHub API path yields (#140). The
 # -dirty / -draft states are runtime-checkout-only concepts and are derived by
 # bin/cac at runtime when run from a git checkout — they are never baked in.
 # When src_dir is not a git checkout (the normal download-install case) or
@@ -361,7 +362,7 @@ stamp_version() {
     local src_dir="${2:-}"
     local ver=""
     if [[ -n "$src_dir" ]] && git -C "$src_dir" rev-parse --git-dir &>/dev/null; then
-        ver=$(git -C "$src_dir" log -1 --format='%cd' --date=format:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
+        ver=$(TZ=UTC git -C "$src_dir" log -1 --format='%cd' --date=format-local:'%y%m%d-%H%M' HEAD 2>/dev/null || echo "")
     fi
     if [[ -n "$ver" ]]; then
         if sed -i "0,/^VERSION=/{s/^VERSION=.*/VERSION=\"${ver}\"/}" "$target" 2>/dev/null; then
@@ -382,9 +383,9 @@ stamp_version() {
     fi
 }
 
-# Resolve a clean install-time version (YYMMDD-HHMM) when git stamping did not
+# Resolve a clean install-time version (YYMMDD-HHMM, UTC) when git stamping did not
 # apply — the normal download install (temp dir has no .git) or a source tree
-# with no .git. Uses the GitHub API commit date for main; falls back to the
+# with no .git. Uses the GitHub API committer date for main; falls back to the
 # defined "dev" sentinel when the API is unreachable (e.g. offline install).
 # "dev" is intentional and documented: it marks an unknown version and makes
 # `cac update` correctly offer an update, unlike a wall-clock date which would
@@ -395,7 +396,10 @@ _resolve_install_version() {
     local api_url="${CAC_INSTALL_API_URL:-https://api.github.com/repos/BPMspaceUG/bpm-CodingAgentConfigCopy/commits/main}"
     local api_response="" commit_date="" ver=""
     if api_response=$(_install_github_api_get "$api_url" 10); then
-        commit_date=$(echo "$api_response" | grep '"date"' | tail -1 | grep -oP '\d{4}-\d{2}-\d{2}T\d{2}:\d{2}' | head -1) || true
+        # commit.committer.date (UTC, "Z"); see update_get_remote_version.
+        commit_date=$(printf '%s' "$api_response" | tr -d '\n' | grep -oE '"committer"[[:space:]]*:[[:space:]]*\{[^}]*\}' | head -1 \
+            | grep -oE '"date"[[:space:]]*:[[:space:]]*"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"' \
+            | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}') || true
         if [[ -n "$commit_date" ]]; then
             ver=$(echo "$commit_date" | sed 's/^20\([0-9][0-9]\)-\([0-9][0-9]\)-\([0-9][0-9]\)T\([0-9][0-9]\):\([0-9][0-9]\)/\1\2\3-\4\5/')
         fi

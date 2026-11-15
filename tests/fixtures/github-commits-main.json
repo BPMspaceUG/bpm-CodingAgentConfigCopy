@@ -1,0 +1,101 @@
+{
+  "sha": "FIXTURE",
+  "node_id": "FIXTURE",
+  "commit": {
+    "author": {
+      "name": "FIXTURE",
+      "email": "FIXTURE",
+      "date": "2026-07-26T16:05:12Z"
+    },
+    "committer": {
+      "name": "FIXTURE",
+      "email": "FIXTURE",
+      "date": "2026-07-26T17:48:51Z"
+    },
+    "message": "FIXTURE",
+    "tree": {
+      "sha": "FIXTURE",
+      "url": "FIXTURE"
+    },
+    "url": "FIXTURE",
+    "comment_count": 0,
+    "verification": {
+      "verified": false,
+      "reason": "FIXTURE",
+      "signature": null,
+      "payload": null,
+      "verified_at": null
+    }
+  },
+  "url": "FIXTURE",
+  "html_url": "FIXTURE",
+  "comments_url": "FIXTURE",
+  "author": {
+    "login": "FIXTURE",
+    "id": 0,
+    "node_id": "FIXTURE",
+    "avatar_url": "FIXTURE",
+    "gravatar_id": "FIXTURE",
+    "url": "FIXTURE",
+    "html_url": "FIXTURE",
+    "followers_url": "FIXTURE",
+    "following_url": "FIXTURE",
+    "gists_url": "FIXTURE",
+    "starred_url": "FIXTURE",
+    "subscriptions_url": "FIXTURE",
+    "organizations_url": "FIXTURE",
+    "repos_url": "FIXTURE",
+    "events_url": "FIXTURE",
+    "received_events_url": "FIXTURE",
+    "type": "FIXTURE",
+    "user_view_type": "FIXTURE",
+    "site_admin": false
+  },
+  "committer": {
+    "login": "FIXTURE",
+    "id": 0,
+    "node_id": "FIXTURE",
+    "avatar_url": "FIXTURE",
+    "gravatar_id": "FIXTURE",
+    "url": "FIXTURE",
+    "html_url": "FIXTURE",
+    "followers_url": "FIXTURE",
+    "following_url": "FIXTURE",
+    "gists_url": "FIXTURE",
+    "starred_url": "FIXTURE",
+    "subscriptions_url": "FIXTURE",
+    "organizations_url": "FIXTURE",
+    "repos_url": "FIXTURE",
+    "events_url": "FIXTURE",
+    "received_events_url": "FIXTURE",
+    "type": "FIXTURE",
+    "user_view_type": "FIXTURE",
+    "site_admin": false
+  },
+  "parents": [
+    {
+      "sha": "FIXTURE",
+      "url": "FIXTURE",
+      "html_url": "FIXTURE"
+    }
+  ],
+  "stats": {
+    "total": 0,
+    "additions": 0,
+    "deletions": 0
+  },
+  "files": [
+    {
+      "sha": "FIXTURE",
+      "filename": "FIXTURE",
+      "status": "FIXTURE",
+      "additions": 0,
+      "deletions": 0,
+      "changes": 0,
+      "blob_url": "FIXTURE",
+      "raw_url": "FIXTURE",
+      "contents_url": "FIXTURE",
+      "patch": "@@ -1,3 +1,3 @@\n-    \"date\": \"2099-12-31T23:59:59Z\"\n+    \"date\": \"2098-01-01T00:00:00Z\""
+    }
+  ]
+}

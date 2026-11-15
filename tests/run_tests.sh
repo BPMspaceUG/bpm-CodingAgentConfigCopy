@@ -243,6 +243,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #140 tests (version string is the UTC committer date)
+    if $run_all || [[ "$filter" == "issue_140" ]] || [[ "$filter" == "140" ]]; then
+        if ! run_test_suite "Issue #140 Tests" "test_issue_140.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #141 tests (stale Claude session on pull/check)
     if $run_all || [[ "$filter" == "issue_141" ]] || [[ "$filter" == "141" ]]; then
         if ! run_test_suite "Issue #141 Tests" "test_issue_141.sh"; then

@@ -883,7 +883,7 @@ test_stamp_version_clean_commit() {
     _load_stamp_version
 
     local repo="${TEST_TMPDIR}/stamp_clean_repo"
-    _stamp_create_repo "$repo" "2026-02-15T10:30:00"
+    _stamp_create_repo "$repo" "2026-02-15T10:30:00+0000"
     _stamp_setup_upstream "$repo"
 
     local target="${TEST_TMPDIR}/stamp_clean_target"
@@ -907,7 +907,7 @@ test_stamp_version_dirty_uses_commit_date() {
     _load_stamp_version
 
     local repo="${TEST_TMPDIR}/stamp_dirty_repo"
-    _stamp_create_repo "$repo" "2026-03-10T08:45:00"
+    _stamp_create_repo "$repo" "2026-03-10T08:45:00+0000"
 
     # Make it dirty (uncommitted change)
     echo "dirty change" > "$repo/file.txt"
@@ -933,7 +933,7 @@ test_stamp_version_draft_uses_commit_date() {
     _load_stamp_version
 
     local repo="${TEST_TMPDIR}/stamp_draft_repo"
-    _stamp_create_repo "$repo" "2026-04-20T16:15:00"
+    _stamp_create_repo "$repo" "2026-04-20T16:15:00+0000"
 
     # Committed-but-unpushed source (no upstream configured).
 
@@ -974,7 +974,7 @@ test_stamp_version_replaces_version_line() {
     _load_stamp_version
 
     local repo="${TEST_TMPDIR}/stamp_replace_repo"
-    _stamp_create_repo "$repo" "2026-06-15T14:22:00"
+    _stamp_create_repo "$repo" "2026-06-15T14:22:00+0000"
     _stamp_setup_upstream "$repo"
 
     local target="${TEST_TMPDIR}/stamp_replace_target"
@@ -1000,7 +1000,7 @@ test_stamp_version_format_hhmm() {
     _load_stamp_version
 
     local repo="${TEST_TMPDIR}/stamp_format_repo"
-    _stamp_create_repo "$repo" "2026-11-03T09:07:00"
+    _stamp_create_repo "$repo" "2026-11-03T09:07:00+0000"
     _stamp_setup_upstream "$repo"
 
     local target="${TEST_TMPDIR}/stamp_format_target"
@@ -1019,7 +1019,7 @@ test_stamp_version_noop_when_git_log_fails() {
     _load_stamp_version
 
     local repo="${TEST_TMPDIR}/stamp_fallback_repo"
-    _stamp_create_repo "$repo" "2026-01-01T00:00:00"
+    _stamp_create_repo "$repo" "2026-01-01T00:00:00+0000"
 
     # Create a git wrapper that succeeds for rev-parse but fails for log
     local mock_bin="${TEST_TMPDIR}/stamp_fallback_bin"
