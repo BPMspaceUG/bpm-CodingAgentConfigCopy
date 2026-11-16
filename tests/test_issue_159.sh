@@ -10,6 +10,7 @@
 # take the grep path; UTILS_HAS_JQ is readonly and cannot be switched here):
 #   utils_gokapi_find_file   exact name, Gokapi ID, unique partial match
 #   utils_gokapi_find_id     ID lookup used by `cac delete`
+#   utils_gokapi_extract_names  names for `cac list` / newest-bundle pull
 # Both against the real-shape fixture gokapi-files-list.json.
 #
 # shellcheck disable=SC2317  # Test functions are invoked indirectly via run_test
@@ -25,8 +26,9 @@ source "$SCRIPT_DIR/test_framework.sh"
 
 framework_init
 
-# A PATH with every command of the normal PATH except jq.
-NOJQ_BIN="$(mktemp -d)"
+# A PATH with every command of the normal PATH except jq (removed with
+# TEST_TMPDIR by the framework EXIT trap).
+NOJQ_BIN="$TEST_TMPDIR/nojq-bin"; mkdir -p "$NOJQ_BIN"
 IFS=':' read -r -a _path_dirs <<< "$PATH"
 for _dir in "${_path_dirs[@]}"; do
     [[ -d "$_dir" ]] || continue
@@ -97,6 +99,15 @@ test_8_unknown_returns_1() {
     assert_equals 1 "$RC" "rc"
 }
 
+# Used by `cac list` and `cac pull` (newest): every entry once, not just the first.
+test_9_extract_names_lists_all_entries() {
+    nojq utils_gokapi_extract_names ""
+    assert_equals 15 "$(printf '%s\n' "$OUT" | grep -c '^CodingAgentConfig_.*\.zip|$')" "names" || return 1
+    assert_contains "CodingAgentConfig_FIXTURE-HOST_fixture_claude_261116-110151.zip|" "$OUT" "first entry" || return 1
+    assert_contains "$NEWEST_CODEX|" "$OUT" "middle entry" || return 1
+    assert_contains "CodingAgentConfig_FIXTURE-HOST_fixture_gemini_261116-110152.zip|" "$OUT" "last entry"
+}
+
 run_test "#159 no jq: exact name -> its URL"           test_1_exact_name_returns_its_url
 run_test "#159 no jq: Gokapi ID -> its URL and name"   test_2_gokapi_id_returns_its_url_and_name
 run_test "#159 no jq: ID prefix of other IDs is exact" test_3_id_prefix_of_other_ids_is_exact
@@ -105,6 +116,7 @@ run_test "#159 no jq: last entry by name"              test_5_last_entry_by_name
 run_test "#159 no jq: find_id for delete"              test_6_find_id_for_delete
 run_test "#159 no jq: find_id unknown name is empty"   test_7_find_id_unknown_name_is_empty
 run_test "#159 no jq: unknown bundle returns 1"        test_8_unknown_returns_1
+run_test "#159 no jq: extract_names lists all entries" test_9_extract_names_lists_all_entries
 
 rm -rf "$NOJQ_BIN"
 
