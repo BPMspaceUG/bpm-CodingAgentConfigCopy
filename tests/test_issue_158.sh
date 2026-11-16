@@ -81,6 +81,25 @@ test_5_tool_inside_longer_word_stays_bundle_id() {
     assert_contains "Would get bundle: claude codex" "$OUT" "taken as BUNDLE_ID"
 }
 
+# The alias cac push accepts (vibe = mistral) works the same way. The fixture
+# has no mistral bundle, so the pull fails, but for the tool, not the name.
+test_9_tool_alias_means_its_tool() {
+    pull vibe --dry-run
+    assert_contains "No bundle found matching --tool mistral" "$OUT" "vibe resolved to mistral"
+}
+
+test_10_all_stays_bundle_id() {
+    pull all --dry-run
+    assert_contains "Would get bundle: all" "$OUT" "taken as BUNDLE_ID"
+}
+
+test_11_get_alias_behaves_like_pull() {
+    RC=0
+    OUT=$(cmd_get codex --dry-run 2>&1) || RC=$?
+    assert_equals 0 "$RC" "rc (output: $OUT)" || return 1
+    assert_contains "Bundle to download: $NEWEST_CODEX" "$OUT" "newest codex bundle"
+}
+
 # find_in_fixture <jq|grep> <bundle_id>: run that implementation behind
 # utils_gokapi_find_file (UTILS_HAS_JQ is readonly, so the dispatcher cannot
 # be switched). Sets FOUT (stdout), FERR (stderr) and RC.
@@ -134,6 +153,9 @@ run_test "#158 'pull codex --tool claude' fails"         test_2_tool_name_confli
 run_test "#158 'pull codex --tool codex' works"          test_3_tool_name_matching_tool_flag_is_fine
 run_test "#158 non-tool positional stays BUNDLE_ID"      test_4_non_tool_positional_stays_bundle_id
 run_test "#158 'claude codex' stays BUNDLE_ID"           test_5_tool_inside_longer_word_stays_bundle_id
+run_test "#158 'pull vibe' means --tool mistral"         test_9_tool_alias_means_its_tool
+run_test "#158 'pull all' stays BUNDLE_ID"               test_10_all_stays_bundle_id
+run_test "#158 'get codex' behaves like 'pull codex'"    test_11_get_alias_behaves_like_pull
 run_test "#158 ambiguous list: names only (jq)"          test_6_ambiguous_list_has_no_count_lines_jq
 run_test "#158 ambiguous list: names only (grep)"        test_7_ambiguous_list_has_no_count_lines_grep
 run_test "#158 exact name and Gokapi ID unchanged"       test_8_exact_name_and_id_unchanged

@@ -448,16 +448,15 @@ cmd_pull() {
     # Issue #158: a supported tool name as positional argument means --tool TOOL.
     # As a BUNDLE_ID substring it matched every bundle of that tool and failed
     # with "Multiple bundles match" once there were two.
-    local supported
-    for supported in "${SUPPORTED_TOOLS[@]}"; do
-        [[ "$bundle_id" == "$supported" ]] && break
-    done
-    if [[ -n "$bundle_id" && "$bundle_id" == "$supported" ]]; then
-        if [[ "$tool_provided" == "true" && "$explicit_tool" != "$bundle_id" ]]; then
+    # Same check as cmd_push's positional TOOL; "all" stays a BUNDLE_ID.
+    local positional_tool
+    positional_tool="$(_resolve_tool_alias "$bundle_id")"
+    if [[ -n "$bundle_id" && "$positional_tool" != "all" ]] && tools_is_valid "$positional_tool"; then
+        if [[ "$tool_provided" == "true" && "$(_resolve_tool_alias "$explicit_tool")" != "$positional_tool" ]]; then
             utils_error "Conflicting tools: '$bundle_id' and --tool $explicit_tool. Name one tool."
             return 1
         fi
-        explicit_tool="$bundle_id"
+        explicit_tool="$positional_tool"
         tool_provided="true"
         bundle_id=""
     fi
