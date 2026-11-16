@@ -1,0 +1,6 @@
+# Shellcheck settings for everything under tests/ (#150).
+#
+# SC2329 "function never invoked": test functions are called indirectly via
+# run_test / run_test_if, which shellcheck cannot follow. Left on, it reports
+# every test function and buries real findings.
+disable=SC2329

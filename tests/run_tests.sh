@@ -251,6 +251,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #150 tests (lint is readable as pass/fail: no SC2329 in tests/)
+    if $run_all || [[ "$filter" == "issue_150" ]] || [[ "$filter" == "150" ]]; then
+        if ! run_test_suite "Issue #150 Tests" "test_issue_150.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #140 tests (version string is the UTC committer date)
     if $run_all || [[ "$filter" == "issue_140" ]] || [[ "$filter" == "140" ]]; then
         if ! run_test_suite "Issue #140 Tests" "test_issue_140.sh"; then
