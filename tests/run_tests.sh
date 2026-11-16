@@ -12,6 +12,25 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Test lock (#153): <git-dir>/cac-tests.lock holds this run's PID while it runs.
+# .claude/hooks/block-git-during-tests.sh reads it and refuses git commands that
+# change the working tree (stash, checkout, ...) while a live run holds it, so
+# the run cannot end up testing a different tree. Outside a git repo (e.g. a
+# copied tree in a container) there is nothing to protect and no lock.
+TEST_LOCK=""
+_release_test_lock() {
+    if [[ -n "$TEST_LOCK" && "$(cat "$TEST_LOCK" 2>/dev/null)" == "$$" ]]; then
+        rm -f "$TEST_LOCK"
+    fi
+}
+if git_dir="$(git -C "$SCRIPT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
+    TEST_LOCK="${git_dir}/cac-tests.lock"
+    echo "$$" > "$TEST_LOCK"
+    trap _release_test_lock EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -262,6 +281,14 @@ main() {
     # Run Issue #152 tests (install.sh names the suites that extract its functions)
     if $run_all || [[ "$filter" == "issue_152" ]] || [[ "$filter" == "152" ]]; then
         if ! run_test_suite "Issue #152 Tests" "test_issue_152.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
+    # Run Issue #153 tests (git stash/checkout/... blocked while tests run)
+    if $run_all || [[ "$filter" == "issue_153" ]] || [[ "$filter" == "153" ]]; then
+        if ! run_test_suite "Issue #153 Tests" "test_issue_153.sh"; then
             exit_code=1
         fi
         echo ""
