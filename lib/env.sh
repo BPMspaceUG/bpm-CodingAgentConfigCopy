@@ -629,6 +629,23 @@ _env_global_update_remediation() {
     echo "Remediation: run 'sudo cac env update $1 --global' to update the system-wide install, or remove the global install first if you really want a per-user version."
 }
 
+# The Issue #71 refusal, shared by the curl and npm branches of env_update_tool
+# (npm since Issue #138). A non-root user-scope update next to a system-wide
+# install is refused, unless env_update_with_escalation passed the override
+# ("1") after confirming via PATH resolution that the user runs their own copy.
+# Returns 0 (and prints the refusal) when the update must be refused.
+# Usage: _env_refuse_user_update_over_global <tool> <scope> <allow_override>
+_env_refuse_user_update_over_global() {
+    local tool="$1" scope="$2" allow_override="$3"
+    [[ "$scope" == "user" ]] || return 1
+    _env_is_root && return 1
+    [[ "$allow_override" != "1" ]] || return 1
+    _env_global_install_exists "$tool" || return 1
+    utils_error "$(env_get_display_name "$tool") has a system-wide install. User-scope update is refused to prevent dual-install drift."
+    _env_global_update_remediation "$tool" >&2
+    return 0
+}
+
 # Detect whether a genuine per-user install of a tool exists (Issue #79).
 # Layout-agnostic: curl installers land in different places per tool
 # (claude -> ~/.local/bin, continuous-claude -> /opt, mistral -> ~/.vibe), so we
@@ -745,6 +762,14 @@ _env_reexec_sudo_update() {
     if ! cac_bin=$(_env_resolve_cac_bin); then
         utils_error "Could not resolve the cac executable path — refusing to escalate."
         echo "Remediation: run 'sudo cac env update --global ${tools[*]}' manually." >&2
+        return "$ENV_EXIT_NEEDS_ROOT"
+    fi
+
+    # Issue #138: without a terminal (agent sessions, cron) sudo cannot ask
+    # for a password and the re-exec would fail as a plain update failure,
+    # with no hint. Probe non-interactively first and report "needs root".
+    if [[ ! -t 0 ]] && ! sudo -n true >/dev/null 2>&1; then
+        utils_error "sudo needs a password and there is no terminal to ask — cannot update system-wide tools: ${tools[*]}"
         return "$ENV_EXIT_NEEDS_ROOT"
     fi
 
@@ -1658,11 +1683,7 @@ env_update_tool() {
             # parameter (not an env var), so a caller cannot forge it via the
             # environment — every other path (incl. explicit `cac env update
             # --user`) passes no 3rd arg and still hits the Issue #71 refusal.
-            if [[ "$scope" == "user" ]] && ! _env_is_root \
-               && [[ "$allow_user_override_global" != "1" ]] \
-               && _env_global_install_exists "$tool"; then
-                utils_error "$display_name has a system-wide install. User-scope update is refused to prevent dual-install drift."
-                _env_global_update_remediation "$tool" >&2
+            if _env_refuse_user_update_over_global "$tool" "$scope" "$allow_user_override_global"; then
                 return 1
             fi
 
@@ -1810,11 +1831,7 @@ env_update_tool() {
             # copy. Same override contract as the curl branch: only
             # env_update_with_escalation passes "1", after confirming the user
             # runs their own per-user copy.
-            if [[ "$scope" == "user" ]] && ! _env_is_root \
-               && [[ "$allow_user_override_global" != "1" ]] \
-               && _env_global_install_exists "$tool"; then
-                utils_error "$display_name has a system-wide install. User-scope update is refused to prevent dual-install drift."
-                _env_global_update_remediation "$tool" >&2
+            if _env_refuse_user_update_over_global "$tool" "$scope" "$allow_user_override_global"; then
                 return 1
             fi
 

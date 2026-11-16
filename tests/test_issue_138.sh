@@ -49,7 +49,8 @@ _mk_codex() {
 # Build a layout under $TEST_TMPDIR/<name>. Sets T, SYS, HOMEDIR, NPM_LOG, SUDO_LOG.
 #   SYS      system-wide npm prefix (outside HOME) holding Codex 0.155.0
 #   HOMEDIR  the user's home; <user_version> non-empty -> ~/.local copy of it
-#   sudo     "yes" puts a logging sudo stub on PATH, "no" leaves sudo absent
+#   sudo     "yes" puts a logging sudo stub on PATH, "password" one that
+#            refuses without a password, "no" leaves sudo absent
 make_layout() {
     local name="$1" user_version="$2" sudo="$3"
     T="$TEST_TMPDIR/$name"
@@ -84,9 +85,15 @@ printf '#!/bin/sh\necho "codex-cli 0.164.0"\n' > "\$d/bin/codex.js"
 chmod 755 "\$d/bin/codex.js"
 ln -sfn "../$PKG_REL/bin/codex.js" "\$prefix/bin/codex"
 EOF
-    if [[ "$sudo" == "yes" ]]; then
-        printf '#!/bin/sh\necho "$*" >> "%s"\nexit 0\n' "$SUDO_LOG" > "$T/stubbin/sudo"
-    fi
+    case "$sudo" in
+        yes)
+            printf '#!/bin/sh\necho "$*" >> "%s"\nexit 0\n' "$SUDO_LOG" > "$T/stubbin/sudo"
+            ;;
+        password)
+            # ICO-ROB-01: sudo exists but needs a password; -n fails.
+            printf '#!/bin/sh\necho "$*" >> "%s"\necho "sudo: a password is required" >&2\nexit 1\n' "$SUDO_LOG" > "$T/stubbin/sudo"
+            ;;
+    esac
     printf '#!/bin/sh\nexit 0\n' > "$T/stubbin/cac"
     chmod 755 "$T/stubbin/"*
 }
@@ -224,6 +231,22 @@ test_8_repair_gives_remediation() {
     [[ "$RC" -ne 0 ]] || { echo "repair reported resolved although nothing changed" >&2; return 1; }
 }
 
+# ----------------------------------------------------------------------------
+# 138.9 — sudo needs a password and there is no terminal (agent session on
+# ICO-ROB-01): reported as needs-root with the --global hint, no user copy.
+# ----------------------------------------------------------------------------
+test_9_password_sudo_without_terminal() {
+    make_layout t9 "" password
+    run_user env_cmd_update codex </dev/null
+    [[ "$RC" -ne 0 ]] || { echo "expected non-zero exit (out: $OUT)" >&2; return 1; }
+    assert_contains "sudo needs a password" "$OUT" "names the cause" || return 1
+    assert_contains "sudo cac env update codex --global" "$OUT" "remediation" || return 1
+    if grep -q -- "env update" "$SUDO_LOG"; then
+        echo "re-exec attempted without a terminal: $(cat "$SUDO_LOG")" >&2; return 1
+    fi
+    _no_user_prefix_npm_call || return 1
+}
+
 run_test "138.1 global npm codex, no sudo: refused with --global remediation, no user copy" test_1_refuses_without_sudo
 run_test "138.2 global npm codex, sudo available: escalates with --global" test_2_escalates_with_sudo
 run_test "138.3 explicit --user with global npm codex: refused" test_3_explicit_user_refused
@@ -232,5 +255,6 @@ run_test "138.5 --global as root: updates system prefix, versions from it" test_
 run_test "138.6 env check flags user + global dual install" test_6_check_flags_dual_install
 run_test "138.7 env check: global only is not a dual install" test_7_check_global_only_clean
 run_test "138.8 env repair: remediation, nothing deleted" test_8_repair_gives_remediation
+run_test "138.9 password sudo without a terminal: needs-root with --global hint" test_9_password_sudo_without_terminal
 
 framework_report
