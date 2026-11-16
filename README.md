@@ -443,7 +443,7 @@ Old 4-segment bundles (without the TOOL field) are still recognized during pull 
 
 Settings are always included in `cac push` bundles but only extracted by `cac pull` when the bundle's hostname **AND** username match the target system. This prevents host-specific configuration (e.g. `teammateMode: "tmux"`, agent teams env vars) from being overwritten by bundles originating from different hosts.
 
-`.claude.json` is half login, half host state (`mcpServers`, `projects`, `machineID`, `userID`). From a bundle of another host or user, `cac pull` takes only the login (`oauthAccount`) and keeps everything else in the local file (#136). If there is no local file yet, the bundled one is installed; from a same-host+same-user bundle the file is replaced as before. The merge needs `jq`: without it, or if either file is not valid JSON, the local file is left untouched and `cac pull` says why.
+`.claude.json` is half login, half host state (`mcpServers`, `projects`, `machineID`, `userID`). From a bundle of another host or user, `cac pull` takes only the login (`oauthAccount`) and keeps everything else in the local file (#136). If there is no local file yet, the bundled one is installed; from a same-host+same-user bundle the file is replaced as before. The merge needs `jq`: without it, if either file is not valid JSON, or if the bundled file has no `oauthAccount`, the local file is left untouched and `cac pull` says why.
 
 **Note:** Host+user matching relies on the bundle filename convention (`CodingAgentConfig_<HOST>_<USER>_<TOOL>_<TIMESTAMP>.zip`). If a bundle is renamed or pulled by Gokapi file ID instead of its original filename, settings extraction is skipped as a safety measure.
 

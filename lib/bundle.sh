@@ -387,9 +387,11 @@ bundle_extract() {
     bundle_user=$(bundle_get_user "$zip_file")
     current_host=$(hostname -s)
 
-    local extract_settings="false"
+    # same_origin: the bundle was pushed by this user on this host. Settings
+    # files are only extracted then; .claude.json is merged otherwise (#136).
+    local same_origin="false"
     if [[ "$bundle_host" == "$current_host" && "$bundle_user" == "$username" ]]; then
-        extract_settings="true"
+        same_origin="true"
         utils_verbose "Host+user match — settings files will be extracted"
     else
         utils_verbose "Host+user mismatch (bundle=${bundle_host}/${bundle_user}, current=${current_host}/${username}) — skipping settings files"
@@ -449,7 +451,7 @@ bundle_extract() {
         [[ "$entry" == */ ]] && continue  # Skip directories
 
         # Skip settings files when host+user don't match
-        if [[ "$extract_settings" == "false" && -n "${settings_files_map[$entry]+isset}" ]]; then
+        if [[ "$same_origin" == "false" && -n "${settings_files_map[$entry]+isset}" ]]; then
             echo "  skipped (host-specific): $entry"
             continue
         fi
@@ -471,7 +473,7 @@ bundle_extract() {
 
         # Issue #136: a foreign bundle (host or user differs) only brings the
         # login identity into an existing local .claude.json.
-        if [[ "$entry" == ".claude.json" && "$extract_settings" == "false" && -f "$dst_file" ]]; then
+        if [[ "$entry" == ".claude.json" && "$same_origin" == "false" && -f "$dst_file" ]]; then
             _bundle_merge_claude_json "$src_file" "$dst_file" "$username" "$timestamp" "$bundle_host"
             continue
         fi

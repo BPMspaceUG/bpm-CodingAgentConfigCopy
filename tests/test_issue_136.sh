@@ -26,6 +26,10 @@ source "$REPO_DIR/lib/bundle.sh"
 
 framework_init
 
+# The merge and most assertions need jq; 136.2 and 136.4 do not.
+HAS_JQ=false
+framework_has_command jq && HAS_JQ=true
+
 # ============================================================================
 # Helpers
 # ============================================================================
@@ -91,7 +95,8 @@ test_136_1_foreign_bundle_merges() {
     assert_equals '"github"' "$(jqf '.mcpServers | keys[0]' "$live")" "local MCP server survives" || return 1
     assert_contains "merged" "$out" "merge reported" || return 1
     assert_file_exists "$d/home/target/$CRED" "credentials still installed" || return 1
-    ls "$d/home/target/$CJ".backup* >/dev/null 2>&1 || { echo "no backup written"; return 1; }
+    local backups; backups=$(find "$d/home/target" -maxdepth 1 -name "$CJ.backup*" | wc -l)
+    assert_equals 1 "$backups" "one backup written" || return 1
     assert_equals "600" "$(stat -c '%a' "$live")" "mode 600"
 }
 
@@ -150,11 +155,34 @@ test_136_6_other_user_same_host_merges() {
     assert_equals "$(jqf '.machineID' "$LOCAL_FIX")" "$(jqf '.machineID' "$d/home/target/$CJ")" "machineID stays local"
 }
 
-run_test "136.1 foreign bundle merges, local state kept"         test_136_1_foreign_bundle_merges
+# 136.7 [anti-bug]: keys only the bundle has are not added to the local file.
+test_136_7_bundle_only_keys_not_added() {
+    local d; d=$(new_sandbox 1367)
+    jq '. + {bundleOnlyKeyFIXTURE: true}' "$BUNDLE_FIX" > "$d/bundle-extra.json"
+    build_bundle "$d/$FOREIGN_ZIP_NAME" "$CJ" "$d/bundle-extra.json"
+    bundle_extract "$d/$FOREIGN_ZIP_NAME" "$d/home/target" "target" >/dev/null 2>&1 || return 1
+    assert_equals "false" "$(jqf 'has("bundleOnlyKeyFIXTURE")' "$d/home/target/$CJ")" "bundle-only key not added"
+}
+
+# 136.8 [anti-bug]: a corrupt bundled file leaves the local file alone.
+test_136_8_corrupt_bundle_kept_local() {
+    local d; d=$(new_sandbox 1368)
+    printf '{"oauthAccount": ' > "$d/bundle-corrupt.json"
+    build_bundle "$d/$FOREIGN_ZIP_NAME" "$CJ" "$d/bundle-corrupt.json"
+    local out
+    out=$(bundle_extract "$d/$FOREIGN_ZIP_NAME" "$d/home/target" "target" 2>&1) || return 1
+    assert_equals "$(cat "$LOCAL_FIX")" "$(cat "$d/home/target/$CJ")" "local file unchanged" || return 1
+    assert_contains "not valid JSON" "$out" "reason named"
+}
+
+run_test_if "$HAS_JQ" "136.1 foreign bundle merges, local state kept"         test_136_1_foreign_bundle_merges "jq not installed"
 run_test "136.2 same host+user replaces as before"               test_136_2_same_origin_replaces
-run_test "136.3 no local file installs bundle (+#81 rewrite)"    test_136_3_no_local_file_installs
+run_test_if "$HAS_JQ" "136.3 no local file installs bundle (+#81 rewrite)"    test_136_3_no_local_file_installs "jq not installed"
 run_test "136.4 no jq: foreign bundle leaves local file alone"   test_136_4_no_jq_keeps_local
-run_test "136.5 corrupt local JSON left alone"                   test_136_5_corrupt_local_kept
-run_test "136.6 same host, other user counts as foreign"         test_136_6_other_user_same_host_merges
+run_test_if "$HAS_JQ" "136.5 corrupt local JSON left alone"                   test_136_5_corrupt_local_kept "jq not installed"
+run_test_if "$HAS_JQ" "136.6 same host, other user counts as foreign"         test_136_6_other_user_same_host_merges "jq not installed"
+
+run_test_if "$HAS_JQ" "136.7 bundle-only keys are not added"                 test_136_7_bundle_only_keys_not_added "jq not installed"
+run_test_if "$HAS_JQ" "136.8 corrupt bundled JSON keeps the local file"      test_136_8_corrupt_bundle_kept_local "jq not installed"
 
 framework_report
