@@ -128,17 +128,30 @@ test_5_update_implicit_non_root_escalates() {
 }
 
 # ----------------------------------------------------------------------------
-# 156.6 — no direct EUID root check is left outside the documented exception
+# 156.6 — no direct root check is left outside the seam and the one documented
+# exception. Allowlist, not a pattern for one spelling: every code line in
+# lib/env.sh that mentions EUID or `id -u` (any operator, quoted or not, in
+# [[ ]] or (( ))) must be one of
+#   - the body of _env_is_root itself,
+#   - the escalation guard marked "#156: real EUID" (exactly one such line),
+#   - the writability error message that prints EUID=$EUID.
 # ----------------------------------------------------------------------------
 test_6_no_stray_euid_checks() {
-    local stray
-    # Code lines that compare EUID, minus the seam itself and the documented
-    # escalation guard (marked "#156: real EUID").
-    stray=$(grep -nE 'EUID[^=]*" -(eq|ne) 0' "$REPO_DIR/lib/env.sh" \
-        | grep -vE '^[0-9]+:\s*#' \
+    local lib="$REPO_DIR/lib/env.sh" stray markers
+    stray=$(awk '
+        /^_env_is_root\(\) \{/ { in_seam = 1; next }
+        in_seam && /^\}/       { in_seam = 0; next }
+        in_seam                 { next }
+        /^[[:space:]]*#/        { next }
+        /EUID|id -u/            { print NR ": " $0 }
+    ' "$lib" \
         | grep -v '#156: real EUID' \
-        | grep -v '^[0-9]*:    \[\[ "\${EUID:-\$(id -u)}" -eq 0 \]\]$' || true)
-    [[ -z "$stray" ]] || { echo "direct EUID checks outside the seam:" >&2; echo "$stray" >&2; return 1; }
+        | grep -v 'utils_error "Target \$target is not writable by EUID=\$EUID' || true)
+    [[ -z "$stray" ]] || { echo "direct root checks outside the seam:" >&2; echo "$stray" >&2; return 1; }
+
+    # Code lines only: the seam's doc comment quotes the marker.
+    markers=$(grep -v '^[[:space:]]*#' "$lib" | grep -c '#156: real EUID')
+    [[ "$markers" -eq 1 ]] || { echo "expected exactly one '#156: real EUID' exception, found $markers" >&2; return 1; }
 }
 
 echo "========================================"
@@ -150,6 +163,6 @@ run_test "156.2 env install --global is refused outside root context" test_2_ins
 run_test "156.3 env update claude --global runs in root context" test_3_update_global_as_root
 run_test "156.4 env update claude as root takes the direct path" test_4_update_implicit_as_root_skips_escalation
 run_test "156.5 env update claude as non-root escalates (#79)" test_5_update_implicit_non_root_escalates
-run_test "156.6 every EUID root check goes through the seam" test_6_no_stray_euid_checks
+run_test "156.6 every root check in lib/env.sh goes through the seam" test_6_no_stray_euid_checks
 
 framework_report

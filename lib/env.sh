@@ -706,9 +706,11 @@ _env_reexec_sudo_update() {
     # Only meaningful for a non-root caller.
     # Issue #156: the one root check that does NOT use _env_is_root. It decides
     # whether this process execs `sudo cac ...`, so it must reflect the
-    # process's real privileges, never a test override: a faked "non-root"
-    # inside a real root process would re-exec through sudo for nothing. The
-    # recursion guard for the re-exec'd child is CAC_ENV_ESCALATED (#79).
+    # process's real privileges, never a test override, in either direction:
+    # a faked "root" inside a non-root process would skip the sudo re-exec the
+    # update needs, and a faked "non-root" inside a real root process would
+    # re-exec through sudo for nothing. The re-exec'd child cannot loop either
+    # way: it gets an explicit --global scope (see below) and CAC_ENV_ESCALATED.
     if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then  # #156: real EUID
         return "$ENV_EXIT_NEEDS_ROOT"
     fi
@@ -733,7 +735,7 @@ _env_reexec_sudo_update() {
     # the env sentinel. The child parses --global as an *explicit* scope, so it
     # can never re-enter the auto-escalation branch (gated on implicit scope).
     # And if a broken/mocked sudo runs the child WITHOUT actually elevating, the
-    # child sees --global + EUID!=0 and is rejected by _env_parse_scope_args
+    # child sees --global without root (_env_is_root fails) and is rejected by _env_parse_scope_args
     # ("Scope --global requires root") — terminating, not looping. This holds
     # regardless of whether the sentinel survives sudo's env reset.
     #
@@ -1054,9 +1056,10 @@ _env_diag_target_dir() {
 # (marked "#156: real EUID", reason there). It exists as a seam so the root-only
 # branches (--global/--all scope, the direct root path of env_cmd_update, the
 # guards in env_update_tool) are reachable from the non-root test suite.
-# It does NOT weaken any privilege check: it is a function, so the caller's
-# environment cannot override it, and the commands it gates (npm -g, writes to
-# /usr/local/bin, chown) still fail without real root.
+# It does NOT weaken any privilege check: outside the test suite it is exactly
+# the real EUID test, and it is a function, so the caller's environment cannot
+# override it (an exported BASH_FUNC__env_is_root%% is replaced when this file
+# is sourced).
 _env_is_root() {
     [[ "${EUID:-$(id -u)}" -eq 0 ]]
 }
