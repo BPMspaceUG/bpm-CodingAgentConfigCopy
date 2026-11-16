@@ -50,18 +50,22 @@ make_path() {
     STUB_PATH="$dir"
 }
 
-# configure <tmux_flag>: run the seam in a fresh strict-mode bash on STUB_PATH
-# Sets OUT, RC, SETTINGS (the settings.json path).
+# configure <tmux_flag>: run the seam in a fresh strict-mode bash on STUB_PATH.
+# Sets OUT, RC, SETTINGS (the settings.json path) and HINT (what
+# platform_install_hint tmux answers in that same process).
 configure() {
     local home="$TEST_TMPDIR/home-$RANDOM"
     mkdir -p "$home"
     SETTINGS="$home/.claude/settings.json"
+    local hint_file="$home/hint"
     RC=0
     OUT=$(HOME="$home" PATH="$STUB_PATH" bash -c '
         set -euo pipefail
         source "$1/lib/env.sh"
+        platform_install_hint tmux > "$3"
         _env_configure_claude_settings "$2"
-    ' _ "$REPO_DIR" "$1" 2>&1) || RC=$?
+    ' _ "$REPO_DIR" "$1" "$hint_file" 2>&1) || RC=$?
+    HINT=$(cat "$hint_file" 2>/dev/null)
 }
 
 # refute_contains <needle> <haystack> <description>
@@ -82,13 +86,14 @@ test_2_missing_tmux_prints_both_warnings() {
     make_path false
     configure true
     assert_contains "WARNING: tmux is not installed" "$OUT" "first warning" || return 1
-    # Every platform_install_hint variant names "install tmux" / "Install tmux".
-    assert_match "WARNING: Install with: [^$'\n']*[Ii]nstall tmux" "$OUT" "install-hint warning"
+    assert_match "tmux" "$HINT" "platform_install_hint tmux" || return 1
+    assert_contains "WARNING: Install with: $HINT" "$OUT" "install-hint warning"
 }
 
 test_3_missing_tmux_still_writes_agent_teams_without_teammate_mode() {
     make_path false
     configure true
+    assert_equals 0 "$RC" "exit code (output: $OUT)" || return 1
     assert_file_exists "$SETTINGS" "settings.json" || return 1
     local content
     content=$(cat "$SETTINGS")
