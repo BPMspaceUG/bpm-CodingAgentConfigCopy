@@ -97,10 +97,8 @@ _gokapi_try_request() {
         fi
         # 2xx with empty body: preserve pre-#72 behaviour where empty body
         # was treated as a (retryable) failure, but say so (#128).
-        local op_name
-        op_name=$(_gokapi_derive_op_name "$method" "$endpoint")
-        _gokapi_warn_if_retrying "$op_name" "HTTP ${status}, empty body" ||
-            utils_error "Gokapi ${op_name} failed: HTTP ${status} with an empty body from $(_gokapi_redact_url "${GOKAPI_LAST_URL:-}")"
+        _gokapi_report_empty "$(_gokapi_derive_op_name "$method" "$endpoint")" \
+            "$status" "${GOKAPI_LAST_URL:-}" body
         return 1
     fi
 
@@ -117,24 +115,32 @@ _gokapi_try_request() {
 # Returns: 0 if download succeeded and file is non-empty, 1 otherwise
 # A failed attempt that utils_retry will repeat prints one WARNING line; the
 # final attempt (or a call outside any retry) prints the ERROR diagnosis (#128).
+# The HTTP status is checked too: an error page saved to <output_file> is a
+# failure, not a bundle.
 _gokapi_try_download() {
     local url="$1"
     local output_file="$2"
 
-    local curl_exit=0
-    curl -sL -o "$output_file" "$url" || curl_exit=$?
-    if [[ "$curl_exit" -eq 0 && -s "$output_file" ]]; then
-        return 0
-    fi
-
+    local status curl_exit=0
+    status=$(curl -sL -o "$output_file" -w '%{http_code}' "$url") || curl_exit=$?
     if [[ "$curl_exit" -ne 0 ]]; then
         GOKAPI_CURL_EXIT="$curl_exit"
         _gokapi_emit_http_error download 000 "$url" ""
-    else
-        _gokapi_warn_if_retrying download "empty file" ||
-            utils_error "Gokapi download failed: empty file from $(_gokapi_redact_url "$url")"
+        return 1
     fi
-    return 1
+    # Test stubs that ignore -w print no status; treat that as 200, like the
+    # legacy-stub path in _gokapi_request_with_status.
+    [[ "$status" =~ ^[0-9]{3}$ ]] || status=200
+
+    if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+        _gokapi_emit_http_error download "$status" "$url" "$(head -c 200 "$output_file" 2>/dev/null)"
+        return 1
+    fi
+    if [[ ! -s "$output_file" ]]; then
+        _gokapi_report_empty download "$status" "$url" file
+        return 1
+    fi
+    return 0
 }
 
 # Internal: Validate Gokapi configuration
@@ -310,6 +316,17 @@ _gokapi_redact_url() {
 _gokapi_warn_if_retrying() {
     utils_retry_has_next_attempt || return 1
     utils_warn "Gokapi $1 failed ($2), retrying (attempt $(utils_retry_progress))..."
+}
+
+# Internal: Report a 2xx answer without data (empty body or empty download
+# file): the retry WARNING while another attempt is pending, else an ERROR
+# line and hint (#128).
+# Usage: _gokapi_report_empty <operation> <status> <url> <body|file>
+_gokapi_report_empty() {
+    local operation="$1" status="$2" url="$3" what="$4"
+    _gokapi_warn_if_retrying "$operation" "HTTP ${status}, empty ${what}" && return 0
+    utils_error "Gokapi ${operation} failed: HTTP ${status} with an empty ${what} from $(_gokapi_redact_url "$url")"
+    utils_error "  Hint: Empty answer — the Gokapi instance answered without data; check the server and that the file still exists."
 }
 
 # Internal: Emit a structured HTTP error with remediation hint.

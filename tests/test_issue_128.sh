@@ -11,7 +11,8 @@
 # _gokapi_try_request call, with a curl stub first on PATH. The stub fails
 # while its call count is <= $FAIL_CALLS (how: $FAIL_MODE, default curl55 =
 # exit 55 with no output; empty = HTTP 200 with an empty body or an empty
-# download file; 502 = "Bad Gateway" with HTTP 502), then
+# download file; 502 = "Bad Gateway" with HTTP 502; 401 = "Unauthorized"
+# with HTTP 401), then
 # answers like a real curl: a non-empty file for `-o <file>`, otherwise
 # `[]` plus the `-w` status trailer 200.
 #
@@ -40,24 +41,35 @@ n=$(( $(cat "$CURL_COUNT" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$CURL_COUNT"
 out=""
 prev=""
+has_w=""
 for a in "$@"; do
     [[ "$prev" == "-o" ]] && out="$a"
+    [[ "$prev" == "-w" ]] && has_w=1
     prev="$a"
 done
+# reply <body> <status>: a download (-o) writes <body> to the file and prints
+# the -w status; a request prints <body>, newline, status (the -w trailer).
+reply() {
+    if [[ -n "$out" ]]; then
+        printf '%s' "$1" > "$out"
+        [[ -n "$has_w" ]] && printf '%s' "$2"
+    else
+        printf '%s\n%s' "$1" "$2"
+    fi
+    exit 0
+}
 if [[ "$n" -le "$FAIL_CALLS" ]]; then
     case "${FAIL_MODE:-curl55}" in
         curl55) exit 55 ;;
-        empty)
-            if [[ -n "$out" ]]; then : > "$out"; else printf '\n200'; fi
-            exit 0 ;;
-        502) printf 'Bad Gateway\n502'; exit 0 ;;
+        empty) reply "" 200 ;;
+        502) reply "Bad Gateway" 502 ;;
+        401) reply "Unauthorized" 401 ;;
     esac
 fi
 if [[ -n "$out" ]]; then
-    echo "zipdata" > "$out"
-    exit 0
+    reply "zipdata" 200
 fi
-printf '[]\n200'
+reply "[]" 200
 EOF
 chmod 755 "$STUB_BIN/curl"
 PATH="$STUB_BIN:$PATH"
@@ -67,7 +79,7 @@ export CAC_GOKAPI_API_KEY="FIXTURE"
 CAC_GOKAPI_MAX_RETRIES=3
 CAC_GOKAPI_RETRY_DELAY=0
 
-# stub_fails <n> [mode]: the next <n> curl calls fail (mode: curl55, empty, 502).
+# stub_fails <n> [mode]: the next <n> curl calls fail (mode: curl55, empty, 502, 401).
 stub_fails() {
     CURL_COUNT="$TEST_TMPDIR/count-$RANDOM"
     : > "$CURL_COUNT"
@@ -169,7 +181,8 @@ test_9_empty_2xx_every_attempt_says_so() {
     err=$(_gokapi_op_with_retry request _gokapi_try_request GET /api/files/list 2>&1 >/dev/null) || rc=$?
     assert_equals "1" "$rc" "return code" || return 1
     assert_equals "2" "$(count_lines 'WARNING:' "$err")" "WARNING lines in: $err" || return 1
-    assert_contains "ERROR: Gokapi list failed: HTTP 200 with an empty body from https://h.example/api/files/list" "$err" "final error"
+    assert_contains "ERROR: Gokapi list failed: HTTP 200 with an empty body from https://h.example/api/files/list" "$err" "final error" || return 1
+    assert_equals "1" "$(count_lines 'ERROR:   Hint: Empty answer' "$err")" "hint lines"
 }
 
 test_10_empty_download_file_once_then_succeed() {
@@ -177,7 +190,7 @@ test_10_empty_download_file_once_then_succeed() {
     local err rc=0 out="$TEST_TMPDIR/out-$RANDOM.zip"
     err=$(_gokapi_op_with_retry download _gokapi_try_download "https://h.example/hotlink/FIXTURE.zip" "$out" 2>&1 >/dev/null) || rc=$?
     assert_equals "0" "$rc" "return code" || return 1
-    assert_equals "WARNING: Gokapi download failed (empty file), retrying (attempt 1/3)..." "$err" "stderr"
+    assert_equals "WARNING: Gokapi download failed (HTTP 200, empty file), retrying (attempt 1/3)..." "$err" "stderr"
 }
 
 # The retry context exists only while utils_retry runs: after it returns
@@ -201,17 +214,63 @@ test_11_retry_context_is_scoped() {
     fi
 }
 
-# The CLI runs under set -e: a pending-retry warning must not abort it.
+# The CLI runs under set -e: a pending-retry warning must not abort it. Run in
+# its own `bash -eu` process; a subshell on the left of `||` would switch
+# errexit off and prove nothing.
 test_12_set_e_caller_survives_warning() {
     stub_fails 1
-    local rc=0
-    (
-        set -eu
-        _gokapi_op_with_retry request _gokapi_try_request GET /api/files/list 2>/dev/null >/dev/null
-        r=$(utils_retry 2 0 subst echo ok)
-        [[ "$r" == "ok" ]]
-    ) || rc=$?
-    assert_equals "0" "$rc" "subshell exit under set -eu"
+    local script="$TEST_TMPDIR/set_e_$RANDOM.sh" out rc=0
+    cat > "$script" <<SCRIPT
+source "$REPO_DIR/lib/utils.sh"
+source "$REPO_DIR/lib/backend_gokapi.sh"
+CAC_GOKAPI_MAX_RETRIES=3
+CAC_GOKAPI_RETRY_DELAY=0
+_gokapi_op_with_retry request _gokapi_try_request GET /api/files/list
+_gokapi_op_with_retry download _gokapi_try_download https://h.example/hotlink/FIXTURE.zip "$TEST_TMPDIR/sete.zip"
+r=\$(utils_retry 2 0 subst echo ok)
+echo "reached:\$r"
+SCRIPT
+    out=$(bash -eu "$script" 2>/dev/null) || rc=$?
+    assert_equals "0" "$rc" "exit of bash -eu" || return 1
+    assert_equals "reached:ok" "$(tail -n 1 <<< "$out")" "last stdout line"
+}
+
+# Guard for 128.12 itself: the same harness does catch a real errexit abort.
+test_12b_set_e_harness_catches_abort() {
+    local script="$TEST_TMPDIR/set_e_abort_$RANDOM.sh" rc=0
+    printf 'false\necho reached\n' > "$script"
+    bash -eu "$script" >/dev/null 2>&1 || rc=$?
+    assert_equals "1" "$rc" "exit of bash -eu with a failing command"
+}
+
+test_13_download_http_502_once_then_succeed() {
+    stub_fails 1 502
+    local err rc=0 out="$TEST_TMPDIR/out-$RANDOM.zip"
+    err=$(_gokapi_op_with_retry download _gokapi_try_download "https://h.example/hotlink/FIXTURE.zip" "$out" 2>&1 >/dev/null) || rc=$?
+    assert_equals "0" "$rc" "return code" || return 1
+    assert_equals "WARNING: Gokapi download failed (HTTP 502), retrying (attempt 1/3)..." "$err" "stderr" || return 1
+    assert_equals "zipdata" "$(cat "$out")" "downloaded file"
+}
+
+test_14_download_empty_every_attempt() {
+    stub_fails 99 empty
+    local err rc=0 out="$TEST_TMPDIR/out-$RANDOM.zip"
+    err=$(_gokapi_op_with_retry download _gokapi_try_download "https://h.example/hotlink/FIXTURE.zip" "$out" 2>&1 >/dev/null) || rc=$?
+    assert_equals "1" "$rc" "return code" || return 1
+    assert_equals "2" "$(count_lines 'WARNING:' "$err")" "WARNING lines in: $err" || return 1
+    assert_contains "ERROR: Gokapi download failed: HTTP 200 with an empty file from https://h.example/hotlink/FIXTURE.zip" "$err" "final error" || return 1
+    assert_equals "1" "$(count_lines 'ERROR:   Hint: Empty answer' "$err")" "hint lines" || return 1
+    assert_equals "ERROR: Failed to download bundle after 3 attempts" "$(tail -n 1 <<< "$err")" "last line"
+}
+
+test_15_http_401_every_attempt_keeps_auth_hint() {
+    stub_fails 99 401
+    local err rc=0
+    err=$(_gokapi_op_with_retry request _gokapi_try_request GET /api/files/list 2>&1 >/dev/null) || rc=$?
+    assert_equals "1" "$rc" "return code" || return 1
+    assert_contains "WARNING: Gokapi list failed (HTTP 401), retrying (attempt 1/3)..." "$err" "first warning" || return 1
+    assert_equals "2" "$(count_lines 'WARNING:' "$err")" "WARNING lines in: $err" || return 1
+    assert_equals "1" "$(count_lines 'ERROR:   Hint: Authentication' "$err")" "hint lines"
 }
 
 echo "========================================"
@@ -230,5 +289,9 @@ run_test "128.9 empty 2xx every attempt: final ERROR names it" test_9_empty_2xx_
 run_test "128.10 empty download file once, then succeed: one WARNING" test_10_empty_download_file_once_then_succeed
 run_test "128.11 retry counters are scoped to utils_retry" test_11_retry_context_is_scoped
 run_test "128.12 set -e caller survives a pending-retry warning" test_12_set_e_caller_survives_warning
+run_test "128.12b the bash -eu harness catches a real abort" test_12b_set_e_harness_catches_abort
+run_test "128.13 download HTTP 502 once, then succeed: one WARNING" test_13_download_http_502_once_then_succeed
+run_test "128.14 empty download every attempt: final ERROR + hint" test_14_download_empty_every_attempt
+run_test "128.15 HTTP 401 every attempt: auth hint once" test_15_http_401_every_attempt_keeps_auth_hint
 
 framework_report
