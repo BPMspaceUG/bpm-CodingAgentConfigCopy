@@ -250,6 +250,57 @@ _bundle_claude_session_gate() {
     return 0
 }
 
+# Issue #136: ~/.claude.json is mostly host-local state (mcpServers, projects,
+# machineID, userID, caches); only the login identity `oauthAccount` belongs to
+# the account. For a bundle from another host or user, take `oauthAccount` from
+# the bundle and keep every other key of the local file. The local file is
+# never replaced wholesale: without jq, or when either file is not a JSON
+# object, it stays untouched and the reason is printed.
+# Usage: _bundle_merge_claude_json <bundled-file> <local-file> <username> <timestamp> <bundle_host>
+# Returns: 0 (a skipped merge is not an extract failure)
+_bundle_merge_claude_json() {
+    local src="$1" dst="$2" username="$3" timestamp="$4" bundle_host="$5"
+    local entry=".claude.json"
+
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "  skipped (jq not installed, cannot merge the file from ${bundle_host}; local file kept): ${entry}"
+        return 0
+    fi
+    if ! jq -e 'type == "object"' "$dst" >/dev/null 2>&1; then
+        echo "  skipped (local file is not valid JSON; kept as is): ${entry}"
+        return 0
+    fi
+    if ! jq -e 'type == "object"' "$src" >/dev/null 2>&1; then
+        echo "  skipped (bundled file is not valid JSON; local file kept): ${entry}"
+        return 0
+    fi
+    if ! jq -e 'has("oauthAccount")' "$src" >/dev/null 2>&1; then
+        echo "  skipped (bundle from ${bundle_host} has no login in it; local file kept): ${entry}"
+        return 0
+    fi
+
+    local tmp
+    if ! tmp=$(mktemp "${dst}.cac-merge.XXXXXX"); then
+        utils_warn "Merge of ${entry} skipped (mktemp failed); local file kept"
+        return 0
+    fi
+    if ! jq --slurpfile bundled "$src" '.oauthAccount = $bundled[0].oauthAccount' "$dst" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        utils_warn "Merge of ${entry} failed; local file kept"
+        return 0
+    fi
+
+    _bundle_backup_file "$dst" "$entry" "$timestamp"
+    if ! mv "$tmp" "$dst"; then
+        rm -f "$tmp"
+        utils_warn "Merge of ${entry} could not be written; local file kept"
+        return 0
+    fi
+    security_secure_file "$dst" "$username"
+    echo "  merged (login from ${bundle_host}; local MCP servers, projects and IDs kept): ${entry}"
+    return 0
+}
+
 # Rewrite baked-in source-user home paths in an extracted file to the target home.
 # Issue #81: .claude.json embeds absolute /home/<sourceuser> paths (hook commands,
 # MCP server binaries, per-project keys). On a cross-user pull these must point at
@@ -415,6 +466,13 @@ bundle_extract() {
         # working local login, and never apply a stale one silently.
         if [[ "$entry" == ".claude/.credentials.json" ]] \
             && ! _bundle_claude_session_gate "$src_file" "$dst_file" "$bundle_host"; then
+            continue
+        fi
+
+        # Issue #136: a foreign bundle (host or user differs) only brings the
+        # login identity into an existing local .claude.json.
+        if [[ "$entry" == ".claude.json" && "$extract_settings" == "false" && -f "$dst_file" ]]; then
+            _bundle_merge_claude_json "$src_file" "$dst_file" "$username" "$timestamp" "$bundle_host"
             continue
         fi
 

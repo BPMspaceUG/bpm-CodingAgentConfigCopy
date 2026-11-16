@@ -1,0 +1,62 @@
+{
+  "numStartups": 0,
+  "tipsHistory": {
+    "new-user-warmup": 0
+  },
+  "projects": {
+    "/home/target": {},
+    "/home/target/proj-FIXTURE": {
+      "allowedTools": [],
+      "mcpContextUris": [],
+      "mcpServers": {},
+      "enabledMcpjsonServers": [],
+      "disabledMcpjsonServers": [],
+      "hasTrustDialogAccepted": true,
+      "lastCost": 0,
+      "lastSessionId": "00000000-0000-0000-0000-000000000000",
+      "exampleFiles": []
+    }
+  },
+  "mcpServers": {
+    "github": {
+      "type": "stdio",
+      "command": "/home/target/.local/bin/github-mcp-server-FIXTURE",
+      "args": [
+        "stdio"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "FIXTURE"
+      }
+    }
+  },
+  "machineID": "FIXTURE-MACHINE-LOCAL",
+  "userID": "FIXTURE-USERID-FIXTURE-MACHINE-LOCAL",
+  "firstStartTime": "2026-01-01T00:00:00.000Z",
+  "migrationVersion": 0,
+  "oauthAccount": {
+    "accountUuid": "00000000-0000-0000-0000-000000000000",
+    "emailAddress": "FIXTURE-local@example.invalid",
+    "organizationUuid": "00000000-0000-0000-0000-000000000000",
+    "hasExtraUsageEnabled": false,
+    "billingType": "FIXTURE",
+    "accountCreatedAt": "2026-01-01T00:00:00.000Z",
+    "subscriptionCreatedAt": "2026-01-01T00:00:00.000Z",
+    "ccOnboardingFlags": {},
+    "claudeCodeTrialEndsAt": null,
+    "claudeCodeTrialDurationDays": null,
+    "seatTier": null,
+    "planDisplayName": "FIXTURE",
+    "displayName": "FIXTURE-local",
+    "fullName": "FIXTURE",
+    "profileFetchedAt": 0,
+    "organizationRole": "FIXTURE",
+    "workspaceRole": null,
+    "organizationName": "FIXTURE",
+    "organizationType": "FIXTURE",
+    "organizationRateLimitTier": "FIXTURE",
+    "userRateLimitTier": null
+  },
+  "hasCompletedOnboarding": true,
+  "lastOnboardingVersion": "0.0.0-FIXTURE",
+  "githubRepoPaths": {}
+}

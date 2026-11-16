@@ -84,6 +84,8 @@ CodingAgentConfig_<HOST>_<USER>_<TOOL>_<YYMMDD-HHMMSS>.zip
 
 Settings are bundled with `cac push` but only extracted by `cac pull` when the bundle's hostname AND username match the target. This prevents host-specific config (e.g. `teammateMode: "tmux"`) from being overwritten by bundles from other hosts.
 
+`.claude.json` stays in the credential list but is merged, not moved, when the bundle comes from another host or user: only `oauthAccount` is taken from the bundle, all other keys (`mcpServers`, `projects`, `machineID`, `userID` …) stay local (#136, `_bundle_merge_claude_json`). No jq or invalid JSON → local file untouched.
+
 ## Installation Paths
 
 | Mode | Binary | Libraries | Config |

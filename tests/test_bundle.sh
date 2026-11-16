@@ -299,7 +299,8 @@ test_bundle_extract_basic() {
 test_bundle_extract_creates_backup() {
     local fake_home="${TEST_TMPDIR}/src_home3"
     local target_home="${TEST_TMPDIR}/dst_home3"
-    local bundle_zip="${TEST_TMPDIR}/backup_test.zip"
+    # Same host+user name: the file is replaced, so the backup path runs (#136 merges foreign bundles)
+    local bundle_zip="${TEST_TMPDIR}/CodingAgentConfig_$(hostname -s)_$(whoami)_claude_260101-000000.zip"
 
     # Create source home
     mkdir -p "${fake_home}/.claude"

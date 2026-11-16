@@ -341,6 +341,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #136 tests (foreign bundle merges .claude.json instead of replacing it)
+    if $run_all || [[ "$filter" == "issue_136" ]] || [[ "$filter" == "136" ]]; then
+        if ! run_test_suite "Issue #136 Tests" "test_issue_136.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #140 tests (version string is the UTC committer date)
     if $run_all || [[ "$filter" == "issue_140" ]] || [[ "$filter" == "140" ]]; then
         if ! run_test_suite "Issue #140 Tests" "test_issue_140.sh"; then
