@@ -23,12 +23,26 @@ _release_test_lock() {
         rm -f "$TEST_LOCK"
     fi
 }
-if git_dir="$(git -C "$SCRIPT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
-    TEST_LOCK="${git_dir}/cac-tests.lock"
-    echo "$$" > "$TEST_LOCK"
+# A second run started while a live one holds the lock leaves it alone: if it
+# took the lock over and ended first, the first run would be unprotected.
+_take_test_lock() {
+    local lock="$1" holder
     trap _release_test_lock EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    if ( set -o noclobber; echo "$$" > "$lock" ) 2>/dev/null; then
+        TEST_LOCK="$lock"; return 0
+    fi
+    holder="$(tr -d '[:space:]' < "$lock" 2>/dev/null)"
+    if [[ "$holder" =~ ^[0-9]+$ ]] && kill -0 "$holder" 2>/dev/null; then
+        echo "Note: test run PID ${holder} already holds ${lock}; this run does not take it."
+        return 0
+    fi
+    echo "$$" > "$lock"     # stale lock from a dead run
+    TEST_LOCK="$lock"
+}
+if git_dir="$(git -C "$SCRIPT_DIR" rev-parse --absolute-git-dir 2>/dev/null)"; then
+    _take_test_lock "${git_dir}/cac-tests.lock"
 fi
 
 # Colors

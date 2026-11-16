@@ -27,6 +27,8 @@ framework_init
 
 HAS_SHELLCHECK=false
 framework_has_command shellcheck && HAS_SHELLCHECK=true
+HAS_JQ=false
+framework_has_command jq && HAS_JQ=true
 
 # A throwaway repo with the real runner and a fake "platform" suite whose body
 # is $1. The suite sees the lock path as $LOCK. Prints the repo path.
@@ -71,24 +73,59 @@ test_3_lock_removed_after_failure() {
     _assert_no_lock "$repo" "a failing run"
 }
 
-# SIGINT goes to the runner's whole process group, as Ctrl-C does. Job control
-# (set -m) gives the background runner its own group and keeps SIGINT
-# un-ignored, which a plain `&` in a script would not.
-test_4_lock_removed_after_sigint() {
-    local repo pid i
-    repo="$(_fake_repo 'touch "$LOCK.started"; sleep 30')"
+# Start the real runner (copied) with a suite that sleeps; sets RUN_REPO and
+# RUN_PID. Not called as $(...) or <(...): those run in the background, and a
+# background shell starts its children with SIGINT ignored.
+RUN_REPO=""
+RUN_PID=""
+_running_repo() {
+    RUN_REPO="$(_fake_repo 'touch "$LOCK.started"; sleep 30')"
     set -m
-    "$repo/tests/run_tests.sh" platform >/dev/null 2>&1 &
-    pid=$!
+    "$RUN_REPO/tests/run_tests.sh" platform >/dev/null 2>&1 &
+    RUN_PID=$!
     set +m
-    for i in $(seq 1 100); do
-        [[ -e "$repo/.git/cac-tests.lock.started" ]] && break
+    for _ in $(seq 1 100); do
+        [[ -e "$RUN_REPO/.git/cac-tests.lock.started" ]] && break
         sleep 0.1
     done
-    [[ -e "$repo/.git/cac-tests.lock" ]] || { kill -KILL -- "-$pid" 2>/dev/null; echo "no lock while running (after ${i} polls)" >&2; return 1; }
-    kill -INT -- "-$pid"
-    wait "$pid" 2>/dev/null
+}
+
+# Ctrl-C a run from _running_repo and wait until its PID is gone.
+_stop_run() {
+    local pid="$1"
+    kill -INT -- "-$pid" 2>/dev/null
+    for _ in $(seq 1 100); do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 0.1
+    done
+    kill -KILL -- "-$pid" 2>/dev/null
+}
+
+# SIGINT goes to the runner's whole process group, as Ctrl-C does. Job control
+# (set -m, in _running_repo) gives the background runner its own group and
+# keeps SIGINT un-ignored, which a plain `&` in a script would not.
+test_4_lock_removed_after_sigint() {
+    local repo pid
+    _running_repo; repo="$RUN_REPO"; pid="$RUN_PID"
+    [[ -e "$repo/.git/cac-tests.lock" ]] || { kill -KILL -- "-$pid" 2>/dev/null; echo "no lock while running" >&2; return 1; }
+    _stop_run "$pid"
     _assert_no_lock "$repo" "SIGINT"
+}
+
+# A second run started while the first is live must not take over the lock:
+# when it ends first, the first run must still be protected.
+test_10_second_run_leaves_first_runs_lock() {
+    local repo pid rc=0
+    _running_repo; repo="$RUN_REPO"; pid="$RUN_PID"
+    rm -f "$repo/tests/test_platform.sh"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/tests/test_platform.sh"
+    chmod +x "$repo/tests/test_platform.sh"
+    "$repo/tests/run_tests.sh" platform >/dev/null 2>&1 || rc=$?
+    local held
+    held="$(cat "$repo/.git/cac-tests.lock" 2>/dev/null)"
+    _stop_run "$pid"
+    [[ $rc -eq 0 ]] || { echo "second run failed (exit $rc)" >&2; return 1; }
+    assert_equals "$pid" "$held" "lock PID after the second run ended" || return 1
 }
 
 # Run the hook as Claude Code does: PreToolUse JSON on stdin, project dir in
@@ -110,6 +147,12 @@ BLOCKED_CMDS=(
     "cd /x && git -C /y stash"
     "git -c core.pager=cat checkout ."
     "shellcheck x; git stash && git stash pop"
+    "/usr/bin/git stash"
+    "\"git\" stash"
+    "\\git stash"
+    "bash -c 'git stash'"
+    "git -C \"/a b\" stash"
+    "git --work-tree /x checkout ."
 )
 ALLOWED_CMDS=(
     "git status"
@@ -119,24 +162,9 @@ ALLOWED_CMDS=(
     "grep -n 'stash' lib/env.sh"
 )
 
-# Start the real runner (copied) with a suite that sleeps; prints "<repo> <pid>".
-_running_repo() {
-    local repo pid
-    repo="$(_fake_repo 'touch "$LOCK.started"; sleep 30')"
-    set -m
-    "$repo/tests/run_tests.sh" platform >/dev/null 2>&1 &
-    pid=$!
-    set +m
-    for _ in $(seq 1 100); do
-        [[ -e "$repo/.git/cac-tests.lock.started" ]] && break
-        sleep 0.1
-    done
-    printf '%s %s\n' "$repo" "$pid"
-}
-
 test_5_hook_blocks_tree_commands_during_live_run() {
     local repo pid cmd out rc bad=0
-    read -r repo pid < <(_running_repo)
+    _running_repo; repo="$RUN_REPO"; pid="$RUN_PID"
     for cmd in "${BLOCKED_CMDS[@]}"; do
         rc=0; out="$(_hook "$repo" "$cmd")" || rc=$?
         if [[ $rc -ne 2 ]]; then
@@ -151,7 +179,7 @@ test_5_hook_blocks_tree_commands_during_live_run() {
         rc=0; out="$(_hook "$repo" "$cmd")" || rc=$?
         [[ $rc -eq 0 ]] || { echo "wrongly blocked (exit $rc): $cmd: $out" >&2; bad=1; }
     done
-    kill -INT -- "-$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    _stop_run "$pid"
     return "$bad"
 }
 
@@ -195,10 +223,11 @@ run_test "153.1  the lock holds the runner PID while a suite runs" test_1_lock_h
 run_test "153.2  the lock is removed after a passing run" test_2_lock_removed_after_pass
 run_test "153.3  the lock is removed after a failing run" test_3_lock_removed_after_failure
 run_test "153.4  the lock is removed after SIGINT" test_4_lock_removed_after_sigint
-run_test "153.5  the hook blocks tree-changing git commands during a live run" test_5_hook_blocks_tree_commands_during_live_run
-run_test "153.6  the hook allows them when no run holds the lock" test_6_hook_allows_tree_commands_without_run
-run_test "153.7  the hook ignores a stale lock" test_7_hook_ignores_stale_lock
-run_test "153.8  .claude/settings.json registers the hook for Bash" test_8_settings_register_hook_for_bash
+run_test_if "$HAS_JQ" "153.5  the hook blocks tree-changing git commands during a live run" test_5_hook_blocks_tree_commands_during_live_run "jq not installed"
+run_test_if "$HAS_JQ" "153.6  the hook allows them when no run holds the lock" test_6_hook_allows_tree_commands_without_run "jq not installed"
+run_test_if "$HAS_JQ" "153.7  the hook ignores a stale lock" test_7_hook_ignores_stale_lock "jq not installed"
+run_test_if "$HAS_JQ" "153.8  .claude/settings.json registers the hook for Bash" test_8_settings_register_hook_for_bash "jq not installed"
 run_test_if "$HAS_SHELLCHECK" "153.9  the hook is shellcheck clean" test_9_hook_is_shellcheck_clean "shellcheck not installed"
+run_test "153.10 a second run leaves the first run's lock in place" test_10_second_run_leaves_first_runs_lock
 
 framework_report

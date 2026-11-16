@@ -130,7 +130,7 @@ sudo apt-get install zip unzip
 The gate is the lint step in `.github/workflows/ci.yml`; these are its two invocations. Both must exit 0. Without `--severity=error`, shellcheck exits 1 on info-level notes in untouched code and floods the output.
 
 ```bash
-shellcheck --severity=error bin/cac lib/*.sh install.sh uninstall.sh
+shellcheck --severity=error bin/cac lib/*.sh install.sh uninstall.sh .claude/hooks/*.sh
 shellcheck --severity=error tests/*.sh
 ```
 

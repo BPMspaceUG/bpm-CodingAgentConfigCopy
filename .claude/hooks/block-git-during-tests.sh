@@ -26,10 +26,20 @@ pid="$(tr -d '[:space:]' < "$lock" 2>/dev/null)"
 cmd="$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null)" || cmd="$input"
 cmd="${cmd//$'\n'/;}"
 
-# `git`, optional global options (-C dir, -c key=val, --flag), then the subcommand.
-re='(^|[;&|(`[:space:]])git([[:space:]]+(-C|-c)[[:space:]]+[^[:space:]]+|[[:space:]]+-[^[:space:]]+)*[[:space:]]+(stash|checkout|switch|reset|restore)([[:space:];&|)`]|$)'
+# The subcommands that change the working tree under a running suite.
+tree_cmds='stash|checkout|switch|reset|restore'
+# `git` starts a word: line start, a shell separator, a quote, a backslash
+# (\git) or the end of a path (/usr/bin/git). It may be quoted ("git").
+pre="(^|[;&|(\`[:space:]/\\\"'])git[\"']?"
+# Global options before the subcommand: those that take a separate value
+# (-C dir, -c k=v, --work-tree dir, ...; the value possibly quoted), or any
+# other -x / --flag[=value].
+val="(\"[^\"]*\"|'[^']*'|[^[:space:]]+)"
+opts="([[:space:]]+(-C|-c|--git-dir|--work-tree|--namespace|--exec-path|--config-env|--super-prefix)[[:space:]]+${val}|[[:space:]]+-[^[:space:]]+)*"
+re="${pre}${opts}[[:space:]]+(${tree_cmds})([[:space:];&|)\`\"']|$)"
 if [[ "$cmd" =~ $re ]]; then
-    echo "Blocked: tests/run_tests.sh is running (PID ${pid}, lock ${lock}); git ${BASH_REMATCH[4]} would change the tree it tests. Wait for the run to finish." >&2
+    sub="${BASH_REMATCH[${#BASH_REMATCH[@]}-2]}"
+    echo "Blocked: tests/run_tests.sh is running (PID ${pid}, lock ${lock}); git ${sub} would change the tree it tests. Wait for the run to finish." >&2
     exit 2
 fi
 exit 0
