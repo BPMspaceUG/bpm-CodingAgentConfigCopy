@@ -36,9 +36,10 @@ RC=0
 _run() { RC=0; OUT="$("$FIXTURE/run_tests.sh" "$@" 2>&1)" || RC=$?; }
 
 test_1_unknown_filter_fails_with_message() {
-    _run 54
+    # Not a number: an issue key like 54 could be registered one day.
+    _run no_such_suite
     [[ $RC -ne 0 ]] || { echo "unknown filter exited 0: $OUT" >&2; return 1; }
-    grep -qF "no suite matches '54'" <<<"$OUT" || { echo "message missing: $OUT" >&2; return 1; }
+    grep -qF "no suite matches 'no_such_suite'" <<<"$OUT" || { echo "message missing: $OUT" >&2; return 1; }
     if grep -qF "All test suites passed!" <<<"$OUT"; then
         echo "unknown filter still reports success: $OUT" >&2; return 1
     fi
@@ -54,6 +55,8 @@ test_2_known_filter_runs_one_suite() {
 }
 
 test_3_no_filter_runs_every_suite() {
+    # Floor well below today's 48: catches the regex above silently matching
+    # few or no registrations, which would make this test vacuous.
     [[ $REGISTERED -gt 40 ]] || { echo "fixture found only $REGISTERED suites" >&2; return 1; }
     _run
     [[ $RC -eq 0 ]] || { echo "no filter exited $RC: $OUT" >&2; return 1; }
