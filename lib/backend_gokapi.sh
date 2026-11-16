@@ -482,9 +482,10 @@ backend_gokapi_download() {
         return 1
     fi
 
-    # Construct full download URL if it's relative
+    # Construct full download URL if it's relative, with exactly one slash
+    # between base and path (#127: the base has no trailing slash).
     if [[ ! "$download_url" =~ ^https?:// ]]; then
-        download_url="${CAC_GOKAPI_URL}${download_url}"
+        download_url="${CAC_GOKAPI_URL}/${download_url#/}"
     fi
 
     # Download the file with retry logic

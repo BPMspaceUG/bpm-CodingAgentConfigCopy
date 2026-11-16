@@ -125,7 +125,13 @@ config_load() {
     # Export loaded variables
     export CAC_BACKEND="${CAC_BACKEND:-local}"
     export CAC_LOCAL_STORAGE="${CAC_LOCAL_STORAGE:-}"
-    export CAC_GOKAPI_URL="${CAC_GOKAPI_URL:-}"
+    # Issue #127: endpoints start with "/", so a trailing slash here would
+    # put "//" into every request URL. Strip all trailing slashes once.
+    CAC_GOKAPI_URL="${CAC_GOKAPI_URL:-}"
+    while [[ "$CAC_GOKAPI_URL" == */ ]]; do
+        CAC_GOKAPI_URL="${CAC_GOKAPI_URL%/}"
+    done
+    export CAC_GOKAPI_URL
     export CAC_GOKAPI_API_KEY="${CAC_GOKAPI_API_KEY:-}"
     export CAC_GOKAPI_EXPIRY_DAYS="${CAC_GOKAPI_EXPIRY_DAYS:-0}"
     export CAC_GOKAPI_ALLOWED_DOWNLOADS="${CAC_GOKAPI_ALLOWED_DOWNLOADS:-0}"
