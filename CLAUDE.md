@@ -22,6 +22,7 @@ chmod 600 ~/.config/cac/.env
 # Use
 cac push                    # Bundle and upload current user's config
 cac pull                    # Download and apply globally newest bundle
+cac pull codex              # Download and apply newest codex bundle (= --tool codex)
 cac pull [BUNDLE_ID]        # Download and apply specific bundle
 cac list                    # List available bundles
 cac test                    # Test AI tool API connectivity
@@ -34,7 +35,7 @@ cac test                    # Test AI tool API connectivity
 | Command | Description |
 |---------|-------------|
 | `cac push [--user USER] [--skip-check]` | Create ZIP bundle from user configs and upload to backend |
-| `cac pull [BUNDLE_ID] [--tool TOOL] [--user USER]` | Download and apply bundle (globally newest, filtered, or specific) |
+| `cac pull [TOOL\|BUNDLE_ID] [--tool TOOL] [--user USER]` | Download and apply bundle (globally newest, filtered, or specific); a tool name as positional = `--tool TOOL` (#158) |
 | `cac get` | Silent alias for `cac pull` (backward compatibility) |
 | `cac list [--tool TOOL] [--user USER]` | List available bundles with optional filtering |
 | `cac check [TOOL] [--user USER]` | Verify AI tool credentials work (real API calls) |

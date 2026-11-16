@@ -611,7 +611,7 @@ _gokapi_find_file_jq() {
         '[.[] | select(.[$fname] | contains($pat))] |
          if length == 0 then "0"
          elif length == 1 then "1|\(.[0][$furl])|\(.[0][$fname])"
-         else "\(length)|\(.[][$fname])"
+         else "\(length)|\([.[][$fname]] | join("|"))"
          end' 2>/dev/null)
 
     local match_count

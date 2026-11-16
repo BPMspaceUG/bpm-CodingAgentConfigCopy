@@ -72,8 +72,10 @@ COMMANDS:
     push [--tool TOOL] [--user USER] [--dry-run] [--check]
                                     Create and upload config bundle
                                     (credential check OFF by default; --check to verify)
-    pull [BUNDLE_ID] [--tool TOOL] [--user USER] [--dry-run] [--all]
+    pull [TOOL|BUNDLE_ID] [--tool TOOL] [--user USER] [--dry-run] [--all]
                                     Download and apply bundle (newest or specific).
+                                    A tool name (claude, codex, ...) is the same
+                                    as --tool TOOL; anything else is a BUNDLE_ID.
                                     No --user: newest bundle per tool, regardless
                                     of uploader. --user X: only bundles uploaded by
                                     X. --all: discover local users and apply the
@@ -127,6 +129,7 @@ EXAMPLES:
     cac push --user ubuntu      Bundle ubuntu user's config (requires root)
     cac pull                    Pull newest bundle per tool (any uploader)
     cac pull --tool claude      Apply newest bundle for Claude tool
+    cac pull codex              Same as: cac pull --tool codex
     cac pull --user bob         Apply newest bundle uploaded by bob (requires root)
     cac pull --dry-run          Preview what would be extracted
     cac pull CodingAgentConfig_myhost_user_250111-120000.zip
@@ -441,6 +444,23 @@ cmd_pull() {
                 ;;
         esac
     done
+
+    # Issue #158: a supported tool name as positional argument means --tool TOOL.
+    # As a BUNDLE_ID substring it matched every bundle of that tool and failed
+    # with "Multiple bundles match" once there were two.
+    local supported
+    for supported in "${SUPPORTED_TOOLS[@]}"; do
+        [[ "$bundle_id" == "$supported" ]] && break
+    done
+    if [[ -n "$bundle_id" && "$bundle_id" == "$supported" ]]; then
+        if [[ "$tool_provided" == "true" && "$explicit_tool" != "$bundle_id" ]]; then
+            utils_error "Conflicting tools: '$bundle_id' and --tool $explicit_tool. Name one tool."
+            return 1
+        fi
+        explicit_tool="$bundle_id"
+        tool_provided="true"
+        bundle_id=""
+    fi
 
     # Handle --all mode
     if [[ "$pull_all" == "true" ]]; then

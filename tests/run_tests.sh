@@ -349,6 +349,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #158 tests (`cac pull codex` = --tool codex; ambiguous list has no count lines)
+    if $run_all || [[ "$filter" == "issue_158" ]] || [[ "$filter" == "158" ]]; then
+        if ! run_test_suite "Issue #158 Tests" "test_issue_158.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #157 tests (package-owner parser against real dpkg/rpm/apk output)
     if $run_all || [[ "$filter" == "issue_157" ]] || [[ "$filter" == "157" ]]; then
         if ! run_test_suite "Issue #157 Tests" "test_issue_157.sh"; then

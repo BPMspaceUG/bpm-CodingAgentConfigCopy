@@ -175,6 +175,7 @@ cac pull
 
 # Filter by tool, or narrow to bundles uploaded by a specific user
 cac pull --tool claude
+cac pull claude          # same: a tool name as argument means --tool
 cac pull --user bob
 
 # Apply to another user (requires root)
@@ -219,6 +220,8 @@ cac list --tool claude --user deploy
 cac pull CodingAgentConfig_myhost_user_claude_250111-120000.zip
 cac pull mybundle
 ```
+
+A bare tool name (`claude`, `codex`, `gemini`, `mistral`, `opencode`) is not a bundle name: `cac pull codex` pulls the newest codex bundle, like `--tool codex`. If a partial name matches several bundles, `cac pull` stops and lists them.
 
 **Note:** `cac get` is a silent alias for `cac pull` and works identically.
 
