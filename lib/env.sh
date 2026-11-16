@@ -1268,7 +1268,7 @@ _env_legacy_bun_dirs() {
 # root-only _env_installer_can_update guard. Leaves _ENV_INSTALLER_LAUNCHER_PATH
 # / _ENV_INSTALLER_REAL_PATH set for _env_not_managed_note.
 _env_not_managed() {
-    local tool="$1" rh d
+    local tool="$1" root_home d
     _env_installer_can_update "$tool" && return 1
     # A legacy Bun copy is cac's own debt (Issue #56), not a foreign launcher:
     # repair must still reach its cleanup arms.
@@ -1276,9 +1276,9 @@ _env_not_managed() {
         [[ -n "$d" ]] || continue
         case "$_ENV_INSTALLER_REAL_PATH" in "$d"/*) return 1 ;; esac
     done < <(_env_legacy_bun_dirs "$tool")
-    rh=$(_env_root_home)
-    if [[ -n "$rh" && "$rh" != "$HOME" ]]; then
-        HOME="$rh" _env_installer_can_update "$tool" && return 1
+    root_home=$(_env_root_home)
+    if [[ -n "$root_home" && "$root_home" != "$HOME" ]]; then
+        HOME="$root_home" _env_installer_can_update "$tool" && return 1
     fi
     return 0
 }
@@ -1332,7 +1332,7 @@ _env_report_not_managed() {
     note=$(_env_not_managed_note)
     echo "$(env_get_display_name "$tool"): skipped — $note"
     if [[ -n "${ENV_DIAG_CAUSE_FILE:-}" ]]; then
-        printf '%s\n' "not managed by cac: $_ENV_INSTALLER_REAL_PATH" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
+        printf '%s\n' "$_ENV_INSTALLER_REAL_PATH" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
     fi
 }
 
@@ -2637,12 +2637,13 @@ env_cmd_check() {
                 [[ "$parseable" == "false" ]] && echo "SKIP $(env_get_display_name "$tool"): not installed"
                 continue
             fi
-            if _env_check_one_tool "$tool" "$parseable"; then
-                ((pass++)) || true
-            else
+            if ! _env_check_one_tool "$tool" "$parseable"; then
                 ((fail++)) || true
+            elif [[ $_ENV_CHECK_WARNED -eq 1 ]]; then
+                ((warned++)) || true        # Issue #148: not a clean pass
+            else
+                ((pass++)) || true
             fi
-            ((warned += _ENV_CHECK_WARNED)) || true
         done
     else
         while IFS= read -r tool; do
@@ -2650,12 +2651,13 @@ env_cmd_check() {
                 ((skipped++)) || true
                 continue
             fi
-            if _env_check_one_tool "$tool" "$parseable"; then
-                ((pass++)) || true
-            else
+            if ! _env_check_one_tool "$tool" "$parseable"; then
                 ((fail++)) || true
+            elif [[ $_ENV_CHECK_WARNED -eq 1 ]]; then
+                ((warned++)) || true        # Issue #148: not a clean pass
+            else
+                ((pass++)) || true
             fi
-            ((warned += _ENV_CHECK_WARNED)) || true
         done < <(env_get_all_tools)
     fi
 
@@ -2670,7 +2672,7 @@ env_cmd_check() {
 
     if [[ $fail -eq 0 ]]; then
         return $ENV_EXIT_SUCCESS
-    elif [[ $pass -gt 0 ]]; then
+    elif [[ $((pass + warned)) -gt 0 ]]; then
         return $ENV_EXIT_PARTIAL
     else
         return $ENV_EXIT_ALL_FAILED

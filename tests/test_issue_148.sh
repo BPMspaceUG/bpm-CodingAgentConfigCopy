@@ -188,7 +188,7 @@ test_5_update_all_lists_skip() {
 
     assert_equals "0" "$RC" "exit code" || return 1
     [[ ! -e "$MARK" ]] || { echo "installer ran" >&2; return 1; }
-    assert_contains "Skipped (not managed by cac): Claude Code (not managed by cac: $REAL)" "$OUT" "summary names tool and reason" || return 1
+    assert_contains "Skipped (not managed by cac): Claude Code ($REAL)" "$OUT" "summary names tool and reason" || return 1
     assert_contains "Updated: 0" "$OUT" "not counted as updated" || return 1
     assert_contains "Failed: 0" "$OUT" "not counted as failed" || return 1
 }
@@ -303,7 +303,7 @@ test_9_check_warns_not_managed() {
         echo "still reads as a clean PASS: $OUT" >&2
         return 1
     fi
-    assert_contains "Warnings: 1" "$OUT" "summary counts the warning" || return 1
+    assert_contains "Passed: 0  Failed: 0  Skipped: 0  Warnings: 1" "$OUT" "summary counts it as a warning, not a pass" || return 1
 
     # Machine-readable output carries the same finding as a warn row.
     run_check root claude --parseable

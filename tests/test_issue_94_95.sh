@@ -421,7 +421,6 @@ test_12_cause_file_written() {
     ) >/dev/null 2>&1
 
     local cause; cause=$(cat "$cause_file")
-    assert_contains "not managed by cac" "$cause" "cause line (#148 wording)" || return 1
     assert_contains "$T/elsewhere/vibe94" "$cause" "cause names the real path" || return 1
 }
 
