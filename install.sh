@@ -19,7 +19,7 @@
 # Other suites (not extracting by name): tests/test_issues_7_8_9.sh loads the
 # whole file minus `main` and `set -euo pipefail`; tests/test_install.sh holds
 # hand-made copies marked "Copy of … from install.sh".
-# tests/test_issue_152.sh fails when this list goes out of date.
+# tests/test_issue_152.sh checks the by-name list against those sed ranges.
 
 set -euo pipefail
 

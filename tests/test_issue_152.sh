@@ -7,7 +7,7 @@
 # nothing in install.sh says so. The header of install.sh therefore names
 # every such suite; this guard keeps that list complete and free of stale names.
 #
-# Seams: the "TESTS EXTRACT FUNCTIONS" block of install.sh's header comment;
+# Seams: the "TESTS EXTRACT FUNCTIONS BY NAME" block of install.sh's header comment;
 # the contents of tests/*.sh.
 #
 # shellcheck disable=SC2317  # Test functions are invoked indirectly via run_test
@@ -23,25 +23,22 @@ source "$SCRIPT_DIR/test_framework.sh"
 framework_init
 
 # Suites (basenames) that extract install.sh functions by name: a line holding
-# the `/,/^}/p` range and naming install.sh (literally or as $install_sh).
+# the `/,/^}/p` sed range and naming install.sh (as a path or as $install_sh).
+# Only this sed form is detected; awk or another path variable would be missed.
 _extracting_suites() {
     local f
     for f in "$REPO_DIR"/tests/*.sh; do
         [[ "$(basename "$f")" == "test_issue_152.sh" ]] && continue
-        grep -E '/,/\^\}/p' "$f" | grep -qE 'install(\.sh|_sh)' && basename "$f"
+        grep -E '/,/\^\}/p' "$f" \
+            | grep -qE '(^|[^[:alnum:]_])install(\.sh|_sh)([^[:alnum:]_]|$)' && basename "$f"
     done
 }
 
-# Suite basenames named in install.sh's header comment (lines before `set -e…`).
+# Suite basenames in the part of install.sh's header that lists by-name
+# extractors: from the top down to the "Other suites" line (exclusive).
 _named_suites() {
     sed -n '1,/^set -euo pipefail/p' "$REPO_DIR/install.sh" \
-        | grep -oE 'tests/test_[A-Za-z0-9_]+\.sh' | sed 's#^tests/##' | sort -u
-}
-
-# Suites on the header's "Other" lines (they depend on install.sh differently).
-_other_suites() {
-    sed -n '1,/^set -euo pipefail/p' "$REPO_DIR/install.sh" \
-        | sed -n '/Other suites/,/^$/p' \
+        | sed '/Other suites/,$d' \
         | grep -oE 'tests/test_[A-Za-z0-9_]+\.sh' | sed 's#^tests/##' | sort -u
 }
 
@@ -61,10 +58,7 @@ test_2_no_stale_names() {
     [[ -n "$extracting" ]] || { echo "detection found no extracting suite at all" >&2; return 1; }
     while IFS= read -r s; do
         [[ -z "$s" ]] && continue
-        # Suites the header names for another reason (whole-file load, copies)
-        # are listed after "Other" and are not checked here.
-        grep -qxF "$s" <<<"$extracting" && continue
-        _other_suites | grep -qxF "$s" || stale+=" $s"
+        grep -qxF "$s" <<<"$extracting" || stale+=" $s"
     done < <(_named_suites)
     [[ -z "$stale" ]] || { echo "named in install.sh header but do not extract by name:$stale" >&2; return 1; }
 }
