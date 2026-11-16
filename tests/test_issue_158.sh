@@ -137,15 +137,17 @@ test_7_ambiguous_list_has_no_count_lines_grep() {
     assert_lists_exactly_the_codex_bundles
 }
 
-# jq path only: without jq an exact name on the real one-line list returns the
-# first entry's URL, a separate bug tracked in its own issue (#159).
+# Both paths (the grep path was fixed in #159).
 test_8_exact_name_and_id_unchanged() {
-    find_in_fixture jq "$NEWEST_CODEX"
-    assert_equals 0 "$RC" "rc by name" || return 1
-    assert_equals "https://gokapi.example.invalid/downloadFile?id=FIXTURE6|$NEWEST_CODEX" "$FOUT" "by name" || return 1
-    find_in_fixture jq FIXTURE6
-    assert_equals 0 "$RC" "rc by id" || return 1
-    assert_equals "https://gokapi.example.invalid/downloadFile?id=FIXTURE6|$NEWEST_CODEX" "$FOUT" "by id"
+    local impl
+    for impl in jq grep; do
+        find_in_fixture "$impl" "$NEWEST_CODEX"
+        assert_equals 0 "$RC" "rc by name ($impl)" || return 1
+        assert_equals "https://gokapi.example.invalid/downloadFile?id=FIXTURE6|$NEWEST_CODEX" "$FOUT" "by name ($impl)" || return 1
+        find_in_fixture "$impl" FIXTURE6
+        assert_equals 0 "$RC" "rc by id ($impl)" || return 1
+        assert_equals "https://gokapi.example.invalid/downloadFile?id=FIXTURE6|$NEWEST_CODEX" "$FOUT" "by id ($impl)" || return 1
+    done
 }
 
 run_test "#158 'pull codex' pulls the newest codex bundle" test_1_tool_name_pulls_newest_of_that_tool

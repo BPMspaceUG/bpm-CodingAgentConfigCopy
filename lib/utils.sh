@@ -636,131 +636,90 @@ _gokapi_find_file_jq() {
     esac
 }
 
+# Internal: print the Gokapi file list one file object per line (#159).
+# The real /api/files/list answer is a single line, so any line-based lookup
+# on it reads fields of the first object. Splitting at "},{" puts every
+# object on its own line; field lookups then stay inside one object.
+_gokapi_objects_per_line() {
+    printf '%s' "$1" | tr -d '\n' | awk '{ gsub(/\}[ \t]*,[ \t]*\{/, "}\n{"); print }'
+}
+
+# Internal: read a string field of one file object into a variable
+# Usage: _gokapi_object_field <var_name> <object_line> <field>
+# Sets <var_name> to the value, or to empty if the field is missing. The
+# leading quote in the pattern keeps "Id" from matching "HotlinkId" etc.
+_gokapi_object_field() {
+    local re="\"$3\":\"([^\"]*)\""
+    if [[ "$2" =~ $re ]]; then
+        printf -v "$1" '%s' "${BASH_REMATCH[1]}"
+    else
+        printf -v "$1" '%s' ""
+    fi
+}
+
 # Internal: grep-based file finder (fallback when jq unavailable)
+# Same order as _gokapi_find_file_jq: exact ID, exact name, unique partial name.
 _gokapi_find_file_grep() {
     local response="$1"
     local bundle_id="$2"
 
-    # Escape regex metacharacters for safe pattern matching
-    local escaped_id
-    escaped_id=$(utils_escape_regex "$bundle_id")
+    local obj id name url exact="" partial_names=() partial_urls=()
+    while IFS= read -r obj; do
+        _gokapi_object_field id "$obj" "$GOKAPI_FIELD_ID"
+        _gokapi_object_field name "$obj" "$GOKAPI_FIELD_NAME"
+        _gokapi_object_field url "$obj" "$GOKAPI_FIELD_URL"
+        if [[ -n "$id" && "$id" == "$bundle_id" ]]; then
+            echo "${url}|${name}"
+            return 0
+        fi
+        [[ -z "$name" ]] && continue
+        if [[ -z "$exact" && "$name" == "$bundle_id" ]]; then
+            exact="${url}|${name}"
+        fi
+        if [[ "$name" == *"$bundle_id"* ]]; then
+            partial_names+=("$name")
+            partial_urls+=("$url")
+        fi
+    done < <(_gokapi_objects_per_line "$response")
 
-    # Look for exact Name match
-    if echo "$response" | grep -q "\"${GOKAPI_FIELD_NAME}\":\"${escaped_id}\""; then
-        local url
-        url=$(utils_json_extract_field "$response" "$GOKAPI_FIELD_URL")
-        echo "${url}|${bundle_id}"
+    if [[ -n "$exact" ]]; then
+        echo "$exact"
         return 0
     fi
 
-    # Look for exact ID match
-    if echo "$response" | grep -q "\"${GOKAPI_FIELD_ID}\":\"${escaped_id}\""; then
-        local url
-        url=$(utils_json_extract_field "$response" "$GOKAPI_FIELD_URL")
-        echo "${url}|${bundle_id}"
-        return 0
-    fi
-
-    # Try partial match
-    local match_count
-    match_count=$(echo "$response" | grep -o "\"${GOKAPI_FIELD_NAME}\":\"[^\"]*${escaped_id}[^\"]*\"" | wc -l)
-
-    if [[ "$match_count" -eq 0 ]]; then
-        return 1
-    elif [[ "$match_count" -eq 1 ]]; then
-        local name url
-        name=$(echo "$response" | grep -o "\"${GOKAPI_FIELD_NAME}\":\"[^\"]*${escaped_id}[^\"]*\"" | head -1 | cut -d'"' -f4)
-        # Use utils_json_extract_field_near to robustly find UrlDownload for the matched Name
-        url=$(_gokapi_extract_url_for_name "$response" "$name")
-        echo "${url}|${name}"
-        return 0
-    else
-        # Multiple matches
-        utils_error "Multiple bundles match '$bundle_id'. Be more specific:"
-        echo "$response" | grep -o "\"${GOKAPI_FIELD_NAME}\":\"[^\"]*${escaped_id}[^\"]*\"" | cut -d'"' -f4 >&2
-        return 2
-    fi
+    case "${#partial_names[@]}" in
+        0)
+            return 1
+            ;;
+        1)
+            echo "${partial_urls[0]}|${partial_names[0]}"
+            return 0
+            ;;
+        *)
+            utils_error "Multiple bundles match '$bundle_id'. Be more specific:"
+            printf '%s\n' "${partial_names[@]}" >&2
+            return 2
+            ;;
+    esac
 }
 
-# Internal: Extract a field value associated with a specific Name from JSON response
-# Usage: _gokapi_extract_field_for_name <response> <name> <target_field> [reset_on_new_object]
-# response: JSON response containing array of file objects
-# name: The Name value to search for
-# target_field: The field to extract (e.g., "UrlDownload" or "Id")
-# reset_on_new_object: If "true", reset tracked value when new object starts (default: false)
-#
-# This uses awk to scan JSON line-by-line, tracking the most recent value of
-# target_field seen before finding the matching Name. More robust than grep -B
-# because it doesn't depend on exact line counts between fields.
-#
-# When reset_on_new_object is true, the tracked value is cleared when a new
-# Id field is encountered (indicating a new JSON object has started).
+# Internal: value of <target_field> of the file object whose Name is <name>
+# Usage: _gokapi_extract_field_for_name <response> <name> <target_field>
+# Prints the value of the first object with that exact Name, or nothing.
 _gokapi_extract_field_for_name() {
     local response="$1"
     local name="$2"
     local target_field="$3"
-    local reset_on_new="${4:-false}"
 
-    local result
-    result=$(echo "$response" | awk -v name="$name" \
-        -v target="$target_field" -v fname="$GOKAPI_FIELD_NAME" \
-        -v fid="$GOKAPI_FIELD_ID" -v do_reset="$reset_on_new" '
-        BEGIN { value = ""; found = 0 }
-        $0 ~ ("\"" target "\":\"[^\"]*\"") {
-            # Extract field value - pattern is "field":"value"
-            match($0, "\"" target "\":\"[^\"]*\"")
-            # Skip field name + ":"" (length of target + 4), extract value
-            value = substr($0, RSTART + length(target) + 4, RLENGTH - length(target) - 5)
-        }
-        $0 ~ ("\"" fname "\":") && index($0, "\"" fname "\":\"" name "\"") {
-            found = 1
-            exit
-        }
-        do_reset == "true" && $0 ~ ("\"" fid "\":") && value != "" {
-            # New object starting, reset if we have not found our name yet
-            value = ""
-        }
-        END { if (found) print value }
-    ')
-
-    echo "$result"
-}
-
-# Internal: Extract a field value with grep fallback
-# Usage: _gokapi_extract_field_with_fallback <response> <name> <target_field> [reset_on_new_object]
-#
-# Tries awk-based extraction first, falls back to grep -B20 context search.
-# This consolidates the common awk+grep fallback pattern.
-_gokapi_extract_field_with_fallback() {
-    local response="$1"
-    local name="$2"
-    local target_field="$3"
-    local reset_on_new="${4:-false}"
-
-    # Try awk approach first
-    local result
-    result=$(_gokapi_extract_field_for_name "$response" "$name" "$target_field" "$reset_on_new")
-
-    # Fallback: grep with larger context window
-    if [[ -z "$result" ]]; then
-        local escaped_name
-        escaped_name=$(utils_escape_regex "$name")
-        result=$(echo "$response" | grep -B20 "\"${GOKAPI_FIELD_NAME}\":\"${escaped_name}\"" 2>/dev/null | \
-                 grep -o "\"${target_field}\":\"[^\"]*\"" | tail -1 | cut -d'"' -f4)
-    fi
-
-    echo "$result"
-}
-
-# Internal: Extract UrlDownload for a specific Name from JSON response
-# This replaces fragile grep -B5 approach by scanning for complete objects
-_gokapi_extract_url_for_name() {
-    local response="$1"
-    local name="$2"
-
-    # Use shared extraction with reset_on_new_object=true for URL extraction
-    # (URL should be from the same object as Name)
-    _gokapi_extract_field_with_fallback "$response" "$name" "$GOKAPI_FIELD_URL" "true"
+    local obj obj_name value
+    while IFS= read -r obj; do
+        _gokapi_object_field obj_name "$obj" "$GOKAPI_FIELD_NAME"
+        if [[ -n "$obj_name" && "$obj_name" == "$name" ]]; then
+            _gokapi_object_field value "$obj" "$target_field"
+            echo "$value"
+            return 0
+        fi
+    done < <(_gokapi_objects_per_line "$response")
 }
 
 # Find a file ID by name in Gokapi response
@@ -776,15 +735,7 @@ utils_gokapi_find_id() {
             --arg fname "$GOKAPI_FIELD_NAME" --arg fid "$GOKAPI_FIELD_ID" \
             '.[] | select(.[$fname] == $name) | .[$fid] // empty'
     else
-        # Escape the filename for regex matching
-        local escaped_name
-        escaped_name=$(utils_escape_regex "$filename")
-
-        # Try to extract ID associated with the matching filename
-        if echo "$response" | grep -q "\"${GOKAPI_FIELD_NAME}\":\"${escaped_name}\""; then
-            # Use shared field extraction helper (no reset on new object for ID)
-            _gokapi_extract_field_with_fallback "$response" "$filename" "$GOKAPI_FIELD_ID"
-        fi
+        _gokapi_extract_field_for_name "$response" "$filename" "$GOKAPI_FIELD_ID"
     fi
 }
 
