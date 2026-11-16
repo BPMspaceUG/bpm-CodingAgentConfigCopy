@@ -7,6 +7,10 @@
 #   ./tests/run_tests.sh          # Run all tests
 #   ./tests/run_tests.sh bundle   # Run only bundle tests
 #   ./tests/run_tests.sh security # Run only security tests
+#   ./tests/run_tests.sh 141      # Run the suite registered under issue key 141
+#
+# A filter that selects no registered suite prints "no suite matches '<filter>'"
+# and exits 2 (#155).
 
 set -euo pipefail
 
@@ -53,11 +57,16 @@ NC='\033[0m'
 
 TOTAL_PASSED=0
 TOTAL_FAILED=0
+# Suites the filter selected, counted before they run (#155): a filter that
+# selects none is a typo or a stale key, not a passing run.
+SUITES_SELECTED=0
 
 run_test_suite() {
     local suite_name="$1"
     local script_name="$2"
     local script_path="${SCRIPT_DIR}/${script_name}"
+
+    ((SUITES_SELECTED++)) || true
 
     # A suite named here is a contract: it is expected to exist AND to run.
     # Both conditions below used to share one SKIP message that exited 0, which
@@ -308,6 +317,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #155 tests (a filter that matches no suite fails the run)
+    if $run_all || [[ "$filter" == "issue_155" ]] || [[ "$filter" == "155" ]]; then
+        if ! run_test_suite "Issue #155 Tests" "test_issue_155.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #140 tests (version string is the UTC committer date)
     if $run_all || [[ "$filter" == "issue_140" ]] || [[ "$filter" == "140" ]]; then
         if ! run_test_suite "Issue #140 Tests" "test_issue_140.sh"; then
@@ -480,6 +497,11 @@ main() {
             exit_code=1
         fi
         echo ""
+    fi
+
+    if [[ $SUITES_SELECTED -eq 0 ]]; then
+        echo -e "${RED}no suite matches '${filter}'${NC}" >&2
+        exit 2
     fi
 
     echo "========================================"

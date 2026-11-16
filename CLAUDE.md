@@ -114,9 +114,8 @@ sudo apt-get install zip unzip
 # Run all tests (over 2 minutes: start it in the background)
 ./tests/run_tests.sh
 
-# Run one registered suite by issue number or key, e.g. 141. The runner has no
-# --help: an unknown key runs nothing and still prints "All test suites passed!",
-# so check "Test suites passed: 1".
+# Run one registered suite by issue number or key, e.g. 141. An unknown key
+# fails with "no suite matches '<key>'" (exit 2).
 ./tests/run_tests.sh 141
 
 # Run specific suite
