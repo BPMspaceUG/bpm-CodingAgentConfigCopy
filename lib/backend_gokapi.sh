@@ -131,6 +131,14 @@ _gokapi_validate_config() {
     return 0
 }
 
+# Internal: Full URL for a Gokapi path, with exactly one slash between the
+# base and the path (#127). config_load strips trailing slashes from the base;
+# the path may come with or without its leading slash.
+# Usage: _gokapi_url <path>
+_gokapi_url() {
+    printf '%s/%s' "$CAC_GOKAPI_URL" "${1#/}"
+}
+
 # Internal: Make API request to Gokapi
 # Usage: _gokapi_request <method> <endpoint> [curl_options...]
 #
@@ -142,7 +150,8 @@ _gokapi_request() {
     local endpoint="$2"
     shift 2
 
-    local url="${CAC_GOKAPI_URL}${endpoint}"
+    local url
+    url=$(_gokapi_url "$endpoint")
 
     curl -s -m 30 -X "$method" \
         -H "accept: application/json" \
@@ -187,7 +196,7 @@ _gokapi_request_with_status() {
     local endpoint="$2"
     shift 2
 
-    GOKAPI_LAST_URL="${CAC_GOKAPI_URL}${endpoint}"
+    GOKAPI_LAST_URL=$(_gokapi_url "$endpoint")
 
     local raw curl_exit=0
     raw=$(curl -s -m 30 -w '\n%{http_code}' -X "$method" \
@@ -482,10 +491,9 @@ backend_gokapi_download() {
         return 1
     fi
 
-    # Construct full download URL if it's relative, with exactly one slash
-    # between base and path (#127: the base has no trailing slash).
+    # Construct full download URL if it's relative
     if [[ ! "$download_url" =~ ^https?:// ]]; then
-        download_url="${CAC_GOKAPI_URL}/${download_url#/}"
+        download_url=$(_gokapi_url "$download_url")
     fi
 
     # Download the file with retry logic
