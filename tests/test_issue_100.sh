@@ -571,7 +571,7 @@ test_12_guard_preempts() {
     ) || rc=$?
 
     [[ "$rc" -ne 0 ]] || { echo "guard refusal must exit non-zero" >&2; return 1; }
-    assert_contains "Launcher on PATH:" "$out" "the #94/#95 refusal text" || return 1
+    assert_contains "not managed by cac" "$out" "the #94/#95 guard (a #148 skip since then)" || return 1
     [[ -e "$mark" ]] && { echo "installer ran despite the guard refusal" >&2; return 1; }
     if [[ "$out" == *"unreachable for non-root users"* ]]; then
         echo "the post-update verification ran after a pre-flight refusal" >&2
@@ -752,10 +752,13 @@ test_15_repair_arm_warns_only() {
 
     # CONTROL ARM: a reachable layout produces no finding at all, so the warn
     # above is the check firing rather than an unconditional message.
+    # The clean copy sits in a dir the installer writes ($HOME/.local/bin):
+    # since #148 a copy outside every such dir is skipped as not managed.
     ln -sf "$T/usr/local/bin/claude100" "$T/usr/local/bin/gemini100" 2>/dev/null || true
-    _mkbin "$T/usr/local/bin/claude100x"
+    _mkbin "$T/home/.local/bin/claude100x"
     out=$(
-        export PATH="$T/usr/local/bin:/bin:/usr/bin"
+        export HOME="$T/home"
+        export PATH="$T/home/.local/bin:$T/usr/local/bin:/bin:/usr/bin"
         _ENV_CHECK_NAMES=(user_reachable)
         _env_is_root() { return 0; }
         _env_root_home() { echo "$rootlike"; }

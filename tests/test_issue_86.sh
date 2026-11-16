@@ -176,9 +176,13 @@ test_86_curl_binary_location_routes_to_remove_bun() {
 
     _env_repair_create_symlink() { echo "RELINK_CALLED"; }
     _env_repair_remove_bun_opt() { echo "REMOVE_BUN_CALLED"; }
+    # Issue #148: a copy in an arbitrary dir is now skipped as "not managed by
+    # cac" before any repair arm. This arm exists for cac's own legacy Bun copy
+    # (/opt/claude-code), so the fixture dir stands in for that legacy dir.
+    _env_legacy_bun_dirs() { echo "$bad"; }
     local out
     out=$(PATH="$mockbin:/usr/bin:/bin" _env_repair_one_tool claude false 2>&1) || true
-    unset -f _env_repair_create_symlink _env_repair_remove_bun_opt
+    unset -f _env_repair_create_symlink _env_repair_remove_bun_opt _env_legacy_bun_dirs
 
     assert_contains "REMOVE_BUN_CALLED" "$out" "curl binary_location routes to remove_bun_opt" || return 1
     if [[ "$out" == *"RELINK_CALLED"* ]]; then

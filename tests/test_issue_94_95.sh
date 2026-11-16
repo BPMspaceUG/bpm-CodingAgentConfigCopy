@@ -285,8 +285,9 @@ test_9_refusal_has_no_side_effects() {
     ) || rc=$?
 
     [[ "$rc" -ne 0 ]] || { echo "expected non-zero exit, got 0" >&2; return 1; }
-    assert_contains "Launcher on PATH:" "$out" "refusal message" || return 1
-    assert_contains "$foreign" "$out" "refusal names the real path" || return 1
+    # Issue #148: the refusal is now a "not managed by cac" skip.
+    assert_contains "not managed by cac" "$out" "skip message" || return 1
+    assert_contains "$foreign" "$out" "skip names the real path" || return 1
 
     [[ -e "$marker_dir/preflight" ]] && { echo "pre-flight ran despite refusal" >&2; return 1; }
     [[ -e "$marker_dir/installer" ]] && { echo "installer ran despite refusal" >&2; return 1; }
@@ -372,7 +373,7 @@ test_11_guard_unreachable_when_non_root() {
     ) || rc=$?
 
     # It stops at the stubbed pre-flight, but must NOT carry the guard's text.
-    if [[ "$out" == *"Launcher on PATH:"* ]]; then
+    if [[ "$out" == *"not managed by cac"* ]]; then
         echo "guard refused a non-root update: $out" >&2
         return 1
     fi
@@ -390,7 +391,7 @@ test_11_guard_unreachable_when_non_root() {
         _env_diag_preflight_curl() { return 1; }
         env_update_tool claude user 1 2>&1
     ) || true
-    assert_contains "Launcher on PATH:" "$out" "same layout refused under root" || return 1
+    assert_contains "not managed by cac" "$out" "same layout skipped under root (#148)" || return 1
     return 0
 }
 
@@ -420,7 +421,7 @@ test_12_cause_file_written() {
     ) >/dev/null 2>&1
 
     local cause; cause=$(cat "$cause_file")
-    assert_contains "installer cannot update the copy on PATH" "$cause" "cause line" || return 1
+    assert_contains "not managed by cac" "$cause" "cause line (#148 wording)" || return 1
     assert_contains "$T/elsewhere/vibe94" "$cause" "cause names the real path" || return 1
 }
 

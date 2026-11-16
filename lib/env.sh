@@ -27,6 +27,11 @@ if [[ ! -v ENV_EXIT_SUCCESS ]]; then
     # unresolved cac path, or already root). Internal signal — not a process
     # exit code; env_cmd_update folds it into the tri-state summary.
     readonly ENV_EXIT_NEEDS_ROOT=5
+    # Issue #148: the copy on PATH is one cac does not manage (no dir the
+    # tool's installer writes holds its launcher or real path). Internal
+    # signal for "skipped, not managed" — distinct from failure and from
+    # "skipped, not installed"; the env_cmd_* layer folds it into exit 0.
+    readonly ENV_EXIT_NOT_MANAGED=6
 
     # Tool registry: tool|display_name|detect_cmd|version_cmd|install_type|optional
     # - tool: Internal name (lowercase, used in commands)
@@ -881,7 +886,13 @@ env_install_tool() {
         local version
         version=$(env_get_version "$tool")
         echo "$display_name already installed (version: $version) — updating..."
-        if ! env_update_tool "$tool" "$scope"; then
+        local _upd_rc=0
+        env_update_tool "$tool" "$scope" || _upd_rc=$?
+        # Issue #148: a copy cac does not manage was skipped, not failed. The
+        # caller gets the skip signal so a batch can count it as such.
+        if [[ $_upd_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
+            return "$ENV_EXIT_NOT_MANAGED"
+        elif [[ $_upd_rc -ne 0 ]]; then
             utils_warn "Update failed, but $display_name is still installed (version: $version)"
         fi
 
@@ -1238,6 +1249,93 @@ _env_installer_can_update() {
     return 1
 }
 
+# _env_legacy_bun_dirs <tool>
+# Dirs a legacy Bun-based install of this tool lived in (Issue #56), one per
+# line; nothing for tools that were never installed via Bun. Shared by the
+# no_bun check and _env_not_managed.
+_env_legacy_bun_dirs() {
+    case "$1" in
+        claude)            printf '%s\n' "/opt/claude-code" "$HOME/.bun" ;;
+        continuous-claude) printf '%s\n' "/opt/continuous-claude" "$HOME/.bun" ;;
+    esac
+}
+
+# _env_not_managed <tool>
+# Issue #148: true when cac cannot update the copy on PATH from ANY context it
+# would update it from: the caller's own HOME (a user-scope install) or root's
+# home (the sudo re-exec a system-wide update escalates to, Issue #79). Used by
+# `env check` and `env repair`, which may run as either; `env update` keeps the
+# root-only _env_installer_can_update guard. Leaves _ENV_INSTALLER_LAUNCHER_PATH
+# / _ENV_INSTALLER_REAL_PATH set for _env_not_managed_note.
+_env_not_managed() {
+    local tool="$1" rh d
+    _env_installer_can_update "$tool" && return 1
+    # A legacy Bun copy is cac's own debt (Issue #56), not a foreign launcher:
+    # repair must still reach its cleanup arms.
+    while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        case "$_ENV_INSTALLER_REAL_PATH" in "$d"/*) return 1 ;; esac
+    done < <(_env_legacy_bun_dirs "$tool")
+    rh=$(_env_root_home)
+    if [[ -n "$rh" && "$rh" != "$HOME" ]]; then
+        HOME="$rh" _env_installer_can_update "$tool" && return 1
+    fi
+    return 0
+}
+
+# _env_package_owner <path>...
+# Issue #148: echo "<package> (<manager>)" for the first path a package manager
+# claims, or nothing. Asks whichever of dpkg, rpm and apk is present; a missing
+# manager or an unowned path is silent, never an error.
+_env_package_owner() {
+    local p out
+    for p in "$@"; do
+        [[ -n "$p" ]] || continue
+        if command -v dpkg >/dev/null 2>&1 \
+           && out=$(dpkg -S "$p" 2>/dev/null | head -1) && [[ "$out" == *": "* ]]; then
+            echo "${out%%: *} (dpkg)"; return 0
+        fi
+        if command -v rpm >/dev/null 2>&1 \
+           && out=$(rpm -qf "$p" 2>/dev/null | head -1) && [[ -n "$out" && "$out" != *"not owned"* ]]; then
+            echo "$out (rpm)"; return 0
+        fi
+        if command -v apk >/dev/null 2>&1 \
+           && out=$(apk info -W "$p" 2>/dev/null | head -1) && [[ "$out" == *" is owned by "* ]]; then
+            echo "${out##* is owned by } (apk)"; return 0
+        fi
+    done
+    return 0
+}
+
+# _env_not_managed_note
+# Issue #148: one line describing the copy on PATH that cac does not manage,
+# from the _ENV_INSTALLER_LAUNCHER_PATH / _ENV_INSTALLER_REAL_PATH that
+# _env_installer_can_update just set. Names who manages it instead.
+_env_not_managed_note() {
+    local launcher="$_ENV_INSTALLER_LAUNCHER_PATH" real="$_ENV_INSTALLER_REAL_PATH"
+    local where="launcher on PATH $launcher"
+    [[ "$real" != "$launcher" ]] && where="$where (resolves to $real)"
+    local owner
+    owner=$(_env_package_owner "$real" "$launcher")
+    if [[ -n "$owner" ]]; then
+        echo "$where is not managed by cac; it belongs to package $owner, update it with that package manager"
+    else
+        echo "$where is not managed by cac; no package owns it; update or remove it by hand"
+    fi
+}
+
+# _env_report_not_managed <tool>
+# Issue #148: print the skip line for a tool whose copy on PATH cac does not
+# manage, and stash the cause for a batch summary (ENV_DIAG_CAUSE_FILE).
+_env_report_not_managed() {
+    local tool="$1" note
+    note=$(_env_not_managed_note)
+    echo "$(env_get_display_name "$tool"): skipped — $note"
+    if [[ -n "${ENV_DIAG_CAUSE_FILE:-}" ]]; then
+        printf '%s\n' "not managed by cac: $_ENV_INSTALLER_REAL_PATH" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
+    fi
+}
+
 # _env_diag_preflight_curl <tool>
 # Issue #73: writability + free-space pre-flight BEFORE invoking the upstream
 # installer. Echoes failure message to stderr and returns 1 on block; returns 0
@@ -1506,19 +1604,13 @@ env_update_tool() {
             # 1c. Issue #133: copy on PATH already unreachable for non-root
             #    users -> refuse. Same root-only, side-effect-free contract.
             # 2. Issue #73 pre-flight: writability + disk-space.
+            # Issue #148: a copy cac cannot update is not cac's to fix. It is
+            # SKIPPED, not failed: one line names launcher, real path and owner,
+            # nothing runs, and the message no longer sends the operator to
+            # `env check` / `env repair`, which pass and refuse respectively.
             if _env_is_root && ! _env_installer_can_update "$tool"; then
-                local _cause="installer cannot update the copy on PATH ($_ENV_INSTALLER_REAL_PATH)"
-                utils_error "$display_name: $_cause"
-                echo "  Launcher on PATH: $_ENV_INSTALLER_LAUNCHER_PATH" >&2
-                echo "  Resolves to:      $_ENV_INSTALLER_REAL_PATH" >&2
-                echo "  This installer writes to: $(_env_installer_target_dirs "$tool" | tr '\n' ' ')" >&2
-                echo "Remediation: run 'cac env check $tool' to diagnose the layout, then 'cac env repair $tool'; or update it as the user/mechanism that owns $_ENV_INSTALLER_REAL_PATH." >&2
-                # Parity with Issue #73 so env_update_all's batch summary names
-                # the cause.
-                if [[ -n "${ENV_DIAG_CAUSE_FILE:-}" ]]; then
-                    printf '%s\n' "$_cause" > "$ENV_DIAG_CAUSE_FILE" 2>/dev/null || true
-                fi
-                return 1
+                _env_report_not_managed "$tool"
+                return "$ENV_EXIT_NOT_MANAGED"
             fi
 
             # Issue #133: an install already unreachable for non-root users is
@@ -1764,6 +1856,7 @@ env_install_all() {
     local success=0
     local updated=0
     local failed=0
+    local -a not_managed_tools=()
 
     echo "Installing all core AI tools..."
     echo ""
@@ -1771,8 +1864,12 @@ env_install_all() {
     while IFS= read -r tool; do
         # Issue #49: installed tools get updated via env_install_tool
         if env_is_installed "$tool"; then
-            if env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"; then
+            local _rc=0
+            env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}" || _rc=$?
+            if [[ $_rc -eq 0 ]]; then
                 ((updated++)) || true
+            elif [[ $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
+                not_managed_tools+=("$(env_get_display_name "$tool")")
             else
                 ((failed++)) || true
             fi
@@ -1789,6 +1886,9 @@ env_install_all() {
     echo "=== Installation Summary ==="
     echo "Installed: $success"
     echo "Updated: $updated"
+    if [[ ${#not_managed_tools[@]} -gt 0 ]]; then
+        echo "Skipped (not managed by cac): ${not_managed_tools[*]}"
+    fi
     echo "Failed: $failed"
 
     if [[ $failed -eq 0 ]]; then
@@ -1812,6 +1912,8 @@ env_update_all() {
     local -a failed_tools=()
     # Issue #54: Track skipped tool names for user clarity
     local -a skipped_tools=()
+    # Issue #148: tools skipped because cac does not manage the copy on PATH
+    local -a not_managed_tools=()
 
     # Issue #73: per-iteration cause stash for the batch summary one-liner.
     # mktemp may fail (e.g. read-only TMPDIR); fall back gracefully to no-cause.
@@ -1833,8 +1935,14 @@ env_update_all() {
         # Issue #73: clear stash file so a previous tool's cause doesn't leak.
         [[ -n "$_cause_file" ]] && : > "$_cause_file"
 
-        if ENV_DIAG_CAUSE_FILE="$_cause_file" env_update_tool "$tool" "$scope"; then
+        local _rc=0
+        ENV_DIAG_CAUSE_FILE="$_cause_file" env_update_tool "$tool" "$scope" || _rc=$?
+        if [[ $_rc -eq 0 ]]; then
             ((success++)) || true
+        elif [[ $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
+            local _nm_cause=""
+            [[ -n "$_cause_file" && -s "$_cause_file" ]] && _nm_cause=$(head -1 "$_cause_file")
+            not_managed_tools+=("$(env_get_display_name "$tool")${_nm_cause:+ ($_nm_cause)}")
         else
             ((failed++)) || true
             local display_name cause=""
@@ -1860,6 +1968,9 @@ env_update_all() {
         echo "Skipped (not installed): ${skipped_tools[*]}"
     else
         echo "Skipped (not installed): 0"
+    fi
+    if [[ ${#not_managed_tools[@]} -gt 0 ]]; then
+        echo "Skipped (not managed by cac): ${not_managed_tools[*]}"
     fi
     echo "Failed: $failed"
     if [[ ${#failed_tools[@]} -gt 0 ]]; then
@@ -2105,6 +2216,8 @@ env_show_status_parseable() {
 
 # Internal variable set by check helpers to describe failure reason
 _CHECK_REASON=""
+# Issue #148: 1 when the last _env_check_one_tool raised a WARN finding
+_ENV_CHECK_WARNED=0
 
 # Check: binary is in /usr/local/bin/ or ~/.local/bin/, not /opt/ or other
 # Usage: _env_chk_binary_location <binary_path> <tool>
@@ -2152,19 +2265,13 @@ _env_chk_no_bun() {
     local binary_path="$1"
     local tool="$2"
 
-    local dirs_to_check=()
-    case "$tool" in
-        claude)
-            dirs_to_check=("/opt/claude-code" "$HOME/.bun")
-            ;;
-        continuous-claude)
-            dirs_to_check=("/opt/continuous-claude" "$HOME/.bun")
-            ;;
-        *)
-            # Other tools were never installed via Bun
-            return 0
-            ;;
-    esac
+    # Other tools were never installed via Bun: the list is empty for them.
+    local -a dirs_to_check=()
+    local d
+    while IFS= read -r d; do
+        [[ -n "$d" ]] && dirs_to_check+=("$d")
+    done < <(_env_legacy_bun_dirs "$tool")
+    [[ ${#dirs_to_check[@]} -gt 0 ]] || return 0
 
     for dir in "${dirs_to_check[@]}"; do
         if [[ -d "$dir" ]]; then
@@ -2479,8 +2586,26 @@ _env_check_one_tool() {
         fi
     done
 
+    # Issue #148: a WARN-level finding, outside _ENV_CHECK_NAMES on purpose:
+    # that list is also the repair list, and a copy cac does not manage is not
+    # something repair may touch. A WARN is not counted in passed/total and
+    # does not fail the tool; it only stops the result reading as a clean PASS.
+    _ENV_CHECK_WARNED=0
+    if [[ -n "$binary_path" ]] && _env_not_managed "$tool"; then
+        _ENV_CHECK_WARNED=1
+        local note
+        note=$(_env_not_managed_note)
+        if [[ "$parseable" == "true" ]]; then
+            printf "%s\t%s\twarn\t%s\n" "$tool" "not_managed" "$note"
+        else
+            echo "  [WARN] not_managed: $note"
+        fi
+    fi
+
     if [[ "$parseable" == "false" ]]; then
-        if [[ $failed_count -eq 0 ]]; then
+        if [[ $failed_count -eq 0 && $_ENV_CHECK_WARNED -eq 1 ]]; then
+            echo "  ⚠️  ${display_name}: WARN (${passed}/${total} passed) — not managed by cac"
+        elif [[ $failed_count -eq 0 ]]; then
             echo "  ✅ ${display_name}: PASS (${passed}/${total})"
         else
             echo "  ❌ ${display_name}: FAIL (${passed}/${total}) — failed: ${failed_checks[*]}"
@@ -2499,7 +2624,7 @@ env_cmd_check() {
     fi
 
     local parseable="$ENV_PARSED_PARSEABLE"
-    local pass=0 fail=0 skipped=0
+    local pass=0 fail=0 skipped=0 warned=0
 
     if [[ ${#ENV_PARSED_TOOLS[@]} -gt 0 ]]; then
         for tool in "${ENV_PARSED_TOOLS[@]}"; do
@@ -2517,6 +2642,7 @@ env_cmd_check() {
             else
                 ((fail++)) || true
             fi
+            ((warned += _ENV_CHECK_WARNED)) || true
         done
     else
         while IFS= read -r tool; do
@@ -2529,12 +2655,17 @@ env_cmd_check() {
             else
                 ((fail++)) || true
             fi
+            ((warned += _ENV_CHECK_WARNED)) || true
         done < <(env_get_all_tools)
     fi
 
     if [[ "$parseable" == "false" ]]; then
         echo "=== Check Summary ==="
-        echo "Passed: $pass  Failed: $fail  Skipped: $skipped"
+        if [[ $warned -gt 0 ]]; then
+            echo "Passed: $pass  Failed: $fail  Skipped: $skipped  Warnings: $warned"
+        else
+            echo "Passed: $pass  Failed: $fail  Skipped: $skipped"
+        fi
     fi
 
     if [[ $fail -eq 0 ]]; then
@@ -2941,6 +3072,15 @@ _env_repair_one_tool() {
 
     echo "--- Checking: ${display_name} ---"
 
+    # Issue #148: a copy cac does not manage is left alone. Every repair arm
+    # below would act on a file cac does not own (chmod, chown, relink, or a
+    # reinstall the installer guard then skips), so skip before any of them.
+    if _env_not_managed "$tool"; then
+        _env_report_not_managed "$tool"
+        echo ""
+        return "$ENV_EXIT_NOT_MANAGED"
+    fi
+
     # Collect failures
     local -a failures=()
     for check_name in "${_ENV_CHECK_NAMES[@]}"; do
@@ -3077,8 +3217,12 @@ env_cmd_repair() {
                 echo "SKIP $(env_get_display_name "$tool"): not installed"
                 continue
             fi
-            if _env_repair_one_tool "$tool" "$auto_yes"; then
+            local _rc=0
+            _env_repair_one_tool "$tool" "$auto_yes" || _rc=$?
+            if [[ $_rc -eq 0 ]]; then
                 ((pass++)) || true
+            elif [[ $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
+                ((skipped++)) || true
             else
                 ((fail++)) || true
             fi
@@ -3089,8 +3233,12 @@ env_cmd_repair() {
                 ((skipped++)) || true
                 continue
             fi
-            if _env_repair_one_tool "$tool" "$auto_yes"; then
+            local _rc=0
+            _env_repair_one_tool "$tool" "$auto_yes" || _rc=$?
+            if [[ $_rc -eq 0 ]]; then
                 ((pass++)) || true
+            elif [[ $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
+                ((skipped++)) || true
             else
                 ((fail++)) || true
             fi
@@ -3185,7 +3333,10 @@ env_interactive_install() {
             local -a sel_flags=("--yes")
             [[ "${ENV_PARSED_TMUX:-false}" == "true" ]] && sel_flags+=("--tmux")
             for tool in "${selected_tools[@]}"; do
-                if env_install_tool "$tool" "$scope" "${sel_flags[@]}"; then
+                local _rc=0
+                env_install_tool "$tool" "$scope" "${sel_flags[@]}" || _rc=$?
+                # Issue #148: "skipped, not managed" is not a failure.
+                if [[ $_rc -eq 0 || $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
                     ((success++)) || true
                 else
                     ((failed++)) || true
@@ -3479,7 +3630,10 @@ env_cmd_install() {
     local failed=0
 
     for tool in "${ENV_PARSED_TOOLS[@]}"; do
-        if env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}"; then
+        local _rc=0
+        env_install_tool "$tool" "$scope" "${extra_flags[@]+"${extra_flags[@]}"}" || _rc=$?
+        # Issue #148: "skipped, not managed" is not a failure.
+        if [[ $_rc -eq 0 || $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
             ((success++)) || true
         else
             ((failed++)) || true
@@ -3553,7 +3707,7 @@ env_update_with_escalation() {
     done
 
     local success=0 failed=0 needs_root=0
-    local -a failed_names=() needs_root_names=()
+    local -a failed_names=() needs_root_names=() not_managed_names=()
 
     # 1. Local updates, in-process at user scope. The 3rd arg ("1") tells
     # env_update_tool to bypass the Issue #71 refusal ONLY here, where we have
@@ -3588,6 +3742,10 @@ env_update_with_escalation() {
                 ((needs_root++)) || true
                 needs_root_names+=("$(env_get_display_name "$t")")
                 ;;
+            "$ENV_EXIT_NOT_MANAGED")
+                # Issue #148: the root child skipped a copy cac does not manage.
+                not_managed_names+=("$(env_get_display_name "$t")")
+                ;;
             *)
                 ((failed++)) || true
                 failed_names+=("$(env_get_display_name "$t")")
@@ -3604,6 +3762,7 @@ env_update_with_escalation() {
 
     echo "=== Update Summary ==="
     echo "Updated: $success"
+    [[ ${#not_managed_names[@]} -gt 0 ]] && echo "Skipped (not managed by cac): ${not_managed_names[*]}"
     echo "Failed: $failed"
     [[ ${#failed_names[@]} -gt 0 ]] && echo "Failed tools: ${failed_names[*]}"
     if [[ $needs_root -gt 0 ]]; then
@@ -3654,10 +3813,15 @@ env_cmd_update() {
     # Update specified tools
     local success=0
     local failed=0
+    local not_managed=0
 
     for tool in "${ENV_PARSED_TOOLS[@]}"; do
-        if env_update_tool "$tool" "$scope"; then
+        local _rc=0
+        env_update_tool "$tool" "$scope" || _rc=$?
+        if [[ $_rc -eq 0 ]]; then
             ((success++)) || true
+        elif [[ $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
+            ((not_managed++)) || true
         else
             ((failed++)) || true
         fi
@@ -3665,6 +3829,13 @@ env_cmd_update() {
     done
 
     if [[ $failed -eq 0 ]]; then
+        # Issue #148: an escalated child (one tool per re-exec, Issue #79)
+        # hands the skip back to its non-root parent, which counts it as
+        # skipped. Everyone else sees exit 0. If sudo strips the sentinel the
+        # child exits 0 and the parent counts "Updated": wrong label, no harm.
+        if [[ -n "${CAC_ENV_ESCALATED:-}" && $success -eq 0 && $not_managed -gt 0 ]]; then
+            return "$ENV_EXIT_NOT_MANAGED"
+        fi
         return $ENV_EXIT_SUCCESS
     elif [[ $success -gt 0 ]]; then
         return $ENV_EXIT_PARTIAL

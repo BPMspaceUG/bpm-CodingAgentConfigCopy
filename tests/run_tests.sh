@@ -243,6 +243,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #148 tests (a launcher cac does not manage is skipped, not refused)
+    if $run_all || [[ "$filter" == "issue_148" ]] || [[ "$filter" == "148" ]]; then
+        if ! run_test_suite "Issue #148 Tests" "test_issue_148.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #140 tests (version string is the UTC committer date)
     if $run_all || [[ "$filter" == "issue_140" ]] || [[ "$filter" == "140" ]]; then
         if ! run_test_suite "Issue #140 Tests" "test_issue_140.sh"; then
