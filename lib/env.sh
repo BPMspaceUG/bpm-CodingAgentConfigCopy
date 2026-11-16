@@ -1294,6 +1294,27 @@ _env_not_managed() {
     return 0
 }
 
+# _env_dpkg_owner <path>
+# Issue #157: echo the package dpkg says provides <path>, or nothing.
+# `dpkg -S` prints diversion lines BEFORE the owner line (real shapes in
+# tests/fixtures/dpkg-S-*.out):
+#   diversion by <pkg> from: <path>   the diverting <pkg> provides <path>
+#   local diversion from: <path>      the admin's own file, no package
+#   ... to: <path>                    where the original was moved; skipped
+#   <pkg>[, <pkg>...]: <path>         owner, used when no diversion decided it
+_env_dpkg_owner() {
+    local p="$1" line owner=""
+    while IFS= read -r line; do
+        case "$line" in
+            "diversion by "*" from: $p") line="${line#diversion by }"; echo "${line% from: *}"; return 0 ;;
+            "local diversion from: $p") return 0 ;;
+            "diversion by "*|"local diversion "*) ;;
+            *": "*) [[ -n "$owner" ]] || owner="${line%%: *}" ;;
+        esac
+    done < <(dpkg -S "$p" 2>/dev/null)
+    [[ -z "$owner" ]] || echo "$owner"
+}
+
 # _env_package_owner <path>...
 # Issue #148: echo "<package> (<manager>)" for the first path a package manager
 # claims, or nothing. Asks whichever of dpkg, rpm and apk is present; a missing
@@ -1303,8 +1324,8 @@ _env_package_owner() {
     for p in "$@"; do
         [[ -n "$p" ]] || continue
         if command -v dpkg >/dev/null 2>&1 \
-           && out=$(dpkg -S "$p" 2>/dev/null | head -1) && [[ "$out" == *": "* ]]; then
-            echo "${out%%: *} (dpkg)"; return 0
+           && out=$(_env_dpkg_owner "$p") && [[ -n "$out" ]]; then
+            echo "$out (dpkg)"; return 0
         fi
         if command -v rpm >/dev/null 2>&1 \
            && out=$(rpm -qf "$p" 2>/dev/null | head -1) && [[ -n "$out" && "$out" != *"not owned"* ]]; then

@@ -333,6 +333,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #157 tests (package-owner parser against real dpkg/rpm/apk output)
+    if $run_all || [[ "$filter" == "issue_157" ]] || [[ "$filter" == "157" ]]; then
+        if ! run_test_suite "Issue #157 Tests" "test_issue_157.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #140 tests (version string is the UTC committer date)
     if $run_all || [[ "$filter" == "issue_140" ]] || [[ "$filter" == "140" ]]; then
         if ! run_test_suite "Issue #140 Tests" "test_issue_140.sh"; then

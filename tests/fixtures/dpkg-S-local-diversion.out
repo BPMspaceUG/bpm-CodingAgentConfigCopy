@@ -1,0 +1,2 @@
+local diversion from: /usr/local/x157
+local diversion to: /usr/local/x.d

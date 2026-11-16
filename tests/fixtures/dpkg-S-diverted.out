@@ -1,0 +1,3 @@
+diversion by foo from: /usr/bin/ls
+diversion by foo to: /usr/bin/ls.distrib
+coreutils: /usr/bin/ls
