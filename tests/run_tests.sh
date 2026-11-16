@@ -425,6 +425,14 @@ main() {
         echo ""
     fi
 
+    # Run timezone-dependent git date guard (Issue #151, from #140)
+    if $run_all || [[ "$filter" == "git_date_tz" ]] || [[ "$filter" == "151" ]]; then
+        if ! run_test_suite "Git Date Timezone Guard" "test_git_date_tz.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     echo "========================================"
     echo "Overall Summary"
     echo "========================================"
