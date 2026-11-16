@@ -7,6 +7,19 @@
 #
 # For USB stick provisioning, use provision.sh instead.
 # Options: --user/--global/--all, --backend, --url, --api-key, --storage
+#
+# TESTS EXTRACT FUNCTIONS BY NAME. `main "$@"` runs at the bottom, so tests
+# cannot source this file. These suites pull single functions out with
+# `sed -n '/^name()/,/^}/p' install.sh` from a fixed list of names:
+#   tests/test_issue_77.sh   tests/test_issue_131.sh  tests/test_issue_132.sh
+#   tests/test_issue_140.sh  tests/test_update.sh
+# A function keeps `name() {` at column 0 and its closing `}` alone at column 0.
+# A new helper called from an extracted function must be added to those lists.
+# Helpers duplicated in lib/update.sh are kept in step by 131.11, 132.8, 140.7.
+# Other suites (not extracting by name): tests/test_issues_7_8_9.sh loads the
+# whole file minus `main` and `set -euo pipefail`; tests/test_install.sh holds
+# hand-made copies marked "Copy of … from install.sh".
+# tests/test_issue_152.sh fails when this list goes out of date.
 
 set -euo pipefail
 
