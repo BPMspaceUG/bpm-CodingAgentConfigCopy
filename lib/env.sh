@@ -3560,8 +3560,8 @@ _env_configure_claude_settings() {
         if command -v tmux &>/dev/null; then
             snippet='{"env":{"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS":"1"},"teammateMode":"tmux"}'
         else
-            log_warn "tmux is not installed — skipping teammateMode configuration"
-            log_warn "Install with: $(platform_install_hint tmux)"
+            utils_warn "tmux is not installed — skipping teammateMode configuration"
+            utils_warn "Install with: $(platform_install_hint tmux)"
         fi
     fi
 
