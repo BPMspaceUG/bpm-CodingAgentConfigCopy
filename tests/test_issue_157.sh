@@ -131,6 +131,33 @@ test_10_apk_unowned() {
     assert_equals "" "$OUT" "owner"
 }
 
+# A local diversion of a packaged file: dpkg still prints the original
+# package's owner line after the diversion lines. The admin's file now sits at
+# that path, so the package line does not count: nothing is named.
+test_11_dpkg_local_diversion_of_packaged_file_is_unowned() {
+    stub_pm dpkg "-S /usr/bin/cat" dpkg-S-local-diversion-packaged.out - 0
+    owner_of /usr/bin/cat
+    assert_equals 0 "$RC" "rc" || return 1
+    assert_equals "" "$OUT" "owner"
+}
+
+# The diverted-to path holds the original package's copy, but dpkg prints only
+# the diversion lines and no owner line for it: nothing is named.
+test_12_dpkg_diverted_to_path_is_unowned() {
+    stub_pm dpkg "-S /usr/bin/ls.distrib" dpkg-S-diverted-to.out - 0
+    owner_of /usr/bin/ls.distrib
+    assert_equals 0 "$RC" "rc" || return 1
+    assert_equals "" "$OUT" "owner"
+}
+
+# A path several packages share: the whole comma-separated list is named.
+test_13_dpkg_multi_package_names_all() {
+    stub_pm dpkg "-S /etc/default" dpkg-S-multi-package.out - 0
+    owner_of /etc/default
+    assert_equals 0 "$RC" "rc" || return 1
+    assert_equals "passwd, base-files, libc-bin (dpkg)" "$OUT" "owner"
+}
+
 echo "========================================"
 echo "Issue #157 Tests"
 echo "========================================"
@@ -145,5 +172,8 @@ run_test "157.7 rpm -qf: missing file names nothing" test_7_rpm_missing_file
 run_test "157.8 apk info -W: owned path names the package" test_8_apk_owned
 run_test "157.9 apk info -W: symlink target owner is named" test_9_apk_symlink_target_owned
 run_test "157.10 apk info -W: unowned path names nothing" test_10_apk_unowned
+run_test "157.11 dpkg -S: local diversion of a packaged file names nothing" test_11_dpkg_local_diversion_of_packaged_file_is_unowned
+run_test "157.12 dpkg -S: diverted-to path names nothing" test_12_dpkg_diverted_to_path_is_unowned
+run_test "157.13 dpkg -S: shared path names every package" test_13_dpkg_multi_package_names_all
 
 framework_report

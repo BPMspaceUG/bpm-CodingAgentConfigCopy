@@ -1301,7 +1301,14 @@ _env_not_managed() {
 #   diversion by <pkg> from: <path>   the diverting <pkg> provides <path>
 #   local diversion from: <path>      the admin's own file, no package
 #   ... to: <path>                    where the original was moved; skipped
-#   <pkg>[, <pkg>...]: <path>         owner, used when no diversion decided it
+#   <pkg>[, <pkg>...]: <path>         owner, used when no diversion decided it;
+#                                     a shared path names the whole list
+# A local diversion wins over the owner line that follows it: the packaged
+# file was moved away, the admin's file sits at <path>.
+# Decision: the diverted-to path itself (`dpkg -S <path>.distrib`) gets only
+# the diversion lines and no owner line, exit 0, so it names nothing. The
+# original package is not in that output, and we do not guess it from the
+# "from:" path.
 _env_dpkg_owner() {
     local p="$1" line owner=""
     while IFS= read -r line; do
@@ -1313,6 +1320,32 @@ _env_dpkg_owner() {
         esac
     done < <(dpkg -S "$p" 2>/dev/null)
     [[ -z "$owner" ]] || echo "$owner"
+}
+
+# _env_rpm_owner <path>
+# Issue #157: echo the package rpm says owns <path>, or nothing. Real shapes
+# in tests/fixtures/rpm-qf-*:
+#   <name-version-release.arch>               owner (stdout, exit 0)
+#   file <path> is not owned by any package   stdout, exit 1
+#   error: file <path>: No such file ...      stderr, exit 1
+_env_rpm_owner() {
+    local out
+    out=$(rpm -qf "$1" 2>/dev/null | head -1)
+    [[ -n "$out" && "$out" != *"not owned"* ]] && echo "$out"
+    return 0
+}
+
+# _env_apk_owner <path>
+# Issue #157: echo the package apk says owns <path>, or nothing. Real shapes
+# in tests/fixtures/apk-info-W-*:
+#   <path> is owned by <pkg-ver>                     owner
+#   <path> symlink target is owned by <pkg-ver>      owner of the target
+#   ERROR: <path>: Could not find owner package      stderr, exit 1
+_env_apk_owner() {
+    local out
+    out=$(apk info -W "$1" 2>/dev/null | head -1)
+    [[ "$out" == *" is owned by "* ]] && echo "${out##* is owned by }"
+    return 0
 }
 
 # _env_package_owner <path>...
@@ -1328,12 +1361,12 @@ _env_package_owner() {
             echo "$out (dpkg)"; return 0
         fi
         if command -v rpm >/dev/null 2>&1 \
-           && out=$(rpm -qf "$p" 2>/dev/null | head -1) && [[ -n "$out" && "$out" != *"not owned"* ]]; then
+           && out=$(_env_rpm_owner "$p") && [[ -n "$out" ]]; then
             echo "$out (rpm)"; return 0
         fi
         if command -v apk >/dev/null 2>&1 \
-           && out=$(apk info -W "$p" 2>/dev/null | head -1) && [[ "$out" == *" is owned by "* ]]; then
-            echo "${out##* is owned by } (apk)"; return 0
+           && out=$(_env_apk_owner "$p") && [[ -n "$out" ]]; then
+            echo "$out (apk)"; return 0
         fi
     done
     return 0

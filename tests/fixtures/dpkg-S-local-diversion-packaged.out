@@ -1,0 +1,3 @@
+local diversion from: /usr/bin/cat
+local diversion to: /usr/bin/cat.distrib
+coreutils: /usr/bin/cat

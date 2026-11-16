@@ -22,6 +22,9 @@ Verbatim captures, `.out` = stdout, `.err` = stderr; the exit code is in the col
 | `dpkg-S-unowned.err` | `debian:stable` | `dpkg -S /nonexistent/cac157` (stdout empty) | 1 |
 | `dpkg-S-diverted.out` | `debian:stable` | `dpkg-divert --package foo --divert /usr/bin/ls.distrib --rename --add /usr/bin/ls; dpkg -S /usr/bin/ls`. The diversion lines come before the owner line. | 0 |
 | `dpkg-S-local-diversion.out` | `debian:stable` | `dpkg-divert --local --divert /usr/local/x.d --no-rename --add /usr/local/x157; dpkg -S /usr/local/x157`. There is no owner line, and the exit code is still 0. | 0 |
+| `dpkg-S-local-diversion-packaged.out` | `debian:stable` | `dpkg-divert --local --rename --add /usr/bin/cat; dpkg -S /usr/bin/cat`. The original package's owner line follows the local-diversion lines. | 0 |
+| `dpkg-S-diverted-to.out` | `debian:stable` | `dpkg-divert --package foo --divert /usr/bin/ls.distrib --rename --add /usr/bin/ls; dpkg -S /usr/bin/ls.distrib`. Only the diversion lines, no owner line. | 0 |
+| `dpkg-S-multi-package.out` | `debian:stable` | `dpkg -S /etc/default`. A path several packages share: `pkgA, pkgB, pkgC: <path>`. | 0 |
 | `rpm-qf-owned.out` | `fedora:latest` | `rpm -qf /usr/bin/ls` | 0 |
 | `rpm-qf-not-owned.out` | `fedora:latest` | `touch /usr/local/bin/x157; rpm -qf /usr/local/bin/x157`. The message goes to stdout. | 1 |
 | `rpm-qf-missing.err` | `fedora:latest` | `rpm -qf /nonexistent/cac157` (stdout empty) | 1 |
