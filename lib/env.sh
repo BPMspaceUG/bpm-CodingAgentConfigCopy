@@ -704,7 +704,12 @@ _env_reexec_sudo_update() {
     [[ ${#tools[@]} -gt 0 ]] || return 0
 
     # Only meaningful for a non-root caller.
-    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    # Issue #156: the one root check that does NOT use _env_is_root. It decides
+    # whether this process execs `sudo cac ...`, so it must reflect the
+    # process's real privileges, never a test override: a faked "non-root"
+    # inside a real root process would re-exec through sudo for nothing. The
+    # recursion guard for the re-exec'd child is CAC_ENV_ESCALATED (#79).
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then  # #156: real EUID
         return "$ENV_EXIT_NEEDS_ROOT"
     fi
 
@@ -824,7 +829,7 @@ _env_post_install_symlink() {
     local tool="$1"
 
     # Only relevant when running as root
-    [[ "${EUID:-$(id -u)}" -eq 0 ]] || return 0
+    _env_is_root || return 0
 
     # Map tool name to binary name
     local binary
@@ -924,7 +929,7 @@ env_install_tool() {
 
             # Global scope requires root
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
-                if [[ "$EUID" -ne 0 ]]; then
+                if ! _env_is_root; then
                     utils_error "Global installation requires root. Run with sudo."
                     return 1
                 fi
@@ -974,7 +979,7 @@ env_install_tool() {
 
             # Check root for global
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
-                if [[ "$EUID" -ne 0 ]]; then
+                if ! _env_is_root; then
                     utils_error "Global installation requires root. Run with sudo."
                     return 1
                 fi
@@ -1044,11 +1049,14 @@ _env_diag_target_dir() {
 }
 
 # _env_is_root
-# Root-context predicate. Production behavior is identical to the inline
-# "$EUID" checks used elsewhere in this file; it exists as a seam so the
-# root-only branches in env_update_tool are reachable from the non-root test
-# suite. It does NOT weaken any privilege check: the real gate for the global
-# curl path remains the "$EUID" test in env_update_tool.
+# Root-context predicate. Issue #156: every root check in this file goes
+# through it, except the sudo escalation guard in _env_reexec_sudo_update
+# (marked "#156: real EUID", reason there). It exists as a seam so the root-only
+# branches (--global/--all scope, the direct root path of env_cmd_update, the
+# guards in env_update_tool) are reachable from the non-root test suite.
+# It does NOT weaken any privilege check: it is a function, so the caller's
+# environment cannot override it, and the commands it gates (npm -g, writes to
+# /usr/local/bin, chown) still fail without real root.
 _env_is_root() {
     [[ "${EUID:-$(id -u)}" -eq 0 ]]
 }
@@ -1359,7 +1367,7 @@ _env_diag_preflight_curl() {
     # are non-root AND the dir isn't writable. Per-user paths under $HOME skip.
     case "$probe_dir" in
         /opt*|/usr*|/etc*|/var*|/srv*)
-            if [[ ! -w "$probe_dir" ]] && [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
+            if [[ ! -w "$probe_dir" ]] && ! _env_is_root; then
                 utils_error "Target $target is not writable by EUID=$EUID — needs sudo."
                 echo "Remediation: sudo cac env update $tool" >&2
                 return 1
@@ -1573,7 +1581,7 @@ env_update_tool() {
             # parameter (not an env var), so a caller cannot forge it via the
             # environment — every other path (incl. explicit `cac env update
             # --user`) passes no 3rd arg and still hits the Issue #71 refusal.
-            if [[ "$scope" == "user" ]] && [[ "$EUID" -ne 0 ]] \
+            if [[ "$scope" == "user" ]] && ! _env_is_root \
                && [[ "$allow_user_override_global" != "1" ]] \
                && _env_global_install_exists "$tool"; then
                 utils_error "$display_name has a system-wide install. User-scope update is refused to prevent dual-install drift."
@@ -1583,7 +1591,7 @@ env_update_tool() {
 
             # Global scope requires root
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
-                if [[ "$EUID" -ne 0 ]]; then
+                if ! _env_is_root; then
                     utils_error "Global update requires root. Run with sudo."
                     return 1
                 fi
@@ -1720,7 +1728,7 @@ env_update_tool() {
             local package="${_ENV_NPM_PACKAGES[$tool]}"
 
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
-                if [[ "$EUID" -ne 0 ]]; then
+                if ! _env_is_root; then
                     utils_error "Global update requires root. Run with sudo."
                     return 1
                 fi
@@ -2850,7 +2858,7 @@ _env_repair_remove_bun_opt() {
                 read -r reply
                 [[ "$reply" =~ ^[Yy]$ ]] || { echo "  Skipped removal of $dir"; continue; }
             fi
-            if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+            if _env_is_root; then
                 rm -rf "$dir"
                 echo "  Removed $dir"
             else
@@ -2908,7 +2916,7 @@ _env_repair_npm_symlink() {
     link="/usr/local/bin/$binary"
 
     local is_root=0
-    [[ "${EUID:-$(id -u)}" -eq 0 ]] && is_root=1
+    _env_is_root && is_root=1
 
     # 1. Ensure a valid managed install exists BEFORE relinking to it.
     if [[ ! -d "$pkgdir" ]]; then
@@ -2992,7 +3000,7 @@ _env_repair_create_symlink() {
     local search_path
     for search_path in "$HOME/.local/bin/$binary" "/root/.local/bin/$binary"; do
         if [[ -x "$search_path" ]]; then
-            if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+            if _env_is_root; then
                 ln -sf "$search_path" "/usr/local/bin/$binary"
                 echo "  Created symlink /usr/local/bin/$binary -> $search_path"
                 return 0
@@ -3017,7 +3025,7 @@ _env_repair_fix_ownership() {
         *) return 0 ;;  # Not system binary
     esac
 
-    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    if _env_is_root; then
         chown root:root "$binary_path"
         echo "  Fixed ownership: chown root:root $binary_path"
     else
@@ -3588,7 +3596,7 @@ _env_parse_scope_args() {
 
     # Validate scope requires root
     if [[ "$ENV_PARSED_SCOPE" == "global" || "$ENV_PARSED_SCOPE" == "all" ]]; then
-        if [[ "$EUID" -ne 0 ]]; then
+        if ! _env_is_root; then
             utils_error "Scope --${ENV_PARSED_SCOPE} requires root privileges."
             return 1
         fi
@@ -3800,7 +3808,7 @@ env_cmd_update() {
     # root callers, and re-exec'd children all fall through to the original
     # behavior, preserving the Issue #71 refusal for explicit --user.
     if [[ "$ENV_PARSED_SCOPE_EXPLICIT" != "true" ]] \
-       && [[ "${EUID:-$(id -u)}" -ne 0 ]] \
+       && ! _env_is_root \
        && [[ -z "${CAC_ENV_ESCALATED:-}" ]]; then
         env_update_with_escalation
         return $?

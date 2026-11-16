@@ -21,7 +21,7 @@ source "${PROJECT_ROOT}/lib/env.sh"
 
 # ---------------------------------------------------------------------------
 # Helper: load the REAL _env_repair_remove_bun_opt with /opt/claude-code rewritten
-# to a temp dir and the root-EUID guard neutralised, so the destructive path can be
+# to a temp dir and the _env_is_root guard (#156) neutralised, so the destructive path can be
 # exercised safely (same technique as test_env.sh:_load_real_symlink_func).
 # ---------------------------------------------------------------------------
 _load_real_remove_bun_opt() {
@@ -29,7 +29,7 @@ _load_real_remove_bun_opt() {
     local body
     body=$(sed -n '/^_env_repair_remove_bun_opt()/,/^}/p' "${PROJECT_ROOT}/lib/env.sh")
     body=$(echo "$body" | sed -e "s|/opt/claude-code|${mockdir}|g")
-    body=$(echo "$body" | sed 's|\[\[ "${EUID:-\$(id -u)}" -eq 0 \]\]|true|')
+    body=$(echo "$body" | sed 's|_env_is_root|true|')
     eval "$body"
 }
 

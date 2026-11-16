@@ -325,6 +325,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #156 tests (every env root check goes through _env_is_root)
+    if $run_all || [[ "$filter" == "issue_156" ]] || [[ "$filter" == "156" ]]; then
+        if ! run_test_suite "Issue #156 Tests" "test_issue_156.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #140 tests (version string is the UTC committer date)
     if $run_all || [[ "$filter" == "issue_140" ]] || [[ "$filter" == "140" ]]; then
         if ! run_test_suite "Issue #140 Tests" "test_issue_140.sh"; then

@@ -1122,7 +1122,7 @@ test_env_install_all_summary_format() {
 
 # Extract the REAL _env_post_install_symlink() from lib/env.sh, then use sed to
 # rewrite the hardcoded paths (/usr/local/bin, /root/.local/bin, ${HOME}/.local/bin)
-# and the EUID root guard so we can test the real logic against temp directories.
+# and the _env_is_root guard (#156) so we can test the real logic against temp directories.
 _load_real_symlink_func() {
     local mock_usr="$1"    # replaces /usr/local/bin
     local mock_root="$2"   # replaces /root/.local/bin
@@ -1138,7 +1138,7 @@ _load_real_symlink_func() {
         -e 's|\${HOME}/\.local/bin|'"${mock_home}"'|g')
 
     # Bypass EUID root guard (replace the guard line with true so function always proceeds)
-    body=$(echo "$body" | sed 's|\[\[ "${EUID:-\$(id -u)}" -eq 0 \]\]|true|')
+    body=$(echo "$body" | sed 's|_env_is_root|true|')
 
     eval "$body"
 }

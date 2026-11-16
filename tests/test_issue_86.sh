@@ -24,14 +24,14 @@ source "${PROJECT_ROOT}/lib/env.sh"
 
 # ---------------------------------------------------------------------------
 # Helper: load the REAL _env_repair_npm_symlink with /usr/local/bin rewritten to a
-# temp dir and the root-EUID guard neutralised.
+# temp dir and the _env_is_root guard (#156) neutralised.
 # ---------------------------------------------------------------------------
 _load_real_npm_symlink() {
     local mockusr="$1"
     local body
     body=$(sed -n '/^_env_repair_npm_symlink()/,/^}/p' "${PROJECT_ROOT}/lib/env.sh")
     body=$(echo "$body" | sed -e "s|/usr/local/bin|${mockusr}|g")
-    body=$(echo "$body" | sed 's|\[\[ "${EUID:-\$(id -u)}" -eq 0 \]\]|true|')
+    body=$(echo "$body" | sed 's|_env_is_root|true|')
     eval "$body"
 }
 
