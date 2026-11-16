@@ -124,11 +124,9 @@ _gokapi_try_download() {
         return 0
     fi
 
-    if utils_retry_pending; then
-        local cause="curl exit ${curl_exit}"
-        [[ "$curl_exit" -eq 0 ]] && cause="empty file"
-        utils_warn "Gokapi download failed (${cause}), retrying (attempt ${UTILS_RETRY_ATTEMPT}/${UTILS_RETRY_MAX})..."
-    fi
+    local cause="curl exit ${curl_exit}"
+    [[ "$curl_exit" -eq 0 ]] && cause="empty file"
+    _gokapi_warn_if_retrying download "$cause" || true
     return 1
 }
 
@@ -298,6 +296,15 @@ _gokapi_redact_url() {
     printf '%s' "$url" | sed -E 's/(apikey|api_key)=[^&]*/\1=***/Ig'
 }
 
+# Internal: Inside utils_retry with another attempt pending, print the one
+# WARNING line for a failed attempt and return 0; otherwise print nothing and
+# return 1 (#128).
+# Usage: _gokapi_warn_if_retrying <operation> <cause>
+_gokapi_warn_if_retrying() {
+    utils_retry_has_next_attempt || return 1
+    utils_warn "Gokapi $1 failed ($2), retrying (attempt $(utils_retry_progress))..."
+}
+
 # Internal: Emit a structured HTTP error with remediation hint.
 # Usage: _gokapi_emit_http_error <operation> <status> <url> <body>
 # Output: 1-3 lines on stderr (via utils_error):
@@ -321,10 +328,9 @@ _gokapi_emit_http_error() {
     local url="$3"
     local body="${4:-}"
 
-    if utils_retry_pending; then
-        local cause="HTTP ${status}"
-        [[ "$status" == "000" ]] && cause="${cause}, curl exit ${GOKAPI_CURL_EXIT:-?}"
-        utils_warn "Gokapi ${operation} failed (${cause}), retrying (attempt ${UTILS_RETRY_ATTEMPT}/${UTILS_RETRY_MAX})..."
+    local cause="HTTP ${status}"
+    [[ "$status" == "000" ]] && cause="${cause}, curl exit ${GOKAPI_CURL_EXIT:-?}"
+    if _gokapi_warn_if_retrying "$operation" "$cause"; then
         return 0
     fi
 

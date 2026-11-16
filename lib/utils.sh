@@ -1019,7 +1019,8 @@ utils_handle_find_result() {
 #
 # While <command> runs, UTILS_RETRY_ATTEMPT (1-based) and UTILS_RETRY_MAX are
 # set for it (function-local, so unset outside any retry). The command can ask
-# utils_retry_pending whether a failure now will be retried (#128).
+# utils_retry_has_next_attempt whether a failure now will be retried, and
+# utils_retry_progress for the "X/Y" counter (#128).
 #
 # Example:
 #   utils_retry 3 2 "API request" curl -s -o /tmp/out http://example.com
@@ -1054,8 +1055,15 @@ utils_retry() {
 
 # True while the command running inside utils_retry is on a non-final attempt,
 # i.e. a failure now will be retried. False outside any utils_retry (#128).
-# Usage: utils_retry_pending
-utils_retry_pending() {
+# Usage: utils_retry_has_next_attempt
+utils_retry_has_next_attempt() {
     [[ -n "${UTILS_RETRY_ATTEMPT:-}" && -n "${UTILS_RETRY_MAX:-}" ]] &&
         [[ "$UTILS_RETRY_ATTEMPT" -lt "$UTILS_RETRY_MAX" ]]
+}
+
+# Print the current utils_retry attempt as "X/Y" (empty outside any retry).
+# Usage: utils_retry_progress
+utils_retry_progress() {
+    [[ -n "${UTILS_RETRY_ATTEMPT:-}" ]] || return 0
+    printf '%s/%s' "$UTILS_RETRY_ATTEMPT" "$UTILS_RETRY_MAX"
 }
