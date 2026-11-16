@@ -112,12 +112,22 @@ _gokapi_try_request() {
 # Internal: Attempt a single file download
 # Usage: _gokapi_try_download <url> <output_file>
 # Returns: 0 if download succeeded and file is non-empty, 1 otherwise
+# A failed attempt that utils_retry will repeat prints one WARNING line (#128);
+# the final failure is reported by _gokapi_op_with_retry's summary.
 _gokapi_try_download() {
     local url="$1"
     local output_file="$2"
 
-    if curl -sL -o "$output_file" "$url" && [[ -s "$output_file" ]]; then
+    local curl_exit=0
+    curl -sL -o "$output_file" "$url" || curl_exit=$?
+    if [[ "$curl_exit" -eq 0 && -s "$output_file" ]]; then
         return 0
+    fi
+
+    if utils_retry_pending; then
+        local cause="curl exit ${curl_exit}"
+        [[ "$curl_exit" -eq 0 ]] && cause="empty file"
+        utils_warn "Gokapi download failed (${cause}), retrying (attempt ${UTILS_RETRY_ATTEMPT}/${UTILS_RETRY_MAX})..."
     fi
     return 1
 }
@@ -300,11 +310,23 @@ _gokapi_redact_url() {
 #   404        -> Backend URL/availability
 #   401, 403   -> Authentication (rotate CAC_GOKAPI_API_KEY)
 #   5xx        -> Server error (backend failing; retry later)
+#
+# Inside utils_retry with another attempt pending (#128): one WARNING line
+# instead, "Gokapi <op> failed (HTTP <status>[, curl exit <N>]), retrying
+# (attempt X/Y)...". The final attempt, or a call outside any retry, gets the
+# full block above.
 _gokapi_emit_http_error() {
     local operation="$1"
     local status="$2"
     local url="$3"
     local body="${4:-}"
+
+    if utils_retry_pending; then
+        local cause="HTTP ${status}"
+        [[ "$status" == "000" ]] && cause="${cause}, curl exit ${GOKAPI_CURL_EXIT:-?}"
+        utils_warn "Gokapi ${operation} failed (${cause}), retrying (attempt ${UTILS_RETRY_ATTEMPT}/${UTILS_RETRY_MAX})..."
+        return 0
+    fi
 
     local safe_url
     safe_url=$(_gokapi_redact_url "$url")

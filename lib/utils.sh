@@ -1017,6 +1017,10 @@ utils_handle_find_result() {
 # The delay doubles after each failed attempt: delay = base_delay * 2^(attempt-1)
 # Verbose mode shows retry progress.
 #
+# While <command> runs, UTILS_RETRY_ATTEMPT (1-based) and UTILS_RETRY_MAX are
+# set for it (function-local, so unset outside any retry). The command can ask
+# utils_retry_pending whether a failure now will be retried (#128).
+#
 # Example:
 #   utils_retry 3 2 "API request" curl -s -o /tmp/out http://example.com
 #   utils_retry 5 1 "Download" wget -q http://example.com/file.zip
@@ -1027,9 +1031,10 @@ utils_retry() {
     shift 3
 
     local attempt=0
+    local UTILS_RETRY_ATTEMPT UTILS_RETRY_MAX="$max_attempts"
 
     while [[ $attempt -lt $max_attempts ]]; do
-        # Execute the command
+        UTILS_RETRY_ATTEMPT=$((attempt + 1))
         if "$@"; then
             return 0
         fi
@@ -1045,4 +1050,12 @@ utils_retry() {
     done
 
     return 1
+}
+
+# True while the command running inside utils_retry is on a non-final attempt,
+# i.e. a failure now will be retried. False outside any utils_retry (#128).
+# Usage: utils_retry_pending
+utils_retry_pending() {
+    [[ -n "${UTILS_RETRY_ATTEMPT:-}" && -n "${UTILS_RETRY_MAX:-}" ]] &&
+        [[ "$UTILS_RETRY_ATTEMPT" -lt "$UTILS_RETRY_MAX" ]]
 }
