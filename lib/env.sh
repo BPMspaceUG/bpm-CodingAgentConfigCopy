@@ -592,21 +592,41 @@ _env_tool_to_binary() {
 # Returns 0 if global install detected, 1 otherwise.
 # Usage: _env_global_install_exists <tool>
 _env_global_install_exists() {
+    [[ -n "$(_env_global_install_path "$1")" ]]
+}
+
+# System-wide bin dirs, in lookup order, with every user-local dir stripped.
+# Assigned (not defaulted) at source time, so a same-named variable in the
+# caller's environment cannot hide a global install from the #71/#138 guard.
+# Tests point it at a scratch dir after sourcing.
+_ENV_SYSTEM_BIN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Path of the system-wide launcher of a tool, or empty output if there is none
+# (Issues #71, #138). A dangling symlink counts: it is still a global install
+# that a user-scope copy would shadow. Covers curl and npm tools alike (an npm
+# global lands in <npm prefix -g>/bin, i.e. /usr/bin or /usr/local/bin).
+# Usage: _env_global_install_path <tool>
+_env_global_install_path() {
     local tool="$1"
     local binary
-    binary=$(_env_tool_to_binary "$tool" 2>/dev/null) || return 1
+    binary=$(_env_tool_to_binary "$tool" 2>/dev/null) || return 0
 
-    # Direct check: file or symlink in /usr/local/bin
-    if [[ -e "/usr/local/bin/$binary" ]] || [[ -L "/usr/local/bin/$binary" ]]; then
-        return 0
-    fi
+    local dir
+    local IFS=':'
+    for dir in $_ENV_SYSTEM_BIN_PATH; do
+        if [[ -e "$dir/$binary" ]] || [[ -L "$dir/$binary" ]]; then
+            echo "$dir/$binary"
+            return 0
+        fi
+    done
+    return 0
+}
 
-    # Fallback: resolve via PATH stripped of all user-local dirs
-    # (catches /opt/* style globals)
-    local sanitized_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    local resolved
-    resolved=$(PATH="$sanitized_path" command -v "$binary" 2>/dev/null || true)
-    [[ -n "$resolved" ]]
+# Remediation line for a non-root update refused or blocked because the tool
+# has a system-wide install (Issues #71, #138).
+# Usage: _env_global_update_remediation <tool>
+_env_global_update_remediation() {
+    echo "Remediation: run 'sudo cac env update $1 --global' to update the system-wide install, or remove the global install first if you really want a per-user version."
 }
 
 # Detect whether a genuine per-user install of a tool exists (Issue #79).
@@ -645,8 +665,8 @@ _env_user_install_exists() {
     esac
 }
 
-# Decide how `cac env update` should update a curl tool for a non-root user
-# (Issue #79). The rule follows what the user ACTUALLY runs, via PATH resolution,
+# Decide how `cac env update` should update a curl or npm tool (npm since
+# Issue #138) for a non-root user (Issue #79). The rule follows what the user ACTUALLY runs, via PATH resolution,
 # so we never update a copy they are not executing. Echoes exactly one of:
 #   local    -> update at user scope, in-process. Either no system-wide install
 #               exists, OR the user's PATH resolves to their own per-user copy
@@ -1642,7 +1662,7 @@ env_update_tool() {
                && [[ "$allow_user_override_global" != "1" ]] \
                && _env_global_install_exists "$tool"; then
                 utils_error "$display_name has a system-wide install. User-scope update is refused to prevent dual-install drift."
-                echo "Remediation: run with sudo for a global update, or remove the global install first if you really want a per-user version." >&2
+                _env_global_update_remediation "$tool" >&2
                 return 1
             fi
 
@@ -1783,6 +1803,20 @@ env_update_tool() {
                 return $ENV_EXIT_MISSING_DEP
             fi
             local package="${_ENV_NPM_PACKAGES[$tool]}"
+
+            # Issue #138: the Issue #71 refusal, for npm tools. Without it a
+            # non-root user-scope update ran `npm install -g --prefix ~/.local`
+            # next to a system-wide npm install and left a shadowing per-user
+            # copy. Same override contract as the curl branch: only
+            # env_update_with_escalation passes "1", after confirming the user
+            # runs their own per-user copy.
+            if [[ "$scope" == "user" ]] && ! _env_is_root \
+               && [[ "$allow_user_override_global" != "1" ]] \
+               && _env_global_install_exists "$tool"; then
+                utils_error "$display_name has a system-wide install. User-scope update is refused to prevent dual-install drift."
+                _env_global_update_remediation "$tool" >&2
+                return 1
+            fi
 
             if [[ "$scope" == "global" || "$scope" == "all" ]]; then
                 if ! _env_is_root; then
@@ -2588,6 +2622,57 @@ _env_chk_node_version() {
     return 0
 }
 
+# Per-user copy of an npm tool, or empty output if there is none (Issue #138):
+# the binary on PATH when it really lives under $HOME, else the managed
+# user-prefix launcher (~/.local/bin/<binary>) when the package sits in
+# ~/.local/lib/node_modules — a copy the PATH currently hides is still one.
+# Usage: _env_npm_user_copy_path <tool>
+_env_npm_user_copy_path() {
+    local tool="$1"
+    local binary package
+    binary=$(_env_tool_to_binary "$tool" 2>/dev/null) || return 0
+    package="${_ENV_NPM_PACKAGES[$tool]:-}"
+
+    if _env_user_install_exists "$tool"; then
+        type -P "$binary" 2>/dev/null || true
+        return 0
+    fi
+    if [[ -n "$package" ]] && [[ -d "$HOME/.local/lib/node_modules/$package" ]]; then
+        echo "$HOME/.local/bin/$binary"
+    fi
+    return 0
+}
+
+# Check: an npm tool has no per-user copy next to a system-wide one (Issue #138)
+# A non-root `env update` used to create exactly that: ~/.local/bin/codex
+# shadowing /usr/bin/codex, two versions on one host. FAIL-level, so a host
+# already affected shows up in `env check`; the repair arm only prints the
+# remediation, since removing either copy is the operator's call.
+# Usage: _env_chk_dual_install <binary_path> <tool>
+# Returns: 0=pass, 1=fail (sets _CHECK_REASON)
+_env_chk_dual_install() {
+    # shellcheck disable=SC2034
+    local binary_path="$1"
+    local tool="$2"
+
+    [[ "$(env_get_install_type "$tool" 2>/dev/null)" == "npm" ]] || return 0
+
+    local user_copy global_copy
+    user_copy=$(_env_npm_user_copy_path "$tool")
+    [[ -n "$user_copy" ]] || return 0
+    global_copy=$(_env_global_install_path "$tool")
+    [[ -n "$global_copy" ]] || return 0
+
+    # One install reached through two launchers is not a dual install.
+    local user_real global_real
+    user_real=$(readlink -f "$user_copy" 2>/dev/null || echo "$user_copy")
+    global_real=$(readlink -f "$global_copy" 2>/dev/null || echo "$global_copy")
+    [[ "$user_real" != "$global_real" ]] || return 0
+
+    _CHECK_REASON="per-user copy $user_copy next to the system-wide install $global_copy"
+    return 1
+}
+
 # List of all check names in order
 _ENV_CHECK_NAMES=(
     binary_location
@@ -2600,6 +2685,7 @@ _ENV_CHECK_NAMES=(
     stale_path
     npm_prefix
     node_version
+    dual_install
 )
 
 # Run all health checks for one installed tool
@@ -3231,6 +3317,16 @@ _env_repair_one_tool() {
             node_version)
                 utils_warn "Node.js >= 18 required — upgrade Node.js (see https://nodejs.org)"
                 ;;
+            dual_install)
+                # Issue #138: WARN ONLY. Which copy goes is the operator's call,
+                # and the per-user copy may be the one a running session uses.
+                _CHECK_REASON=""
+                _env_chk_dual_install "$binary_path" "$tool" 2>/dev/null || true
+                utils_warn "$display_name: ${_CHECK_REASON:-per-user copy next to a system-wide install}"
+                echo "  Not repaired automatically. To keep only the system-wide install:" >&2
+                echo "    npm uninstall -g --prefix $HOME/.local ${_ENV_NPM_PACKAGES[$tool]:-}" >&2
+                echo "    sudo cac env update $tool --global" >&2
+                ;;
         esac
     done
 
@@ -3717,8 +3813,8 @@ env_cmd_install() {
     fi
 }
 
-# Issue #79: implicit-scope, non-root update path. Updates user-scope (and npm)
-# tools in-process and auto-escalates system-wide curl tools via a single sudo
+# Issue #79: implicit-scope, non-root update path. Updates user-scope tools
+# in-process and auto-escalates system-wide curl and npm tools (#138) via sudo
 # re-exec, instead of reporting them as hard failures. Returns the tri-state
 # 0/1/2 (SUCCESS/PARTIAL/ALL_FAILED) per the env_cmd_update contract.
 # Usage: env_update_with_escalation
@@ -3757,14 +3853,9 @@ env_update_with_escalation() {
             continue
         fi
 
-        # Only curl-installed tools carry the Issue #71 global refusal; npm tools
-        # update fine at user scope and are never escalated — no behavior change.
-        if [[ "$(env_get_install_type "$t")" != "curl" ]]; then
-            local_tools+=("$t")
-            continue
-        fi
-
-        # Curl tool: follow what the user actually runs (PATH resolution).
+        # Issue #138: curl AND npm tools follow what the user actually runs
+        # (PATH resolution). npm tools used to go straight to the local list,
+        # which created a per-user copy shadowing a system-wide npm install.
         #   local    -> their own per-user copy (or no global) -> user-scope update
         #   escalate -> they run the system-wide copy -> sudo re-exec
         case "$(_env_update_action "$t")" in
@@ -3774,7 +3865,7 @@ env_update_with_escalation() {
     done
 
     local success=0 failed=0 needs_root=0
-    local -a failed_names=() needs_root_names=() not_managed_names=()
+    local -a failed_names=() needs_root_names=() needs_root_tools=() not_managed_names=()
 
     # 1. Local updates, in-process at user scope. The 3rd arg ("1") tells
     # env_update_tool to bypass the Issue #71 refusal ONLY here, where we have
@@ -3808,6 +3899,7 @@ env_update_with_escalation() {
             "$ENV_EXIT_NEEDS_ROOT")
                 ((needs_root++)) || true
                 needs_root_names+=("$(env_get_display_name "$t")")
+                needs_root_tools+=("$t")
                 ;;
             "$ENV_EXIT_NOT_MANAGED")
                 # Issue #148: the root child skipped a copy cac does not manage.
@@ -3835,7 +3927,7 @@ env_update_with_escalation() {
     if [[ $needs_root -gt 0 ]]; then
         echo "Needs root: $needs_root"
         echo "Needs root tools: ${needs_root_names[*]}"
-        echo "Hint: run 'sudo cac env update' to update system-wide tools."
+        echo "Hint: run 'sudo cac env update ${needs_root_tools[*]} --global' to update system-wide tools."
     fi
 
     # Tri-state per the contract. "problems" spans failed + needs-root.

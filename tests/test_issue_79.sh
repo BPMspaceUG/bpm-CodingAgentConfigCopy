@@ -24,7 +24,7 @@
 #   79.9   explicit --user + global -> still refuses (Issue #71 preserved)
 #   79.10  recursion guard: CAC_ENV_ESCALATED set -> no escalation branch
 #   79.11  dual-install, user runs own copy -> user-scope update (override), no sudo
-#   79.12  npm global tool -> NOT escalated (no behavior change)
+#   79.12  npm tool the user runs system-wide -> escalated (Issue #138)
 #   79.13  empty target set -> SUCCESS (not ALL_FAILED)
 #   79.14  exit codes: all-needs-root -> ALL_FAILED; mixed -> PARTIAL
 #   79.15  invalid tool name never reaches sudo
@@ -352,24 +352,25 @@ test_79_11_dual_user_copy_local() {
 }
 
 # ----------------------------------------------------------------------------
-# 79.12 — npm global tool not escalated
+# 79.12 — npm tool follows _env_update_action like a curl tool (Issue #138)
 # ----------------------------------------------------------------------------
-test_79_12_npm_not_escalated() {
+test_79_12_npm_follows_update_action() {
     if [[ $IS_ROOT -eq 1 ]]; then skip "79.12 npm (root)" "needs non-root"; return; fi
     local T; T=$(_scratch 79_12)
     (
         export REEXEC_LOG="$T/reexec"
         export MOCK_TOOLS="codex"
-        # npm tool: never reaches _env_update_action (curl-only); always local.
+        # Issue #138: an npm tool the user runs system-wide is escalated too;
+        # updating it at user scope created a shadowing per-user copy.
         export MOCK_TYPE_codex="npm" MOCK_ACTION_codex="escalate"
         local out rc=0
         out=$(_run_escalation) || rc=$?
-        [[ "$out" == *"LOCAL_UPDATE:codex"* ]] || { echo "npm not updated in-process: $out" >&2; exit 1; }
-        [[ ! -s "$REEXEC_LOG" ]] || { echo "npm tool escalated!" >&2; exit 1; }
+        [[ "$out" != *"LOCAL_UPDATE:codex"* ]] || { echo "npm tool updated at user scope: $out" >&2; exit 1; }
+        [[ "$(cat "$REEXEC_LOG" 2>/dev/null)" == "codex" ]] || { echo "npm tool not escalated" >&2; exit 1; }
         [[ "$rc" -eq 0 ]] || { echo "rc=$rc" >&2; exit 1; }
         exit 0
-    ) && pass "79.12 npm tool never escalated (no behavior change)" \
-       || fail "79.12 npm tool never escalated (no behavior change)"
+    ) && pass "79.12 npm tool run system-wide is escalated (Issue #138)" \
+       || fail "79.12 npm tool run system-wide is escalated (Issue #138)"
 }
 
 # ----------------------------------------------------------------------------
@@ -552,7 +553,7 @@ test_79_8_mixed_noargs
 test_79_9_explicit_user_refuses
 test_79_10_recursion_guard
 test_79_11_dual_user_copy_local
-test_79_12_npm_not_escalated
+test_79_12_npm_follows_update_action
 test_79_13_empty_targets
 test_79_14_exit_codes
 test_79_15_invalid_tool

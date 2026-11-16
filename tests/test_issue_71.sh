@@ -23,7 +23,7 @@
 #   71.7   _env_version_lt correctness (incl. unknown / equal / prerelease)
 #   71.8   curl-update path invokes hash -r
 #   71.9   sudo-mode multi-user update integration (root-only — auto-skip)
-#   71.10  npm non-regression: codex update untouched by new curl-refusal logic (T-B, MUST)
+#   71.10  npm non-regression: codex update (no global install) untouched by curl logic (T-B, MUST)
 
 set -uo pipefail
 
@@ -891,10 +891,10 @@ EOF
 
         env_is_installed() { return 0; }
         env_get_version() { echo "0.94.0"; }
-        # Trap: claim global install IS present. If npm path wrongly fell into
-        # the new curl-refusal logic, this would trigger a refusal and the
-        # exit-code assertion would fail.
-        _env_global_install_exists() { return 0; }
+        # Issue #138: the npm path now carries its own #71 refusal when a
+        # system-wide install exists (covered by tests/test_issue_138.sh).
+        # Without one it must run npm and touch nothing curl-specific.
+        _env_global_install_exists() { return 1; }
         _env_propagate_user_symlinks() {
             echo "called" > "$PROPAGATE_SENTINEL"
             return 0

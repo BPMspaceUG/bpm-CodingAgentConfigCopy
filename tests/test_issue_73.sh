@@ -763,7 +763,9 @@ EOF
 
         env_is_installed() { return 0; }
         env_get_version() { echo "0.94.0"; }
-        _env_global_install_exists() { return 0; }
+        # Issue #138: a global install now triggers the npm #71 refusal
+        # (tests/test_issue_138.sh); this test is about the #73 diagnostics.
+        _env_global_install_exists() { return 1; }
 
         # Sentinel: any of these helpers being called from the npm path is
         # a regression. Make them write a sentinel and return an error.

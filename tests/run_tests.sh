@@ -485,6 +485,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #138 tests (npm dual-install guard: env update escalates or refuses, env check flags)
+    if $run_all || [[ "$filter" == "issue_138" ]] || [[ "$filter" == "138" ]]; then
+        if ! run_test_suite "Issue #138 Tests" "test_issue_138.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #94/#95 tests (escalated env update cannot update the on-PATH copy)
     if $run_all || [[ "$filter" == "issue_94_95" ]] || [[ "$filter" == "94" ]] || [[ "$filter" == "95" ]]; then
         if ! run_test_suite "Issue #94/#95 Tests" "test_issue_94_95.sh"; then

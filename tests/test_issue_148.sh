@@ -299,7 +299,7 @@ test_9_check_warns_not_managed() {
     assert_equals "0" "$RC" "exit code (out: $OUT)" || return 1
     assert_contains "[WARN] not_managed: launcher on PATH $LAUNCHER" "$OUT" "WARN line with path" || return 1
     assert_contains "belongs to package claude-code (dpkg)" "$OUT" "owner note" || return 1
-    if [[ "$OUT" == *"PASS (10/10)"* ]]; then
+    if [[ "$OUT" == *"PASS (11/11)"* ]]; then
         echo "still reads as a clean PASS: $OUT" >&2
         return 1
     fi
@@ -320,11 +320,11 @@ test_10_check_managed_layout_unchanged() {
     stub_dpkg ""
     run_check root claude
     assert_equals "0" "$RC" "exit code" || return 1
-    assert_contains "PASS (10/10)" "$OUT" "root: clean PASS" || return 1
+    assert_contains "PASS (11/11)" "$OUT" "root: clean PASS" || return 1
     [[ "$OUT" != *"not_managed"* ]] || { echo "root: managed layout flagged: $OUT" >&2; return 1; }
 
     run_check user claude
-    assert_contains "PASS (10/10)" "$OUT" "user: clean PASS (out: $OUT)" || return 1
+    assert_contains "PASS (11/11)" "$OUT" "user: clean PASS (out: $OUT)" || return 1
     [[ "$OUT" != *"not_managed"* ]] || { echo "user: #57 layout flagged: $OUT" >&2; return 1; }
 
     # The update path does not skip it as not managed. (It is refused by the
