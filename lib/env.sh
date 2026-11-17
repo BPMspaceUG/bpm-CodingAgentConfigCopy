@@ -629,7 +629,14 @@ _env_global_install_path() {
 # has a system-wide install (Issues #71, #138).
 # Usage: _env_global_update_remediation <tool>
 _env_global_update_remediation() {
-    echo "Remediation: run 'sudo cac env update $1 --global' to update the system-wide install, or remove the global install first if you really want a per-user version."
+    echo "Remediation: run '$(_env_global_update_cmd "$1")' to update the system-wide install, or remove the global install first if you really want a per-user version."
+}
+
+# The command that updates a tool's system-wide install (Issues #71, #130,
+# #138). One place, so every hint names it the same way.
+# Usage: _env_global_update_cmd <tool>
+_env_global_update_cmd() {
+    echo "sudo cac env update $1 --global"
 }
 
 # Tools that ship an in-app updater running `npm install -g <package>` as the
@@ -649,7 +656,7 @@ _env_has_npm_self_updater() {
 _env_self_updater_note() {
     local tool="$1"
     _env_has_npm_self_updater "$tool" || return 0
-    echo "Note: $(env_get_display_name "$tool") is installed system-wide. Update it with 'sudo cac env update $tool --global'; its own in-app update prompt fails with EACCES for non-root users, so decline it."
+    echo "Note: $(env_get_display_name "$tool") is installed system-wide. Update it with '$(_env_global_update_cmd "$tool")'; its own in-app update prompt fails with EACCES for non-root users, so decline it."
 }
 
 # The Issue #71 refusal, shared by the curl and npm branches of env_update_tool
@@ -2031,7 +2038,7 @@ _env_root_implicit_scope() {
             ;;
     esac
     utils_error "$display_name: the system-wide launcher $launcher ($real) does not resolve into npm's global prefix ($pkgdir); not updating."
-    echo "Remediation: run 'sudo cac env check $tool' to see the layout; 'sudo cac env repair $tool' relinks a launcher that points at the wrong tree. Then 'sudo cac env update $tool --global'." >&2
+    echo "Remediation: run 'sudo cac env check $tool' to see the layout; 'sudo cac env repair $tool' relinks a launcher that points at the wrong tree. Then '$(_env_global_update_cmd "$tool")'." >&2
     return 1
 }
 
@@ -2795,7 +2802,7 @@ _env_self_update_blocked() {
     if [[ -w "$pkgdir" ]] && [[ -w "$(dirname "$pkgdir")" ]]; then
         return 1
     fi
-    _ENV_SELF_UPDATE_NOTE="$pkgdir is not writable for $(whoami 2>/dev/null || echo "this user"); the in-app update fails with EACCES. Update with 'sudo cac env update $tool --global'."
+    _ENV_SELF_UPDATE_NOTE="$pkgdir is not writable for $(whoami 2>/dev/null || echo "this user"); the in-app update fails with EACCES. Update with '$(_env_global_update_cmd "$tool")'."
     return 0
 }
 
@@ -2813,6 +2820,20 @@ _ENV_CHECK_NAMES=(
     node_version
     dual_install
 )
+
+# One WARN finding of _env_check_one_tool (Issues #130, #148): sets
+# _ENV_CHECK_WARNED, extends the caller's local warn_summary, prints the row.
+# Reads the caller's locals tool and parseable (bash dynamic scope).
+# Usage: _env_check_warn <name> <summary> <note>
+_env_check_warn() {
+    _ENV_CHECK_WARNED=1
+    warn_summary="${warn_summary:+$warn_summary; }$2"
+    if [[ "$parseable" == "true" ]]; then
+        printf "%s\t%s\twarn\t%s\n" "$tool" "$1" "$3"
+    else
+        echo "  [WARN] $1: $3"
+    fi
+}
 
 # Run all health checks for one installed tool
 # Usage: _env_check_one_tool <tool> <parseable>
@@ -2870,26 +2891,11 @@ _env_check_one_tool() {
     _ENV_CHECK_WARNED=0
     local warn_summary=""
     if [[ -n "$binary_path" ]] && _env_not_managed "$tool"; then
-        _ENV_CHECK_WARNED=1
-        warn_summary="not managed by cac"
-        local note
-        note=$(_env_not_managed_note)
-        if [[ "$parseable" == "true" ]]; then
-            printf "%s\t%s\twarn\t%s\n" "$tool" "not_managed" "$note"
-        else
-            echo "  [WARN] not_managed: $note"
-        fi
+        _env_check_warn not_managed "not managed by cac" "$(_env_not_managed_note)"
     fi
-
     # Issue #130: same WARN tier, same reason for living outside the list.
     if _env_self_update_blocked "$binary_path" "$tool"; then
-        _ENV_CHECK_WARNED=1
-        warn_summary="${warn_summary:+$warn_summary; }in-app updater cannot write the install"
-        if [[ "$parseable" == "true" ]]; then
-            printf "%s\t%s\twarn\t%s\n" "$tool" "self_update" "$_ENV_SELF_UPDATE_NOTE"
-        else
-            echo "  [WARN] self_update: $_ENV_SELF_UPDATE_NOTE"
-        fi
+        _env_check_warn self_update "in-app updater cannot write the install" "$_ENV_SELF_UPDATE_NOTE"
     fi
 
     if [[ "$parseable" == "false" ]]; then
@@ -3464,7 +3470,7 @@ _env_repair_one_tool() {
                 utils_warn "$display_name: ${_CHECK_REASON:-per-user copy next to a system-wide install}"
                 echo "  Not repaired automatically. To keep only the system-wide install:" >&2
                 echo "    npm uninstall -g --prefix $HOME/.local ${_ENV_NPM_PACKAGES[$tool]:-}" >&2
-                echo "    sudo cac env update $tool --global" >&2
+                echo "    $(_env_global_update_cmd "$tool")" >&2
                 ;;
         esac
     done
