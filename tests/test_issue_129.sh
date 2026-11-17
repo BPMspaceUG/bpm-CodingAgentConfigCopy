@@ -72,7 +72,7 @@ make_layout() {
     cat > "$T/stubbin/npm" <<EOF
 #!/bin/bash
 echo "\$*" >> "$NPM_LOG"
-if [ "\$1" = prefix ]; then echo "$SYS"; exit 0; fi
+if [ "\$1" = prefix ]; then echo "\${NPM_PREFIX_OVERRIDE:-$SYS}"; exit 0; fi
 prefix="$SYS"; prev=""
 for a in "\$@"; do [ "\$prev" = --prefix ] && prefix="\$a"; prev="\$a"; done
 d="\$prefix/$PKG_REL"
@@ -172,10 +172,36 @@ test_5_no_global_install_stays_user() {
     grep -q -- "--prefix $HOMEDIR/.local" "$NPM_LOG" || { echo "expected a root-home update: $(cat "$NPM_LOG")" >&2; return 1; }
 }
 
+# ----------------------------------------------------------------------------
+# 129.6 — the system-wide launcher does not resolve into `npm prefix -g`
+# (e.g. an old /usr/local copy while npm's prefix is /usr): refused with a
+# remediation, no npm install into either prefix, non-zero exit.
+# ----------------------------------------------------------------------------
+test_6_launcher_outside_npm_prefix_refused() {
+    make_layout t6 "" no
+    local other="$T/other-prefix"
+    mkdir -p "$other"
+    RC=0
+    OUT=$(
+        export NPM_PREFIX_OVERRIDE="$other"
+        run_root env_cmd_update codex
+        printf '%s' "$OUT"
+        exit "$RC"
+    ) || RC=$?
+    [[ "$RC" -ne 0 ]] || { echo "expected refusal (out: $OUT)" >&2; return 1; }
+    assert_contains "does not resolve into npm's global prefix" "$OUT" "names the mismatch" || return 1
+    assert_contains "cac env repair codex" "$OUT" "remediation" || return 1
+    if grep -qE "^(install|update)" "$NPM_LOG"; then
+        echo "npm install/update ran: $(cat "$NPM_LOG")" >&2; return 1
+    fi
+    _no_root_home_npm_call || return 1
+}
+
 run_test "129.1 sudo env update codex (no scope): global update, nothing in root's home" test_1_implicit_scope_updates_global
 run_test "129.2 sudo env update (all, no scope): codex updated globally" test_2_update_all_implicit_scope
 run_test "129.3 sudo env update --global codex: system prefix (regression)" test_3_explicit_global_regression
 run_test "129.4 sudo env update --user codex: keeps its meaning" test_4_explicit_user_unchanged
 run_test "129.5 root, no system-wide install: root-home copy updated as before" test_5_no_global_install_stays_user
+run_test "129.6 launcher outside npm prefix -g: refused with remediation" test_6_launcher_outside_npm_prefix_refused
 
 framework_report

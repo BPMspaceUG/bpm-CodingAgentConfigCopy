@@ -1970,17 +1970,43 @@ env_update_tool() {
 # copy a non-root caller's #79 escalation also ends at. Everything else keeps
 # the given scope: curl tools have their own root-context guards (#94/#95,
 # #133), and without a system-wide install there is nothing to promote to.
+#
+# Promoted only when the system-wide launcher really resolves into
+# `$(npm prefix -g)/lib/node_modules/<package>`. A launcher elsewhere (an old
+# /usr/local copy while npm's prefix is /usr, or a non-npm binary) would make
+# a global update install a NEW copy the PATH never reaches; that case is
+# refused with a remediation instead (design (b) for this one case).
+# Echoes the scope to use; returns 1 (refusal printed to stderr) when the
+# update must not run. Unknown tools pass through for env_update_tool to reject.
 # Usage: _env_root_implicit_scope <tool> <scope>
 _env_root_implicit_scope() {
     local tool="$1" scope="$2"
-    if [[ "$scope" == "user" ]] \
-       && [[ "$(env_get_install_type "$tool" 2>/dev/null)" == "npm" ]] \
-       && _env_global_install_exists "$tool"; then
-        echo "  $(env_get_display_name "$tool") has a system-wide install; updating it (--global), not root's home." >&2
-        echo "global"
+    if [[ "$scope" != "user" ]] || ! env_validate_tool "$tool" \
+       || [[ "$(env_get_install_type "$tool" 2>/dev/null)" != "npm" ]]; then
+        echo "$scope"
         return 0
     fi
-    echo "$scope"
+    local launcher
+    launcher=$(_env_global_install_path "$tool")
+    if [[ -z "$launcher" ]]; then
+        echo "$scope"
+        return 0
+    fi
+
+    local display_name pkgdir real
+    display_name=$(env_get_display_name "$tool")
+    pkgdir="$(_env_npm_managed_prefix global)/lib/node_modules/${_ENV_NPM_PACKAGES[$tool]:-}"
+    real=$(readlink -f "$launcher" 2>/dev/null || echo "$launcher")
+    case "$real" in
+        "$pkgdir"/*)
+            echo "  $display_name has a system-wide install; updating it (--global), not root's home." >&2
+            echo "global"
+            return 0
+            ;;
+    esac
+    utils_error "$display_name: the system-wide launcher $launcher ($real) does not resolve into npm's global prefix ($pkgdir); not updating."
+    echo "Remediation: run 'sudo cac env check $tool' to see the layout; 'sudo cac env repair $tool' relinks a launcher that points at the wrong tree. Then 'sudo cac env update $tool --global'." >&2
+    return 1
 }
 
 # Install all core tools
@@ -2076,9 +2102,11 @@ env_update_all() {
 
         local _rc=0 _tool_scope="$scope"
         if [[ "$scope_origin" == "implicit" ]]; then
-            _tool_scope=$(_env_root_implicit_scope "$tool" "$scope")
+            _tool_scope=$(_env_root_implicit_scope "$tool" "$scope") || _rc=1
         fi
-        ENV_DIAG_CAUSE_FILE="$_cause_file" env_update_tool "$tool" "$_tool_scope" || _rc=$?
+        if [[ $_rc -eq 0 ]]; then
+            ENV_DIAG_CAUSE_FILE="$_cause_file" env_update_tool "$tool" "$_tool_scope" || _rc=$?
+        fi
         if [[ $_rc -eq 0 ]]; then
             ((success++)) || true
         elif [[ $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
@@ -4026,10 +4054,12 @@ env_cmd_update() {
 
     for tool in "${ENV_PARSED_TOOLS[@]}"; do
         local _rc=0 _tool_scope="$scope"
-        if [[ "$scope_origin" == "implicit" ]] && env_validate_tool "$tool"; then
-            _tool_scope=$(_env_root_implicit_scope "$tool" "$scope")
+        if [[ "$scope_origin" == "implicit" ]]; then
+            _tool_scope=$(_env_root_implicit_scope "$tool" "$scope") || _rc=1
         fi
-        env_update_tool "$tool" "$_tool_scope" || _rc=$?
+        if [[ $_rc -eq 0 ]]; then
+            env_update_tool "$tool" "$_tool_scope" || _rc=$?
+        fi
         if [[ $_rc -eq 0 ]]; then
             ((success++)) || true
         elif [[ $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
