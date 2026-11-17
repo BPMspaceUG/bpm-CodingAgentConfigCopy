@@ -562,6 +562,13 @@ _install_runtime_env_path() {
     return 1
 }
 
+# True when the caller passed any config value (Issue #160): a flag
+# (--backend/--url/--api-key/--storage) or a CAC_* variable setup_config reads.
+_install_config_values_given() {
+    [[ -n "${ARG_BACKEND}${ARG_URL}${ARG_API_KEY}${ARG_STORAGE}" ]] && return 0
+    [[ -n "${CAC_BACKEND:-}${CAC_GOKAPI_URL:-}${CAC_GOKAPI_API_KEY:-}${CAC_LOCAL_STORAGE:-}" ]]
+}
+
 # Setup configuration — use CLI args, env vars, or prompt
 setup_config() {
     local env_file="${CONFIG_DIR}/.env"
@@ -571,18 +578,25 @@ setup_config() {
         return 0
     fi
 
-    # Issue #160: a config cac already loads at runtime (e.g. /etc/cac/.env for
-    # a user-local install) is enough, unless the caller explicitly asked for a
-    # config here (--backend or CAC_BACKEND), which then wins as before.
+    # Issue #160: in a user-local pass, a config cac already loads at runtime
+    # (e.g. /etc/cac/.env) is enough. Not in a system-wide pass: there the
+    # caller's own ~/.config/cac/.env is no substitute for /etc/cac/.env. Any
+    # explicit config value (flag or CAC_* variable) means "write one here",
+    # which wins as before.
     local runtime_env=""
-    if [[ -z "$(resolve_config_value "$ARG_BACKEND" "CAC_BACKEND" "")" ]] \
+    if [[ "$INSTALL_MODE" == "user-local" ]] && ! _install_config_values_given \
        && runtime_env=$(_install_runtime_env_path); then
-        if [[ "$runtime_env" == "${SYS_CONFIG_DIR}/.env" ]]; then
-            info "Using system configuration: $runtime_env"
+        if [[ ! -r "$runtime_env" ]]; then
+            warn "Configuration $runtime_env exists but is not readable for $(whoami 2>/dev/null || echo "this user"); cac could not load it."
         else
-            info "Using existing configuration: $runtime_env"
+            if [[ "$runtime_env" == "${SYS_CONFIG_DIR}/.env" ]]; then
+                info "Using system configuration: $runtime_env"
+            else
+                info "Using existing configuration: $runtime_env"
+            fi
+            info "To write a user configuration instead, re-run with --backend (see --help)."
+            return 0
         fi
-        return 0
     fi
 
     echo ""

@@ -47,10 +47,10 @@ make_layout() {
 run_setup() {
     RC=0
     OUT=$(
-        env -i PATH="$PATH" HOME="$HOMEDIR" bash -c '
+        env -i PATH="$PATH" HOME="$HOMEDIR" RUN_MODE="${RUN_MODE:-user}" bash -c '
             source "$1"; shift
             SYS_CONFIG_DIR="$1"; shift
-            set_user_local_paths
+            if [[ "${RUN_MODE:-user}" == global ]]; then set_system_wide_paths; else set_user_local_paths; fi
             for kv in "$@"; do export "${kv?}"; done
             for kv in "$@"; do case "$kv" in ARG_*) eval "${kv%%=*}=\"\${kv#*=}\"" ;; esac; done
             mkdir -p "$CONFIG_DIR"
@@ -102,6 +102,7 @@ test_4_env_backend_writes_user_config() {
     run_setup "CAC_BACKEND=local" "CAC_LOCAL_STORAGE=$T/bundles"
     assert_equals "0" "$RC" "exit code (out: $OUT)" || return 1
     [[ -f "$(USER_ENV)" ]] || { echo "no user config written (out: $OUT)" >&2; return 1; }
+    grep -q '^CAC_BACKEND=local' "$(USER_ENV)" || { echo "wrong backend in user config" >&2; return 1; }
 }
 
 # ----------------------------------------------------------------------------
@@ -117,10 +118,74 @@ test_5_cac_config_dir_accepted() {
     [[ ! -e "$(USER_ENV)" ]] || { echo "a user config was written" >&2; return 1; }
 }
 
+# ----------------------------------------------------------------------------
+# 160.6 — --global pass: the caller's own user config is no reason to skip
+# the system config (unchanged: non-interactive without values -> error).
+# ----------------------------------------------------------------------------
+test_6_global_pass_unchanged() {
+    make_layout t6
+    mkdir -p "$HOMEDIR/.config/cac"
+    printf 'CAC_BACKEND=local\n' > "$(USER_ENV)"
+    RUN_MODE=global run_setup
+    [[ "$RC" -ne 0 ]] || { echo "global pass accepted a user config (out: $OUT)" >&2; return 1; }
+    assert_contains "Non-interactive mode requires configuration values." "$OUT" "unchanged error" || return 1
+}
+
+# ----------------------------------------------------------------------------
+# 160.7 — system config present but unreadable: not accepted.
+# ----------------------------------------------------------------------------
+test_7_unreadable_system_config() {
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then echo "(root reads any file; skipped)"; return 0; fi
+    make_layout t7 sys
+    chmod 000 "$SYSDIR/.env"
+    run_setup
+    chmod 644 "$SYSDIR/.env"
+    [[ "$RC" -ne 0 ]] || { echo "accepted an unreadable system config (out: $OUT)" >&2; return 1; }
+    [[ "$OUT" != *"Using system configuration"* ]] || { echo "claimed to use it: $OUT" >&2; return 1; }
+    assert_contains "not readable" "$OUT" "says why" || return 1
+}
+
+# ----------------------------------------------------------------------------
+# 160.8 — any explicit config value (here CAC_GOKAPI_URL alone) means the
+# caller wants a config written: the system config is not silently used.
+# ----------------------------------------------------------------------------
+test_8_partial_explicit_values() {
+    make_layout t8 sys
+    run_setup "CAC_GOKAPI_URL=https://other.example.org/"
+    [[ "$OUT" != *"Using system configuration"* ]] || { echo "explicit value ignored: $OUT" >&2; return 1; }
+    run_setup "ARG_STORAGE=$T/bundles"
+    [[ "$OUT" != *"Using system configuration"* ]] || { echo "explicit --storage ignored: $OUT" >&2; return 1; }
+}
+
+# ----------------------------------------------------------------------------
+# 160.9 — the installer's lookup agrees with config_find_env_path for the
+# user-side cases (the system path is hard-wired at runtime, so it is
+# compared by name only).
+# ----------------------------------------------------------------------------
+test_9_lookup_matches_runtime() {
+    make_layout t9
+    mkdir -p "$T/custom" "$T/xdg/cac" "$HOMEDIR/.config/cac"
+    printf 'CAC_BACKEND=local\n' | tee "$T/custom/.env" "$T/xdg/cac/.env" "$(USER_ENV)" >/dev/null
+    local case_env got_install got_runtime
+    for case_env in "CAC_CONFIG_DIR=$T/custom" "XDG_CONFIG_HOME=$T/xdg" "NONE=1"; do
+        got_install=$(env -i PATH="$PATH" HOME="$HOMEDIR" "$case_env" bash -c \
+            'source "$1"; _install_runtime_env_path' _ "$INSTALL_LIB" 2>/dev/null)
+        got_runtime=$(env -i PATH="$PATH" HOME="$HOMEDIR" "$case_env" bash -c \
+            'source "$1/lib/config.sh"; config_find_env_path' _ "$REPO_DIR" 2>/dev/null)
+        assert_equals "$got_runtime" "$got_install" "lookup for $case_env" || return 1
+    done
+    grep -q 'system_config="/etc/cac/.env"' "$REPO_DIR/lib/config.sh" || { echo "runtime system path moved" >&2; return 1; }
+    grep -q '^SYS_CONFIG_DIR="/etc/cac"' "$REPO_DIR/install.sh" || { echo "installer system dir moved" >&2; return 1; }
+}
+
 run_test "160.1 user install, /etc/cac/.env present: accepted, exit 0, no user config" test_1_system_config_accepted
 run_test "160.2 no config anywhere, non-interactive: existing error" test_2_no_config_still_errors
 run_test "160.3 explicit --backend with system config: user config written" test_3_explicit_backend_writes_user_config
 run_test "160.4 CAC_BACKEND env with system config: user config written" test_4_env_backend_writes_user_config
 run_test "160.5 CAC_CONFIG_DIR/.env present: accepted" test_5_cac_config_dir_accepted
+run_test "160.6 --global pass: user config does not replace the system config" test_6_global_pass_unchanged
+run_test "160.7 unreadable system config: not accepted, says why" test_7_unreadable_system_config
+run_test "160.8 any explicit config value: system config not silently used" test_8_partial_explicit_values
+run_test "160.9 installer lookup matches config_find_env_path" test_9_lookup_matches_runtime
 
 framework_report
