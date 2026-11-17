@@ -12,7 +12,7 @@
 # cannot source this file. These suites pull single functions out with
 # `sed -n '/^name()/,/^}/p' install.sh` from a fixed list of names:
 #   tests/test_issue_77.sh   tests/test_issue_131.sh  tests/test_issue_132.sh
-#   tests/test_issue_140.sh  tests/test_update.sh
+#   tests/test_issue_140.sh  tests/test_issue_161.sh  tests/test_update.sh
 # A function keeps `name() {` at column 0 and its closing `}` alone at column 0.
 # A new helper called from an extracted function must be added to those lists.
 # Helpers duplicated in lib/update.sh are kept in step by 131.11, 132.8, 140.7.
@@ -888,7 +888,11 @@ print_config_summary() {
         return 0
     fi
     if [[ "$INSTALL_MODE" == "system-wide" ]]; then
-        echo "Configuration: $sys_env"
+        if [[ -f "$sys_env" ]]; then
+            echo "Configuration: $sys_env"
+        else
+            echo "Configuration: none found"
+        fi
         return 0
     fi
     local in_effect

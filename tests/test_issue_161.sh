@@ -44,10 +44,12 @@ make_layout() {
     done
 }
 
-# Print the summary line for a mode: user | global | all. Sets OUT.
+# Print the summary line for a mode: user | global | all. Extra args are
+# VAR=value pairs for the child's environment. Sets OUT.
 summary() {
+    local mode="$1"; shift
     OUT=$(
-        env -i PATH="$PATH" HOME="$HOMEDIR" bash -c '
+        env -i PATH="$PATH" HOME="$HOMEDIR" "$@" bash -c '
             source "$1"
             SYS_CONFIG_DIR="$2"
             case "$3" in
@@ -56,7 +58,7 @@ summary() {
                 *)      set_user_local_paths ;;
             esac
             print_config_summary
-        ' _ "$INSTALL_LIB" "$SYSDIR" "$1" 2>&1
+        ' _ "$INSTALL_LIB" "$SYSDIR" "$mode" 2>&1
     )
 }
 
@@ -96,12 +98,24 @@ test_5_cac_config_dir_in_effect() {
     make_layout t5 sys
     mkdir -p "$T/custom"
     printf 'CAC_BACKEND=local\n' > "$T/custom/.env"
-    OUT=$(
-        env -i PATH="$PATH" HOME="$HOMEDIR" CAC_CONFIG_DIR="$T/custom" bash -c '
-            source "$1"; SYS_CONFIG_DIR="$2"; set_user_local_paths; print_config_summary
-        ' _ "$INSTALL_LIB" "$SYSDIR" 2>&1
-    )
+    summary user "CAC_CONFIG_DIR=$T/custom"
     assert_equals "Configuration: $T/custom/.env" "$OUT" "summary line" || return 1
+}
+
+test_6_none_found() {
+    make_layout t6
+    summary user
+    assert_equals "Configuration: none found" "$OUT" "user-local" || return 1
+    summary global
+    assert_equals "Configuration: none found" "$OUT" "system-wide" || return 1
+}
+
+# do_install prints the line through print_config_summary, not a fixed path.
+test_7_do_install_uses_it() {
+    local body
+    body=$(sed -n '/^do_install()/,/^}/p' "$REPO_DIR/install.sh")
+    [[ "$body" == *print_config_summary* ]] || { echo "do_install does not call print_config_summary" >&2; return 1; }
+    [[ "$body" != *'echo "Configuration:'* ]] || { echo "do_install still prints a fixed Configuration line" >&2; return 1; }
 }
 
 run_test "161.1 user-local, system config only: names /etc/cac/.env (system)" test_1_user_mode_system_config_only
@@ -109,5 +123,7 @@ run_test "161.2 user-local with a user config: names the user config" test_2_use
 run_test "161.3 --all: lists only files that exist" test_3_all_mode_only_existing_files
 run_test "161.4 --global: system config, as before" test_4_global_mode_unchanged
 run_test "161.5 CAC_CONFIG_DIR/.env in effect: names it" test_5_cac_config_dir_in_effect
+run_test "161.6 no config at all: none found" test_6_none_found
+run_test "161.7 do_install prints the line through print_config_summary" test_7_do_install_uses_it
 
 framework_report
