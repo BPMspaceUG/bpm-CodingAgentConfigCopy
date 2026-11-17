@@ -501,6 +501,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #160 tests (user-local install accepts an existing runtime config such as /etc/cac/.env)
+    if $run_all || [[ "$filter" == "issue_160" ]] || [[ "$filter" == "160" ]]; then
+        if ! run_test_suite "Issue #160 Tests" "test_issue_160.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #138 tests (npm dual-install guard: env update escalates or refuses, env check flags)
     if $run_all || [[ "$filter" == "issue_138" ]] || [[ "$filter" == "138" ]]; then
         if ! run_test_suite "Issue #138 Tests" "test_issue_138.sh"; then

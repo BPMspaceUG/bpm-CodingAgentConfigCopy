@@ -21,6 +21,7 @@ CAC_GOKAPI_ALLOWED_DOWNLOADS="${CAC_GOKAPI_ALLOWED_DOWNLOADS:-0}"
 
 # Find .env file location following XDG conventions
 # Priority: 1) Explicit CAC_CONFIG_DIR, 2) XDG_CONFIG_HOME/cac, 3) ~/.config/cac, 4) /etc/cac
+# install.sh _install_runtime_env_path mirrors this order (Issue #160); keep in step.
 # Warns if user config overrides existing system config
 config_find_env_path() {
     local user_config=""

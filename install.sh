@@ -16,8 +16,9 @@
 # A function keeps `name() {` at column 0 and its closing `}` alone at column 0.
 # A new helper called from an extracted function must be added to those lists.
 # Helpers duplicated in lib/update.sh are kept in step by 131.11, 132.8, 140.7.
-# Other suites (not extracting by name): tests/test_issues_7_8_9.sh loads the
-# whole file minus `main` and `set -euo pipefail`; tests/test_install.sh holds
+# Other suites (not extracting by name): tests/test_issues_7_8_9.sh and
+# tests/test_issue_160.sh load the whole file minus `main` and
+# `set -euo pipefail`; tests/test_install.sh holds
 # hand-made copies marked "Copy of … from install.sh".
 # tests/test_issue_152.sh checks the by-name list against those sed ranges.
 
@@ -540,12 +541,47 @@ resolve_config_value() {
     fi
 }
 
+# The .env cac will load at runtime, if any (Issue #160). Same order as
+# config_find_env_path in lib/config.sh (keep the two in step):
+# CAC_CONFIG_DIR, XDG_CONFIG_HOME/cac (default ~/.config/cac), then the system
+# config (not on Windows Git Bash). Echoes the path; returns 1 if none exists.
+_install_runtime_env_path() {
+    if [[ -n "${CAC_CONFIG_DIR:-}" && -f "${CAC_CONFIG_DIR}/.env" ]]; then
+        echo "${CAC_CONFIG_DIR}/.env"
+        return 0
+    fi
+    local xdg_config="${XDG_CONFIG_HOME:-$HOME/.config}"
+    if [[ -f "${xdg_config}/cac/.env" ]]; then
+        echo "${xdg_config}/cac/.env"
+        return 0
+    fi
+    if [[ "$_INSTALL_PLATFORM" != "gitbash" && -f "${SYS_CONFIG_DIR}/.env" ]]; then
+        echo "${SYS_CONFIG_DIR}/.env"
+        return 0
+    fi
+    return 1
+}
+
 # Setup configuration — use CLI args, env vars, or prompt
 setup_config() {
     local env_file="${CONFIG_DIR}/.env"
 
     if [[ -f "$env_file" ]]; then
         info "Existing configuration found at: $env_file"
+        return 0
+    fi
+
+    # Issue #160: a config cac already loads at runtime (e.g. /etc/cac/.env for
+    # a user-local install) is enough, unless the caller explicitly asked for a
+    # config here (--backend or CAC_BACKEND), which then wins as before.
+    local runtime_env=""
+    if [[ -z "$(resolve_config_value "$ARG_BACKEND" "CAC_BACKEND" "")" ]] \
+       && runtime_env=$(_install_runtime_env_path); then
+        if [[ "$runtime_env" == "${SYS_CONFIG_DIR}/.env" ]]; then
+            info "Using system configuration: $runtime_env"
+        else
+            info "Using existing configuration: $runtime_env"
+        fi
         return 0
     fi
 
