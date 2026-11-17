@@ -129,7 +129,7 @@ sudo apt-get install zip unzip
 
 ### Linting
 
-The gate is the lint step in `.github/workflows/ci.yml`; these are its two invocations. Both must exit 0. Without `--severity=error`, shellcheck exits 1 on info-level notes in untouched code and floods the output.
+The gate is these two invocations; both must exit 0 before a commit. There is no GitHub CI (owner decision, #162): tests and lint run locally. The README "Linting" section carries the same two lines (guarded by 150.2). Without `--severity=error`, shellcheck exits 1 on info-level notes in untouched code and floods the output.
 
 ```bash
 shellcheck --severity=error bin/cac lib/*.sh install.sh uninstall.sh .claude/hooks/*.sh

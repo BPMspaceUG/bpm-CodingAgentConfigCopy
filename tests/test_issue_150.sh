@@ -8,10 +8,12 @@
 #
 # tests/.shellcheckrc disables SC2329 for everything under tests/. This guard
 # fails if that stops working (file removed, check renamed), and checks that
-# the documented lint command in CLAUDE.md is the one CI runs.
+# the two documented copies of the lint gate (CLAUDE.md and the README
+# "Linting" section) name the same commands. There is no GitHub CI (#162):
+# the gate is run locally before each commit.
 #
 # Seams: shellcheck's output on tests/*.sh; the lint lines of CLAUDE.md and
-# .github/workflows/ci.yml.
+# README.md.
 #
 # shellcheck disable=SC2317  # Test functions are invoked indirectly via run_test
 
@@ -42,12 +44,12 @@ _lint_lines() {
     grep -E '^[[:space:]]*shellcheck --severity' "$1" | sed -E 's/^[[:space:]]+//'
 }
 
-test_2_documented_lint_equals_ci() {
-    local doc ci
+test_2_documented_lint_copies_agree() {
+    local doc readme
     doc="$(_lint_lines "$REPO_DIR/CLAUDE.md")"
-    ci="$(_lint_lines "$REPO_DIR/.github/workflows/ci.yml")"
-    assert_equals "$ci" "$doc" "CLAUDE.md lint lines differ from ci.yml" || return 1
-    [[ -n "$ci" ]] || { echo "no shellcheck lines found in ci.yml" >&2; return 1; }
+    readme="$(_lint_lines "$REPO_DIR/README.md")"
+    [[ -n "$doc" ]] || { echo "no shellcheck lines found in CLAUDE.md" >&2; return 1; }
+    assert_equals "$doc" "$readme" "README.md lint lines differ from CLAUDE.md" || return 1
 }
 
 echo "========================================"
@@ -55,6 +57,6 @@ echo "Issue #150: lint is readable as pass/fail"
 echo "========================================"
 
 run_test_if "$HAS_SHELLCHECK" "150.1  shellcheck reports no SC2329 for tests/" test_1_no_sc2329_in_tests "shellcheck not installed"
-run_test "150.2  the documented lint command is the one CI runs" test_2_documented_lint_equals_ci
+run_test "150.2  CLAUDE.md and README.md document the same lint gate" test_2_documented_lint_copies_agree
 
 framework_report
