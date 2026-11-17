@@ -16,9 +16,9 @@
 # A function keeps `name() {` at column 0 and its closing `}` alone at column 0.
 # A new helper called from an extracted function must be added to those lists.
 # Helpers duplicated in lib/update.sh are kept in step by 131.11, 132.8, 140.7.
-# Other suites (not extracting by name): tests/test_issues_7_8_9.sh and
-# tests/test_issue_160.sh load the whole file minus `main` and
-# `set -euo pipefail`; tests/test_install.sh holds
+# Other suites (not extracting by name): tests/test_issues_7_8_9.sh,
+# tests/test_issue_160.sh and tests/test_issue_161.sh load the whole file
+# minus `main` and `set -euo pipefail`; tests/test_install.sh holds
 # hand-made copies marked "Copy of … from install.sh".
 # tests/test_issue_152.sh checks the by-name list against those sed ranges.
 
@@ -870,6 +870,37 @@ do_single_install() {
     setup_config
 }
 
+# Closing "Configuration:" line of the installer (Issue #161): names the file
+# cac will load, never a path that does not exist. User-local: the runtime
+# lookup (_install_runtime_env_path, as config_find_env_path). System-wide:
+# the system config, as before. --all: only the files that exist.
+print_config_summary() {
+    local user_env="${USER_CONFIG_DIR}/.env" sys_env="${SYS_CONFIG_DIR}/.env"
+    if [[ "$INSTALL_MODE_FLAG" == "all" ]]; then
+        local -a parts=()
+        [[ -f "$user_env" ]] && parts+=("$user_env (user)")
+        [[ -f "$sys_env" ]] && parts+=("$sys_env (system)")
+        case ${#parts[@]} in
+            0) echo "Configuration: none found" ;;
+            1) echo "Configuration: ${parts[0]}" ;;
+            *) echo "Configuration: ${parts[0]} and ${parts[1]}" ;;
+        esac
+        return 0
+    fi
+    if [[ "$INSTALL_MODE" == "system-wide" ]]; then
+        echo "Configuration: $sys_env"
+        return 0
+    fi
+    local in_effect
+    if ! in_effect=$(_install_runtime_env_path); then
+        echo "Configuration: none found"
+    elif [[ "$in_effect" == "$sys_env" ]]; then
+        echo "Configuration: $in_effect (system)"
+    else
+        echo "Configuration: $in_effect"
+    fi
+}
+
 # Closing usage summary of the installer (also shown after `cac update`, which
 # re-runs this script). Issue #132: names the AI-tool commands; no tool table,
 # a fresh install usually has no tools yet.
@@ -958,11 +989,7 @@ do_install() {
     echo ""
     print_usage_summary
     echo ""
-    if [[ "$INSTALL_MODE_FLAG" == "all" ]]; then
-        echo "Configuration: ${USER_CONFIG_DIR}/.env (user) and ${SYS_CONFIG_DIR}/.env (system)"
-    else
-        echo "Configuration: ${CONFIG_DIR}/.env"
-    fi
+    print_config_summary
     echo ""
 
     # Check for CAC_ENV_INSTALL env var (pipe mode AI tool install)
