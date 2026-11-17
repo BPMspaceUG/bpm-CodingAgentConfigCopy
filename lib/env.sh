@@ -569,6 +569,9 @@ _env_npm_report_update() {
     else
         echo "$display_name is already at latest version ($new_version)"
     fi
+    if [[ "$scope" == "global" || "$scope" == "all" ]]; then
+        _env_self_updater_note "$tool"      # Issue #130
+    fi
     return $ENV_EXIT_SUCCESS
 }
 
@@ -627,6 +630,26 @@ _env_global_install_path() {
 # Usage: _env_global_update_remediation <tool>
 _env_global_update_remediation() {
     echo "Remediation: run 'sudo cac env update $1 --global' to update the system-wide install, or remove the global install first if you really want a per-user version."
+}
+
+# Tools that ship an in-app updater running `npm install -g <package>` as the
+# invoking user (Issue #130). Against a root-owned system-wide install that
+# call fails with EACCES, and cac cannot intercept it.
+# Usage: _env_has_npm_self_updater <tool>
+_env_has_npm_self_updater() {
+    case "$1" in
+        codex) return 0 ;;
+        *)     return 1 ;;
+    esac
+}
+
+# One-line note printed after a successful system-wide install or update of
+# a tool with an in-app npm updater (Issue #130).
+# Usage: _env_self_updater_note <tool>
+_env_self_updater_note() {
+    local tool="$1"
+    _env_has_npm_self_updater "$tool" || return 0
+    echo "Note: $(env_get_display_name "$tool") is installed system-wide. Update it with 'sudo cac env update $tool --global'; its own in-app update prompt fails with EACCES for non-root users, so decline it."
 }
 
 # The Issue #71 refusal, shared by the curl and npm branches of env_update_tool
@@ -1051,6 +1074,9 @@ env_install_tool() {
         local version
         version=$(PATH="$check_path" env_get_version "$tool")
         utils_success "$display_name installed successfully (version: $version)"
+        if [[ "$scope" == "global" || "$scope" == "all" ]]; then
+            _env_self_updater_note "$tool"
+        fi
 
         # Post-install: configure Claude Code settings.json (Issues #39, #40)
         if [[ "$tool" == "claude" ]]; then
@@ -2744,6 +2770,35 @@ _env_chk_dual_install() {
     return 1
 }
 
+# Issue #130: WARN finding, not a check. A tool with an in-app npm updater
+# whose package directory the current (non-root) user cannot write: the
+# in-app "Update now" will fail with EACCES. Sets _ENV_SELF_UPDATE_NOTE.
+# Returns 0 when the warning applies.
+# Usage: _env_self_update_blocked <binary_path> <tool>
+_ENV_SELF_UPDATE_NOTE=""
+_env_self_update_blocked() {
+    local binary_path="$1" tool="$2"
+    _ENV_SELF_UPDATE_NOTE=""
+    [[ -n "$binary_path" ]] || return 1
+    _env_has_npm_self_updater "$tool" || return 1
+    _env_is_root && return 1
+    local package="${_ENV_NPM_PACKAGES[$tool]:-}"
+    [[ -n "$package" ]] || return 1
+
+    local real pkgdir
+    real=$(readlink -f "$binary_path" 2>/dev/null || echo "$binary_path")
+    case "$real" in
+        */lib/node_modules/"$package"/*) pkgdir="${real%%/lib/node_modules/"$package"/*}/lib/node_modules/$package" ;;
+        *) return 1 ;;
+    esac
+    # npm renames the package dir inside its parent: both must be writable.
+    if [[ -w "$pkgdir" ]] && [[ -w "$(dirname "$pkgdir")" ]]; then
+        return 1
+    fi
+    _ENV_SELF_UPDATE_NOTE="$pkgdir is not writable for $(whoami 2>/dev/null || echo "this user"); the in-app update fails with EACCES. Update with 'sudo cac env update $tool --global'."
+    return 0
+}
+
 # List of all check names in order
 _ENV_CHECK_NAMES=(
     binary_location
@@ -2813,8 +2868,10 @@ _env_check_one_tool() {
     # something repair may touch. A WARN is not counted in passed/total and
     # does not fail the tool; it only stops the result reading as a clean PASS.
     _ENV_CHECK_WARNED=0
+    local warn_summary=""
     if [[ -n "$binary_path" ]] && _env_not_managed "$tool"; then
         _ENV_CHECK_WARNED=1
+        warn_summary="not managed by cac"
         local note
         note=$(_env_not_managed_note)
         if [[ "$parseable" == "true" ]]; then
@@ -2824,9 +2881,20 @@ _env_check_one_tool() {
         fi
     fi
 
+    # Issue #130: same WARN tier, same reason for living outside the list.
+    if _env_self_update_blocked "$binary_path" "$tool"; then
+        _ENV_CHECK_WARNED=1
+        warn_summary="${warn_summary:+$warn_summary; }in-app updater cannot write the install"
+        if [[ "$parseable" == "true" ]]; then
+            printf "%s\t%s\twarn\t%s\n" "$tool" "self_update" "$_ENV_SELF_UPDATE_NOTE"
+        else
+            echo "  [WARN] self_update: $_ENV_SELF_UPDATE_NOTE"
+        fi
+    fi
+
     if [[ "$parseable" == "false" ]]; then
         if [[ $failed_count -eq 0 && $_ENV_CHECK_WARNED -eq 1 ]]; then
-            echo "  ⚠️  ${display_name}: WARN (${passed}/${total} passed) — not managed by cac"
+            echo "  ⚠️  ${display_name}: WARN (${passed}/${total} passed) — ${warn_summary}"
         elif [[ $failed_count -eq 0 ]]; then
             echo "  ✅ ${display_name}: PASS (${passed}/${total})"
         else

@@ -320,6 +320,8 @@ cac env update codex        # Update specific tool
 | `--yes`, `-y` | Skip confirmation prompts (for curl-based installers) |
 | `--tmux` | Set Claude Code `teammateMode: "tmux"` in `settings.json` (install only) |
 
+**Codex CLI installed with `--global`:** update it with `sudo cac env update codex --global` (or plain `cac env update codex`, which escalates via sudo). Decline Codex's own in-app "Update now" prompt: it runs `npm install -g @openai/codex` as your user against the root-owned system-wide install and fails with `EACCES`. `cac env check codex` shows this as a `self_update` warning for users who cannot write the install.
+
 The `--tmux` flag configures Claude Code to display agent teammates as tmux panes instead of background processes. Requires tmux to be installed; logs a warning and skips `teammateMode` if tmux is missing.
 
 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` is set in `settings.json` during Claude Code install (requires `python3` for JSON merge; logs a warning if unavailable).

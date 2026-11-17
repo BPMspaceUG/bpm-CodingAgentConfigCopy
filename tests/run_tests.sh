@@ -493,6 +493,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #130 tests (Codex in-app updater vs system-wide install: env check warning, install/update note)
+    if $run_all || [[ "$filter" == "issue_130" ]] || [[ "$filter" == "130" ]]; then
+        if ! run_test_suite "Issue #130 Tests" "test_issue_130.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #138 tests (npm dual-install guard: env update escalates or refuses, env check flags)
     if $run_all || [[ "$filter" == "issue_138" ]] || [[ "$filter" == "138" ]]; then
         if ! run_test_suite "Issue #138 Tests" "test_issue_138.sh"; then
