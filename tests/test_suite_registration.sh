@@ -39,7 +39,7 @@ framework_init
 # ============================================================================
 # Files that are intentionally NOT registered, each with its reason and, where
 # one exists, the issue tracking its return. Printed on every run so an expired
-# entry is visible in every CI log rather than quietly becoming permanent.
+# entry is visible in every test run rather than quietly becoming permanent.
 #
 # Format: "<filename>|<reason>"
 EXCEPTIONS=(

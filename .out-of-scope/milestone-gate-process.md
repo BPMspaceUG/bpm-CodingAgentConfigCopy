@@ -22,9 +22,9 @@ that no longer exists, or reports a state (`planned`, `test-approved`) that no
 longer has a meaning. Reviving any of them would mean reviving the process.
 
 What remains true and is kept: commits name their issue, every suite is
-registered and guarded (`tests/test_suite_registration.sh`), CI runs the suite
-and shellcheck on every push (`.github/workflows/ci.yml`), and an issue closes
-only with evidence in its closing comment.
+registered and guarded (`tests/test_suite_registration.sh`), the suite and
+shellcheck run locally before every commit (there is no GitHub CI since #162),
+and an issue closes only with evidence in its closing comment.
 
 ## Prior requests
 

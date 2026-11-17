@@ -1,6 +1,5 @@
 # cac - Coding Agent Config
 
-
 A production-grade CLI tool for managing versioned ZIP-based configuration bundles for AI coding assistants. Supports centralized storage with Gokapi backend or local filesystem.
 
 ## Supported Tools
