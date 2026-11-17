@@ -16,7 +16,7 @@
 #
 # All curl/bash/network invocations are stubbed — fully network-free.
 #
-# Test inventory (16 cases):
+# Test inventory (18 cases):
 #   73.1    execute-stage embedded curl:23 -> "installer script: write failure"
 #   73.2    download-stage curl:6           -> "network/DNS"
 #   73.3    download-stage curl:22          -> "HTTP error"
@@ -33,6 +33,8 @@
 #   73.11a  cleanup on log-mktemp failure   -> installer tempfile removed
 #   73.11b  cleanup across two back-to-back -> no leak between invocations
 #   73.11c  cleanup on bash-execution fail  -> both tempfiles removed (F3)
+#   73.12   suite TMPDIR scoped (#121)      -> lib/env.sh tempfiles land in ROOT_TMP
+#   73.13   leak scan after scoping (#121)  -> planted leftover in scoped dir counted
 
 set -uo pipefail
 
@@ -87,6 +89,21 @@ header() {
 # Single root tmp tree, removed on EXIT.
 ROOT_TMP=$(mktemp -d -t cac-test-73.XXXXXXXXXX)
 trap '_teardown' EXIT
+
+# Issue #121: scope every temp file this suite creates - and every one
+# lib/env.sh creates on its behalf - into ROOT_TMP. lib/env.sh allocates its
+# cac-env-update-* files with `mktemp -t`, which honours TMPDIR, so no lib/
+# change is needed. The leak scans read ${TMPDIR:-/tmp} and therefore look
+# here too, not at the global namespace other processes share.
+#
+# This must stay AFTER ROOT_TMP exists and BEFORE lib/env.sh is sourced or any
+# case runs. If ROOT_TMP were empty here, "${ROOT_TMP}/tmp" would expand to
+# /tmp - the export would SILENTLY keep the suite in the global namespace, not
+# fail loudly. Cases run in subshells, so none can leak its own TMPDIR back.
+# 73.12 guards this export.
+export TMPDIR="${ROOT_TMP}/tmp"
+mkdir -p "$TMPDIR"
+chmod 700 "$TMPDIR"
 
 RESTORE_PERMS=()
 _teardown() {
@@ -1280,6 +1297,91 @@ EOF
 }
 
 # ----------------------------------------------------------------------------
+# 73.12 — suite TMPDIR is scoped into ROOT_TMP (Issue #121)
+# ----------------------------------------------------------------------------
+# The export near ROOT_TMP keeps every cac-env-update-* artefact - and every
+# leak scan above - inside this suite's sandbox. Deleting that export would
+# put the suite back into global /tmp with every other case still green, so
+# this case guards it. It asserts on the path the real lib/env.sh mktemp call
+# returned (recorded by the curl stub), so it cannot pass vacuously if the lib
+# ever stops honouring TMPDIR.
+
+test_73_12_suite_tmpdir_is_scoped() {
+    local name="73.12"
+    local T
+    T=$(_scratch "$name")
+    local TOOL="continuous-claude"
+
+    if [[ "${TMPDIR:-}" != "${ROOT_TMP}/"* ]]; then
+        fail "$name suite TMPDIR is scoped" "TMPDIR '${TMPDIR:-<unset>}' is not inside ROOT_TMP '$ROOT_TMP'"
+        return
+    fi
+
+    (
+        mkdir -p "$T/bin"
+        cat > "$T/bin/curl" <<EOF
+#!/usr/bin/env bash
+out=""
+while [[ \$# -gt 0 ]]; do
+    case "\$1" in
+        -o) out="\$2"; shift 2 ;;
+        *)  shift ;;
+    esac
+done
+printf '%s\n' "\$out" > "$T/installer-path"
+if [[ -n "\$out" ]]; then
+    printf '#!/usr/bin/env bash\nexit 0\n' > "\$out"
+fi
+exit 0
+EOF
+        chmod +x "$T/bin/curl"
+        export PATH="$T/bin:$PATH"
+        _env_curl_update_with_capture "$TOOL" "https://example/install.sh" "Continuous Claude" \
+            >"$T/stdout" 2>"$T/stderr"
+    )
+
+    local seen
+    seen=$(cat "$T/installer-path" 2>/dev/null || echo "")
+    if [[ -z "$seen" ]]; then
+        fail "$name suite TMPDIR is scoped" "curl stub never saw an installer path"
+        return
+    fi
+    if [[ "$seen" != "${TMPDIR}/cac-env-update-${TOOL}-installer-"* ]]; then
+        fail "$name suite TMPDIR is scoped" "lib/env.sh installer tempfile escaped the sandbox: $seen"
+        return
+    fi
+    pass "$name suite TMPDIR is scoped: lib/env.sh tempfiles land in ROOT_TMP"
+}
+
+# ----------------------------------------------------------------------------
+# 73.13 — leak scan still sees a leftover inside the scoped TMPDIR (Issue #121)
+# ----------------------------------------------------------------------------
+# Moving TMPDIR is exactly the change that could blind a leak test to its own
+# leak. Plant one installer and one log leftover where lib/env.sh would put
+# them and require the scan to count both.
+
+test_73_13_leak_scan_sees_scoped_leftover() {
+    local name="73.13"
+    local TOOL="continuous-claude"
+    local tmp="${TMPDIR:-/tmp}"
+    local planted_installer="${tmp}/cac-env-update-${TOOL}-installer-PLANTED.sh"
+    local planted_log="${tmp}/cac-env-update-${TOOL}-PLANTED.log"
+
+    local before seen
+    before=$(_count_leftover_tempfiles "$TOOL")
+    : > "$planted_installer"
+    : > "$planted_log"
+    seen=$(( $(_count_leftover_tempfiles "$TOOL") - before ))
+    rm -f "$planted_installer" "$planted_log"
+
+    if [[ "$seen" -ne 2 ]]; then
+        fail "$name leak scan sees scoped leftover" "planted 2 leftovers in $tmp, scan counted $seen more"
+        return
+    fi
+    pass "$name leak scan still counts leftovers inside the scoped TMPDIR"
+}
+
+# ----------------------------------------------------------------------------
 # Runner
 # ----------------------------------------------------------------------------
 
@@ -1301,6 +1403,8 @@ test_73_10_log_tail_truncation
 test_73_11a_cleanup_on_log_mktemp_fail
 test_73_11b_back_to_back_cleanup
 test_73_11c_cleanup_on_bash_failure
+test_73_12_suite_tmpdir_is_scoped
+test_73_13_leak_scan_sees_scoped_leftover
 
 echo ""
 echo "=========================================="
