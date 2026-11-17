@@ -485,6 +485,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #129 tests (sudo env update without a scope flag never writes an npm tool into root's home)
+    if $run_all || [[ "$filter" == "issue_129" ]] || [[ "$filter" == "129" ]]; then
+        if ! run_test_suite "Issue #129 Tests" "test_issue_129.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #138 tests (npm dual-install guard: env update escalates or refuses, env check flags)
     if $run_all || [[ "$filter" == "issue_138" ]] || [[ "$filter" == "138" ]]; then
         if ! run_test_suite "Issue #138 Tests" "test_issue_138.sh"; then

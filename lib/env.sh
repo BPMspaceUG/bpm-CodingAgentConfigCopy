@@ -1962,6 +1962,27 @@ env_update_tool() {
     return $?
 }
 
+# Scope for one tool when a ROOT caller gave no scope flag (Issue #129).
+# The parser defaults to `user`, and under sudo HOME=/root, so an npm update
+# ran `npm install -g --prefix /root/.local ...`: an orphaned copy in root's
+# home, reported as updated, while the system-wide copy on PATH stayed old.
+# Design (a): an npm tool with a system-wide install resolves to `global`, the
+# copy a non-root caller's #79 escalation also ends at. Everything else keeps
+# the given scope: curl tools have their own root-context guards (#94/#95,
+# #133), and without a system-wide install there is nothing to promote to.
+# Usage: _env_root_implicit_scope <tool> <scope>
+_env_root_implicit_scope() {
+    local tool="$1" scope="$2"
+    if [[ "$scope" == "user" ]] \
+       && [[ "$(env_get_install_type "$tool" 2>/dev/null)" == "npm" ]] \
+       && _env_global_install_exists "$tool"; then
+        echo "  $(env_get_display_name "$tool") has a system-wide install; updating it (--global), not root's home." >&2
+        echo "global"
+        return 0
+    fi
+    echo "$scope"
+}
+
 # Install all core tools
 # Usage: env_install_all <scope> [flags...]
 # Returns: 0 all succeeded, 1 partial, 2 all failed
@@ -2021,6 +2042,8 @@ env_install_all() {
 # Returns: 0 all succeeded, 1 partial, 2 all failed
 env_update_all() {
     local scope="${1:-user}"
+    # Issue #129: "implicit" when a root caller gave no scope flag.
+    local scope_origin="${2:-}"
     local success=0
     local failed=0
     local skipped=0
@@ -2051,8 +2074,11 @@ env_update_all() {
         # Issue #73: clear stash file so a previous tool's cause doesn't leak.
         [[ -n "$_cause_file" ]] && : > "$_cause_file"
 
-        local _rc=0
-        ENV_DIAG_CAUSE_FILE="$_cause_file" env_update_tool "$tool" "$scope" || _rc=$?
+        local _rc=0 _tool_scope="$scope"
+        if [[ "$scope_origin" == "implicit" ]]; then
+            _tool_scope=$(_env_root_implicit_scope "$tool" "$scope")
+        fi
+        ENV_DIAG_CAUSE_FILE="$_cause_file" env_update_tool "$tool" "$_tool_scope" || _rc=$?
         if [[ $_rc -eq 0 ]]; then
             ((success++)) || true
         elif [[ $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
@@ -3980,9 +4006,16 @@ env_cmd_update() {
         return $?
     fi
 
+    # Issue #129: a root caller without a scope flag. Each npm tool with a
+    # system-wide install is updated there, never into root's home.
+    local scope_origin=""
+    if [[ "$ENV_PARSED_SCOPE_EXPLICIT" != "true" ]] && _env_is_root; then
+        scope_origin="implicit"
+    fi
+
     # No tools specified: update all installed
     if [[ ${#ENV_PARSED_TOOLS[@]} -eq 0 ]]; then
-        env_update_all "$scope"
+        env_update_all "$scope" "$scope_origin"
         return $?
     fi
 
@@ -3992,8 +4025,11 @@ env_cmd_update() {
     local not_managed=0
 
     for tool in "${ENV_PARSED_TOOLS[@]}"; do
-        local _rc=0
-        env_update_tool "$tool" "$scope" || _rc=$?
+        local _rc=0 _tool_scope="$scope"
+        if [[ "$scope_origin" == "implicit" ]] && env_validate_tool "$tool"; then
+            _tool_scope=$(_env_root_implicit_scope "$tool" "$scope")
+        fi
+        env_update_tool "$tool" "$_tool_scope" || _rc=$?
         if [[ $_rc -eq 0 ]]; then
             ((success++)) || true
         elif [[ $_rc -eq $ENV_EXIT_NOT_MANAGED ]]; then
