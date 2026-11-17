@@ -87,20 +87,25 @@ header() {
 }
 
 # Single root tmp tree, removed on EXIT.
-ROOT_TMP=$(mktemp -d -t cac-test-73.XXXXXXXXXX)
+ROOT_TMP=$(mktemp -d -t cac-test-73.XXXXXXXXXX) || ROOT_TMP=""
+if [[ -z "$ROOT_TMP" || ! -d "$ROOT_TMP" ]]; then
+    echo "FATAL: could not create the suite sandbox; refusing to run in global /tmp" >&2
+    exit 1
+fi
 trap '_teardown' EXIT
 
 # Issue #121: scope every temp file this suite creates - and every one
 # lib/env.sh creates on its behalf - into ROOT_TMP. lib/env.sh allocates its
 # cac-env-update-* files with `mktemp -t`, which honours TMPDIR, so no lib/
-# change is needed. The leak scans read ${TMPDIR:-/tmp} and therefore look
-# here too, not at the global namespace other processes share.
+# change is needed. The leak scans go through _leftover_dir, which reads
+# TMPDIR, so they look here too, not at the global namespace other processes
+# share.
 #
 # This must stay AFTER ROOT_TMP exists and BEFORE lib/env.sh is sourced or any
-# case runs. If ROOT_TMP were empty here, "${ROOT_TMP}/tmp" would expand to
-# /tmp - the export would SILENTLY keep the suite in the global namespace, not
-# fail loudly. Cases run in subshells, so none can leak its own TMPDIR back.
-# 73.12 guards this export.
+# case runs. With ROOT_TMP set but empty, "${ROOT_TMP}/tmp" would expand to
+# /tmp and the export would SILENTLY keep the suite in the global namespace -
+# hence the non-empty check above. Cases run in subshells, so none can leak
+# its own TMPDIR back. 73.12 guards this export.
 export TMPDIR="${ROOT_TMP}/tmp"
 mkdir -p "$TMPDIR"
 chmod 700 "$TMPDIR"
@@ -126,12 +131,23 @@ _scratch() {
     echo "$d"
 }
 
-# Count how many cac-env-update-* files match a tool prefix in TMPDIR.
+# The one directory every leak scan looks in: where lib/env.sh's mktemp -t
+# puts its tempfiles. 73.13 plants into this same directory, so the scan and
+# the plant cannot drift apart.
+_leftover_dir() {
+    echo "${TMPDIR:-/tmp}"
+}
+
+# Count the entries in _leftover_dir matching a glob. Prints the count.
+_count_leftovers() {
+    local glob="$1"
+    find "$(_leftover_dir)" -maxdepth 1 -name "$glob" 2>/dev/null | wc -l
+}
+
+# Count how many cac-env-update-* files match a tool prefix.
 # Returns the count (0 if none).
 _count_leftover_tempfiles() {
-    local tool="$1"
-    local tmp="${TMPDIR:-/tmp}"
-    find "$tmp" -maxdepth 1 -name "cac-env-update-${tool}-*" 2>/dev/null | wc -l
+    _count_leftovers "cac-env-update-${1}-*"
 }
 
 # ----------------------------------------------------------------------------
@@ -1281,10 +1297,9 @@ EOF
         return
     fi
     # Both an installer tempfile and a log tempfile were created. Both must be gone.
-    local tmp="${TMPDIR:-/tmp}"
     local installer_left log_left
-    installer_left=$(find "$tmp" -maxdepth 1 -name "cac-env-update-${TOOL}-installer-*" 2>/dev/null | wc -l)
-    log_left=$(find "$tmp" -maxdepth 1 -name "cac-env-update-${TOOL}-*.log" 2>/dev/null | wc -l)
+    installer_left=$(_count_leftovers "cac-env-update-${TOOL}-installer-*")
+    log_left=$(_count_leftovers "cac-env-update-${TOOL}-*.log")
     if [[ "$installer_left" -ne 0 ]]; then
         fail "$name cleanup on bash-execution failure" "$installer_left installer tempfile(s) leaked"
         return
@@ -1312,8 +1327,10 @@ test_73_12_suite_tmpdir_is_scoped() {
     T=$(_scratch "$name")
     local TOOL="continuous-claude"
 
-    if [[ "${TMPDIR:-}" != "${ROOT_TMP}/"* ]]; then
-        fail "$name suite TMPDIR is scoped" "TMPDIR '${TMPDIR:-<unset>}' is not inside ROOT_TMP '$ROOT_TMP'"
+    local label="$name suite TMPDIR is scoped"
+    # An empty ROOT_TMP would turn the pattern below into "/"* and pass anything.
+    if [[ -z "$ROOT_TMP" || "${TMPDIR:-}" != "${ROOT_TMP}/"* ]]; then
+        fail "$label" "TMPDIR '${TMPDIR:-<unset>}' is not inside ROOT_TMP '$ROOT_TMP'"
         return
     fi
 
@@ -1340,45 +1357,62 @@ EOF
             >"$T/stdout" 2>"$T/stderr"
     )
 
-    local seen
-    seen=$(cat "$T/installer-path" 2>/dev/null || echo "")
-    if [[ -z "$seen" ]]; then
-        fail "$name suite TMPDIR is scoped" "curl stub never saw an installer path"
+    local installer_path
+    installer_path=$(cat "$T/installer-path" 2>/dev/null || echo "")
+    if [[ -z "$installer_path" ]]; then
+        fail "$label" "curl stub never saw an installer path"
         return
     fi
-    if [[ "$seen" != "${TMPDIR}/cac-env-update-${TOOL}-installer-"* ]]; then
-        fail "$name suite TMPDIR is scoped" "lib/env.sh installer tempfile escaped the sandbox: $seen"
+    if [[ "$installer_path" != "${TMPDIR}/cac-env-update-${TOOL}-installer-"* ]]; then
+        fail "$label" "lib/env.sh installer tempfile escaped the sandbox: $installer_path"
         return
     fi
     pass "$name suite TMPDIR is scoped: lib/env.sh tempfiles land in ROOT_TMP"
 }
 
 # ----------------------------------------------------------------------------
-# 73.13 — leak scan still sees a leftover inside the scoped TMPDIR (Issue #121)
+# 73.13 — leak scans still see a leftover inside the scoped TMPDIR (Issue #121)
 # ----------------------------------------------------------------------------
 # Moving TMPDIR is exactly the change that could blind a leak test to its own
 # leak. Plant one installer and one log leftover where lib/env.sh would put
-# them and require the scan to count both.
+# them and require every scan shape the cases use to count them. Counts are
+# deltas, so leftovers from an earlier case do not skew them. Refuses to plant
+# when the scope is missing, so it never writes into global /tmp.
 
 test_73_13_leak_scan_sees_scoped_leftover() {
     local name="73.13"
+    local label="$name leak scan sees scoped leftover"
     local TOOL="continuous-claude"
-    local tmp="${TMPDIR:-/tmp}"
-    local planted_installer="${tmp}/cac-env-update-${TOOL}-installer-PLANTED.sh"
-    local planted_log="${tmp}/cac-env-update-${TOOL}-PLANTED.log"
-
-    local before seen
-    before=$(_count_leftover_tempfiles "$TOOL")
-    : > "$planted_installer"
-    : > "$planted_log"
-    seen=$(( $(_count_leftover_tempfiles "$TOOL") - before ))
-    rm -f "$planted_installer" "$planted_log"
-
-    if [[ "$seen" -ne 2 ]]; then
-        fail "$name leak scan sees scoped leftover" "planted 2 leftovers in $tmp, scan counted $seen more"
+    local dir
+    dir=$(_leftover_dir)
+    if [[ -z "$ROOT_TMP" || "$dir" != "${ROOT_TMP}/"* ]]; then
+        fail "$label" "scan dir '$dir' is not inside ROOT_TMP; not planting into it (see 73.12)"
         return
     fi
-    pass "$name leak scan still counts leftovers inside the scoped TMPDIR"
+
+    local tool_glob="cac-env-update-${TOOL}-*"
+    local installer_glob="cac-env-update-${TOOL}-installer-*"
+    local log_glob="cac-env-update-${TOOL}-*.log"
+    local tool_before installer_before log_before
+    tool_before=$(_count_leftovers "$tool_glob")
+    installer_before=$(_count_leftovers "$installer_glob")
+    log_before=$(_count_leftovers "$log_glob")
+
+    local planted_installer="${dir}/cac-env-update-${TOOL}-installer-PLANTED.sh"
+    local planted_log="${dir}/cac-env-update-${TOOL}-PLANTED.log"
+    : > "$planted_installer"
+    : > "$planted_log"
+    local new_tool new_installer new_log
+    new_tool=$(( $(_count_leftover_tempfiles "$TOOL") - tool_before ))
+    new_installer=$(( $(_count_leftovers "$installer_glob") - installer_before ))
+    new_log=$(( $(_count_leftovers "$log_glob") - log_before ))
+    rm -f "$planted_installer" "$planted_log"
+
+    if [[ "$new_tool" -ne 2 || "$new_installer" -ne 1 || "$new_log" -ne 1 ]]; then
+        fail "$label" "planted 1 installer + 1 log in $dir; scans counted tool=$new_tool installer=$new_installer log=$new_log (want 2/1/1)"
+        return
+    fi
+    pass "$name leak scans still count leftovers inside the scoped TMPDIR"
 }
 
 # ----------------------------------------------------------------------------
