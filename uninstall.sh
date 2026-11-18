@@ -262,14 +262,19 @@ remove_root_residue() {
         return 0
     fi
 
+    # The count comes from env_remove_root_residue itself (a marker line the
+    # subshell prints last), not from the wording of its report.
     local out
     out=$(
         set +eu
         # shellcheck source=lib/env.sh
         source "$lib/env.sh" && _uninstall_residue_seams && env_remove_root_residue true
+        echo "__CAC_RESIDUE_REMOVED=${_ENV_RESIDUE_REMOVED:-0}"
     ) 2>&1 || true
+    _RESIDUE_REMOVED=$(printf '%s\n' "$out" | sed -n 's/^__CAC_RESIDUE_REMOVED=\([0-9][0-9]*\)$/\1/p' | tail -1)
+    [[ -n "$_RESIDUE_REMOVED" ]] || _RESIDUE_REMOVED=0
+    out=$(printf '%s\n' "$out" | grep -v '^__CAC_RESIDUE_REMOVED=')
     [[ -n "$out" ]] && printf '%s\n' "$out"
-    _RESIDUE_REMOVED=$(printf '%s\n' "$out" | grep -c '^  Removed: ') || _RESIDUE_REMOVED=0
 }
 
 # Uninstall from system-wide location

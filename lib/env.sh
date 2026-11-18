@@ -3539,33 +3539,44 @@ _env_repair_one_tool() {
 # included; the one limit is that no tool may stop working.
 #
 # Every candidate is proved before it goes: its paths move into a quarantine
-# dir inside root's home, the affected binaries are probed (`--version`) for
-# root and for a non-root user, and if a probe that passed before now fails,
-# everything moves back and the run says why. Only known names are touched;
-# unrelated files in root's ~/.local/bin (ast-grep, typos, ...) never are.
+# inside root's home (one sub-dir per candidate, each entry with an .origin
+# file naming where it came from), the affected binary is probed
+# (`--version`) for root and for a non-root user, and if a probe that passed
+# before fails now, everything moves back and the run says why. A restore
+# that fails leaves the quarantine on disk; it is never deleted. An
+# interrupted run (Ctrl-C, lost ssh) restores on the signal, and the next run
+# moves back whatever an earlier run left in a quarantine.
+#
+# Only known names are touched; unrelated files in root's ~/.local/bin
+# (ast-grep, typos, ...) never are. Every rm target carries a ${var:?} guard.
 #
 # Seams: _env_is_root, _env_root_home, _ENV_SYSTEM_BIN_PATH, and the two probes
 # _env_residue_works_as_root / _env_residue_works_as_user.
 
 # Data paths (relative to root's home) that belong to a tool's root-home copy,
-# besides the launcher in .local/bin. npm tools are derived from
-# _ENV_NPM_PACKAGES.
+# besides the launcher in .local/bin.
 _env_residue_data_paths() {
     case "$1" in
         claude)  echo ".local/share/claude" ;;
-        mistral) echo ".local/share/uv/tools/mistral-vibe" ;;
+        mistral) echo ".local/share/uv/tools/mistral-vibe"; echo ".local/bin/vibe-acp" ;;
         codex|gemini|playwright)
             [[ -n "${_ENV_NPM_PACKAGES[$1]:-}" ]] && echo ".local/lib/node_modules/${_ENV_NPM_PACKAGES[$1]}"
             ;;
     esac
 }
 
-# Run "$@" with a 20 s limit where `timeout` exists (not on stock macOS). A
-# missing timeout must not turn every probe into a failure: a probe that never
-# passes would let the proof remove a copy root still needs.
+# The system-wide bin dirs, one per line.
+_env_residue_sys_dirs() {
+    tr ':' '\n' <<< "$_ENV_SYSTEM_BIN_PATH" | grep -v '^$'
+}
+
+# Run "$@" with a 20 s limit (timeout or gtimeout, via platform.sh). Without
+# either it runs unlimited: a probe that can never pass would let the proof
+# remove a copy root still needs.
 _env_residue_run() {
-    if command -v timeout >/dev/null 2>&1; then
-        timeout 20 "$@"
+    local t
+    if t=$(platform_get_timeout_cmd 2>/dev/null); then
+        "$t" 20 "$@"
     else
         "$@"
     fi
@@ -3580,136 +3591,201 @@ _env_residue_works_as_root() {
     _env_residue_run "$p" --version >/dev/null 2>&1 </dev/null
 }
 
-# Does <binary> run (`--version`) for a non-root user (nobody) with only the
-# system-wide bin dirs on PATH? Returns 2 when no way to run as another user
-# exists (runuser, sudo): the caller treats that as "cannot prove", not "fails".
+# Does <binary> run (`--version`) for a non-root user with only the system-wide
+# bin dirs on PATH? The user is the one who ran sudo ($SUDO_USER) with their
+# home, else nobody. Returns 2 when no way to run as another user exists
+# (runuser, sudo): the caller treats that as "cannot prove", not "fails".
 _env_residue_works_as_user() {
-    local binary="$1"
+    local binary="$1" user="nobody" home=""
+    if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]] && id "$SUDO_USER" >/dev/null 2>&1; then
+        user="$SUDO_USER"
+    fi
+    home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6) || home=""
+    [[ -n "$home" && -d "$home" ]] || home="/nonexistent"
     local -a as_user
     if command -v runuser >/dev/null 2>&1; then
-        as_user=(runuser -u nobody --)
+        as_user=(runuser -u "$user" --)
     elif command -v sudo >/dev/null 2>&1; then
-        as_user=(sudo -n -u nobody --)
+        as_user=(sudo -n -u "$user" --)
     else
         return 2
     fi
-    (cd / && _env_residue_run "${as_user[@]}" env -i PATH="$_ENV_SYSTEM_BIN_PATH" HOME=/nonexistent \
+    (cd / && _env_residue_run "${as_user[@]}" env -i PATH="$_ENV_SYSTEM_BIN_PATH" HOME="$home" \
         sh -c 'exec "$0" --version' "$binary" >/dev/null 2>&1 </dev/null)
 }
 
-# Probe every binary in <binaries...> for root and user. Prints one word per
-# probe ("ok", "fail" or "unknown"), in order root/user per binary.
-_env_residue_probe_all() {
-    local b rc
-    for b in "$@"; do
-        if _env_residue_works_as_root "$b"; then echo ok; else echo fail; fi
-        rc=0
-        _env_residue_works_as_user "$b" || rc=$?
-        case $rc in 0) echo ok ;; 2) echo unknown ;; *) echo fail ;; esac
-    done
+# Probe <binary> for root and user. Prints "<root> <user>", each "ok", "fail"
+# or "unknown".
+_env_residue_probe() {
+    local r=fail u rc=0
+    _env_residue_works_as_root "$1" && r=ok
+    _env_residue_works_as_user "$1" || rc=$?
+    case $rc in 0) u=ok ;; 2) u=unknown ;; *) u=fail ;; esac
+    echo "$r $u"
 }
 
-# Version number in a binary's `--version` output (first dotted number).
-_env_residue_version_of() {
-    _env_residue_run "$1" --version 2>/dev/null </dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -1
+# The reachable system-wide copy of <binary> (real path outside root's home).
+_env_residue_sys_copy() {
+    local binary="$1" root_home="$2" dir
+    while IFS= read -r dir; do
+        if [[ -x "$dir/$binary" ]] && [[ "$(readlink -f "$dir/$binary")" != "$root_home"/* ]]; then
+            echo "$dir/$binary"
+            return 0
+        fi
+    done < <(_env_residue_sys_dirs)
+    return 1
 }
 
-# Candidates, one per line: <tool>|<binary>|<reason>|<path>[|<path>...]
-# A link candidate is a launcher in a system-wide bin dir that resolves into
-# root's home where no non-root user can reach it. A copy candidate is a
-# tool's launcher in root's ~/.local/bin plus its data paths.
-_env_residue_candidates() {
+# Must root's copy of <binary> stay on version grounds? Only a copy that is
+# byte-identical to, or older than, the system-wide copy may go. Without a
+# system-wide copy the proof alone decides. Sets _ENV_RESIDUE_WHY; returns 0
+# to keep.
+_env_residue_copy_must_stay() {
+    local binary="$1" root_home="$2" sys root_bin="$2/.local/bin/$1" rv sv
+    _ENV_RESIDUE_WHY=""
+    sys=$(_env_residue_sys_copy "$binary" "$root_home") || return 1
+    [[ -x "$root_bin" ]] || return 1
+    cmp -s "$(readlink -f "$root_bin")" "$(readlink -f "$sys")" && return 1
+    rv=$(_env_normalize_version "$(_env_residue_run "$root_bin" --version 2>/dev/null </dev/null)")
+    sv=$(_env_normalize_version "$(_env_residue_run "$sys" --version 2>/dev/null </dev/null)")
+    if [[ ! "$rv" =~ ^[0-9]+\.[0-9]+\.[0-9]+ || ! "$sv" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        _ENV_RESIDUE_WHY="cannot compare root's $binary with the system-wide $sys"
+        return 0
+    fi
+    if _env_version_lt "$sv" "$rv"; then
+        _ENV_RESIDUE_WHY="root's $binary ($rv) is newer than the system-wide copy ($sv)"
+        return 0
+    fi
+    return 1
+}
+
+# Collect candidates into the parallel arrays _RES_BIN, _RES_KIND ("link" or
+# "copy") and _RES_PATHS ('|'-joined). A link is a launcher in a system-wide
+# bin dir that resolves into root's home; it is only a candidate while root's
+# home is not world-traversable (otherwise users may run it). A copy is a
+# tool's launcher in root's ~/.local/bin plus its data paths. Prints a Kept
+# line for every link it passes over.
+_env_residue_collect() {
     local root_home="$1"; shift
-    local tool binary dir link rel line
-    local IFS_SAVE="$IFS"
+    _RES_BIN=() _RES_KIND=() _RES_PATHS=()
+    local root_open=false rc=0
+    _env_mode_has_other_x "$root_home" || rc=$?
+    [[ $rc -eq 0 ]] && root_open=true
+
+    local tool binary dir link target rel paths
     for tool in "$@"; do
         binary=$(_env_tool_to_binary "$tool" 2>/dev/null) || continue
-
-        IFS=':'
-        for dir in $_ENV_SYSTEM_BIN_PATH; do
-            IFS="$IFS_SAVE"
+        while IFS= read -r dir; do
             link="$dir/$binary"
             [[ -L "$link" ]] || continue
-            local target
             target=$(readlink -f "$link" 2>/dev/null || readlink "$link")
             [[ "$target" == "$root_home"/* ]] || continue
-            echo "$tool|$binary|link into root's home|$link"
-        done
-        IFS="$IFS_SAVE"
+            if $root_open; then
+                echo "  Kept: $link — $root_home is world-traversable, other users may run it"
+                continue
+            fi
+            _RES_BIN+=("$binary") _RES_KIND+=(link) _RES_PATHS+=("$link")
+        done < <(_env_residue_sys_dirs)
 
-        line=""
+        paths=""
         if [[ -e "$root_home/.local/bin/$binary" || -L "$root_home/.local/bin/$binary" ]]; then
-            line="$root_home/.local/bin/$binary"
+            paths="$root_home/.local/bin/$binary"
         fi
         while IFS= read -r rel; do
-            [[ -n "$rel" && -e "$root_home/$rel" ]] && line="${line:+$line|}$root_home/$rel"
+            [[ -n "$rel" ]] || continue
+            [[ -e "$root_home/$rel" || -L "$root_home/$rel" ]] && paths="${paths:+$paths|}$root_home/$rel"
         done < <(_env_residue_data_paths "$tool")
-        [[ -n "$line" ]] && echo "$tool|$binary|root-home copy|$line"
-    done
-}
-
-# Is the root-home copy of <binary> newer than its reachable system-wide copy?
-# False when there is no system-wide copy or a version cannot be read.
-_env_residue_root_copy_is_newer() {
-    local binary="$1" root_home="$2" sys="" dir rv sv
-    local IFS_SAVE="$IFS" IFS=':'
-    for dir in $_ENV_SYSTEM_BIN_PATH; do
-        if [[ -x "$dir/$binary" ]] && [[ "$(readlink -f "$dir/$binary")" != "$root_home"/* ]]; then
-            sys="$dir/$binary"; break
+        if [[ -n "$paths" ]]; then
+            _RES_BIN+=("$binary") _RES_KIND+=(copy) _RES_PATHS+=("$paths")
         fi
     done
-    IFS="$IFS_SAVE"
-    [[ -n "$sys" && -x "$root_home/.local/bin/$binary" ]] || return 1
-    rv=$(_env_residue_version_of "$root_home/.local/bin/$binary")
-    sv=$(_env_residue_version_of "$sys")
-    [[ -n "$rv" && -n "$sv" && "$rv" != "$sv" ]] || return 1
-    [[ "$(printf '%s\n%s\n' "$rv" "$sv" | sort -V | tail -1)" == "$rv" ]]
 }
 
-# Move <paths...> into <qdir>, probe <binaries> again, and commit or roll back.
-# Usage: _env_residue_try <qdir> <binaries (space separated)> <before> <path>...
-# Returns 0 when removed, 1 when kept (reason in _ENV_RESIDUE_WHY).
+# Move each entry of quarantine sub-dir <sub> back to its recorded origin.
+# Returns 1 if any entry could not be restored (it stays in <sub>).
+_env_residue_restore() {
+    local sub="$1" origin entry dest failed=0
+    while IFS= read -r origin; do
+        [[ -n "$origin" ]] || continue
+        entry="${origin%.origin}"
+        dest=$(cat "$origin")
+        if [[ -e "$dest" || -L "$dest" ]]; then
+            utils_error "Cannot restore $dest from $entry: the path exists again"
+            failed=1
+        elif mv "$entry" "$dest" 2>/dev/null; then
+            rm -f "${origin:?}"
+        else
+            utils_error "Could not restore $dest from $entry"
+            failed=1
+        fi
+    done < <(find "$sub" -maxdepth 1 -name '*.origin' 2>/dev/null | sort -r)
+    hash -r 2>/dev/null || true
+    [[ $failed -eq 0 ]] && rmdir "$sub" 2>/dev/null
+    return $failed
+}
+
+# Earlier runs that were cut off: move their quarantined entries back, then
+# drop the quarantine when it is empty.
+_env_residue_recover() {
+    local root_home="$1" q sub
+    for q in "$root_home"/.cac-residue.*; do
+        [[ -d "$q" ]] || continue
+        echo "  Recovering an interrupted earlier run: $q"
+        for sub in "$q"/c.*; do
+            [[ -d "$sub" ]] && _env_residue_restore "$sub"
+        done
+        rmdir "$q" 2>/dev/null || utils_warn "Left in place (could not restore everything): $q"
+    done
+}
+
+# Signal handler during a run: restore the candidate in flight, then exit.
+_env_residue_abort() {
+    [[ -n "${_ENV_RESIDUE_SUB:-}" && -d "$_ENV_RESIDUE_SUB" ]] && _env_residue_restore "$_ENV_RESIDUE_SUB"
+    echo "  Interrupted; the candidate in flight was moved back." >&2
+    exit 130
+}
+
+# Quarantine <paths...> for <binary> under <qdir>, probe again, and commit or
+# roll back. Usage: _env_residue_try <qdir> <binary> <before> <path>...
+# Returns 0 when removed, 1 when kept (reason in _ENV_RESIDUE_WHY), 2 when a
+# rollback failed (the quarantine must stay on disk).
 _env_residue_try() {
-    local qdir="$1" binaries="$2" before="$3"; shift 3
-    local -a paths=("$@") moved=()
-    local i=0 p
+    local qdir="$1" binary="$2" before="$3"; shift 3
+    local sub i=0 p
     _ENV_RESIDUE_WHY=""
-    for p in "${paths[@]}"; do
-        if ! mv "$p" "$qdir/$i" 2>/dev/null; then
+    sub=$(mktemp -d "$qdir/c.XXXXXX") || { _ENV_RESIDUE_WHY="cannot create a quarantine entry"; return 1; }
+    _ENV_RESIDUE_SUB="$sub"
+    for p in "$@"; do
+        printf '%s\n' "$p" > "$sub/$i.origin"
+        if ! mv "$p" "$sub/$i" 2>/dev/null; then
+            rm -f "${sub:?}/${i:?}.origin"
             _ENV_RESIDUE_WHY="cannot move $p"
             break
         fi
-        moved+=("$p"); ((i++)) || true
+        ((i++)) || true
     done
 
-    if [[ -z "$_ENV_RESIDUE_WHY" && -n "$binaries" ]]; then
+    if [[ -z "$_ENV_RESIDUE_WHY" ]]; then
         hash -r 2>/dev/null || true
-        local -a b_arr pre post ctx=(root "a non-root user")
-        read -ra b_arr <<< "$binaries"
-        read -ra pre <<< "$before"
-        mapfile -t post < <(_env_residue_probe_all "${b_arr[@]}")
-        local k
-        for ((k = 0; k < ${#pre[@]}; k++)); do
-            if [[ "${pre[$k]}" == "unknown" ]]; then
-                _ENV_RESIDUE_WHY="cannot verify ${b_arr[$((k / 2))]} for a non-root user (no runuser or sudo)"
-                break
-            fi
-            if [[ "${pre[$k]}" == "ok" && "${post[$k]:-fail}" != "ok" ]]; then
-                _ENV_RESIDUE_WHY="${b_arr[$((k / 2))]} would stop working for ${ctx[$((k % 2))]}"
-                break
-            fi
-        done
+        local b_root b_user a_root a_user
+        read -r b_root b_user <<< "$before"
+        read -r a_root a_user <<< "$(_env_residue_probe "$binary")"
+        if [[ "$b_user" == "unknown" ]]; then
+            _ENV_RESIDUE_WHY="cannot verify $binary for a non-root user (no runuser or sudo)"
+        elif [[ "$b_root" == "ok" && "$a_root" != "ok" ]]; then
+            _ENV_RESIDUE_WHY="$binary would stop working for root"
+        elif [[ "$b_user" == "ok" && "$a_user" != "ok" ]]; then
+            _ENV_RESIDUE_WHY="$binary would stop working for a non-root user"
+        fi
     fi
 
     if [[ -n "$_ENV_RESIDUE_WHY" ]]; then
-        for ((i = ${#moved[@]} - 1; i >= 0; i--)); do
-            mv "$qdir/$i" "${moved[$i]}" 2>/dev/null || \
-                utils_error "Could not restore ${moved[$i]} from $qdir/$i"
-        done
-        hash -r 2>/dev/null || true
+        _ENV_RESIDUE_SUB=""
+        _env_residue_restore "$sub" || return 2
         return 1
     fi
-    rm -rf "${qdir:?}"/* 2>/dev/null || true
+    rm -rf "${sub:?}"
+    _ENV_RESIDUE_SUB=""
     return 0
 }
 
@@ -3723,11 +3799,57 @@ _env_residue_env_is_sourced() {
     return 1
 }
 
+# Record one removed path.
+_env_residue_removed() {
+    echo "  Removed: $1"
+    ((_ENV_RESIDUE_REMOVED++)) || true
+}
+
+# Mistral leftovers outside the vibe copy, existing now: uv's tools dir, uv
+# itself and its env scripts, ~/.vibe. Printed one per line.
+_env_residue_mistral_extras() {
+    local root_home="$1" p
+    for p in .local/share/uv/tools .local/bin/uv .local/bin/uvx .local/bin/env .local/bin/env.fish .vibe; do
+        [[ -e "$root_home/$p" || -L "$root_home/$p" ]] && echo "$root_home/$p"
+    done
+}
+
+# Mistral leftovers, after the vibe copy was handled. uv's tools dir goes once
+# no tool is left in it. uv/uvx and the env scripts its installer wrote go
+# only when that tools dir existed at the start of the run (a uv that
+# installed tools, the Mistral installer's) and is gone now; a uv of root's
+# own without tools stays, and so does an env script a profile sources.
+# ~/.vibe goes when it holds no config and root has no vibe left.
+_env_residue_clean_mistral() {
+    local root_home="$1" had_uv_tools="$2"
+    local uv_tools="$root_home/.local/share/uv/tools" name f
+    if [[ -d "$uv_tools" ]] && [[ -z "$(ls -A "$uv_tools" 2>/dev/null)" ]]; then
+        rmdir "$uv_tools" && _env_residue_removed "$uv_tools"
+    fi
+    if $had_uv_tools && [[ ! -d "$uv_tools" ]]; then
+        for name in uv uvx env env.fish; do
+            f="$root_home/.local/bin/$name"
+            [[ -e "$f" || -L "$f" ]] || continue
+            if [[ "$name" == env* ]] && _env_residue_env_is_sourced "$root_home" "$name"; then
+                echo "  Kept: $f — still sourced by a shell profile in $root_home"
+                continue
+            fi
+            rm -f "${f:?}" && _env_residue_removed "$f"
+        done
+    fi
+    local vibe_dir="$root_home/.vibe"
+    if [[ -d "$vibe_dir" && ! -e "$root_home/.local/bin/vibe" \
+          && ! -e "$vibe_dir/config.toml" && ! -e "$vibe_dir/.env" ]]; then
+        rm -rf "${vibe_dir:?}" && _env_residue_removed "$vibe_dir"
+    fi
+}
+
 # Remove root-home residue of escalated runs (Issue #165).
 # Usage: env_remove_root_residue <auto_yes> [tool...]   (no tools = all tools)
 # Root context only; elsewhere a no-op. Sets _ENV_RESIDUE_REMOVED (count).
 # Always returns 0: a kept item is reported, it is not a failure.
 _ENV_RESIDUE_REMOVED=0
+_ENV_RESIDUE_SUB=""
 env_remove_root_residue() {
     local auto_yes="${1:-false}"; shift || true
     _ENV_RESIDUE_REMOVED=0
@@ -3742,21 +3864,41 @@ env_remove_root_residue() {
     local with_mistral=false t
     for t in "${tools[@]}"; do [[ "$t" == "mistral" ]] && with_mistral=true; done
 
-    local -a cands=()
-    mapfile -t cands < <(_env_residue_candidates "$root_home" "${tools[@]}")
-    local uv_tools="$root_home/.local/share/uv/tools"
+    local recovered
+    recovered=$(_env_residue_recover "$root_home" 2>&1)
+
+    # Collect in this shell (the arrays must survive); its Kept lines go to a
+    # temp file so they print under the section header.
+    local notes
+    notes=$(mktemp) || return 0
+    _env_residue_collect "$root_home" "${tools[@]}" > "$notes"
+    local kept_early
+    kept_early=$(cat "$notes")
+    rm -f "${notes:?}"
+
+    local -a extras=()
+    $with_mistral && mapfile -t extras < <(_env_residue_mistral_extras "$root_home")
     local had_uv_tools=false
-    [[ -d "$uv_tools" ]] && had_uv_tools=true
-    local extras=false
-    if $with_mistral && { [[ -d "$uv_tools" ]] || [[ -e "$root_home/.local/bin/uv" ]] || [[ -d "$root_home/.vibe" ]]; }; then
-        extras=true
-    fi
-    [[ ${#cands[@]} -gt 0 ]] || $extras || return 0
+    [[ -d "$root_home/.local/share/uv/tools" ]] && had_uv_tools=true
+
+    [[ ${#_RES_KIND[@]} -gt 0 || ${#extras[@]} -gt 0 || -n "$recovered" || -n "$kept_early" ]] || return 0
 
     echo "--- Root-home residue (#165) ---"
+    [[ -n "$recovered" ]] && printf '%s\n' "$recovered"
+    [[ -n "$kept_early" ]] && printf '%s\n' "$kept_early"
+    if [[ ${#_RES_KIND[@]} -eq 0 && ${#extras[@]} -eq 0 ]]; then
+        echo ""
+        return 0
+    fi
+
     if [[ "$auto_yes" != "true" ]]; then
-        local c
-        for c in "${cands[@]}"; do echo "  candidate: ${c#*|*|*|}" | tr '|' ' '; done
+        local c e
+        for ((c = 0; c < ${#_RES_KIND[@]}; c++)); do
+            echo "  candidate: ${_RES_PATHS[$c]//|/ }"
+        done
+        for e in "${extras[@]+"${extras[@]}"}"; do
+            echo "  candidate (only if nothing else needs it): $e"
+        done
         echo -n "  Remove root-home residue where every tool still works afterwards? [y/N]: "
         local reply=""
         read -r reply || true
@@ -3772,55 +3914,40 @@ env_remove_root_residue() {
         utils_error "Cannot create a quarantine dir in $root_home; nothing removed."
         return 0
     }
+    local old_traps
+    old_traps=$(trap -p INT TERM HUP)
+    trap '_env_residue_abort' INT TERM HUP
 
-    local line tool binary reason rest
-    for line in "${cands[@]}"; do
-        IFS='|' read -r tool binary reason rest <<< "$line"
-        local -a paths=()
-        IFS='|' read -ra paths <<< "$rest"
-        if [[ "$reason" == "root-home copy" ]] && _env_residue_root_copy_is_newer "$binary" "$root_home"; then
-            echo "  Kept: ${paths[*]} — root's $binary is newer than the system-wide copy"
+    local stranded=false k rc binary before p
+    local -a paths
+    for ((k = 0; k < ${#_RES_KIND[@]}; k++)); do
+        binary="${_RES_BIN[$k]}"
+        paths=()
+        IFS='|' read -ra paths <<< "${_RES_PATHS[$k]}"
+        if [[ "${_RES_KIND[$k]}" == "copy" ]] && _env_residue_copy_must_stay "$binary" "$root_home"; then
+            echo "  Kept: ${paths[*]} — $_ENV_RESIDUE_WHY"
             continue
         fi
-        local before
-        before=$(_env_residue_probe_all "$binary" | tr '\n' ' ')
-        if _env_residue_try "$qdir" "$binary" "$before" "${paths[@]}"; then
-            for p in "${paths[@]}"; do echo "  Removed: $p"; done
-            _ENV_RESIDUE_REMOVED=$((_ENV_RESIDUE_REMOVED + ${#paths[@]}))
-        else
-            echo "  Kept: ${paths[*]} — $_ENV_RESIDUE_WHY"
-        fi
+        before=$(_env_residue_probe "$binary")
+        rc=0
+        _env_residue_try "$qdir" "$binary" "$before" "${paths[@]}" || rc=$?
+        case $rc in
+            0) for p in "${paths[@]}"; do _env_residue_removed "$p"; done ;;
+            1) echo "  Kept: ${paths[*]} — $_ENV_RESIDUE_WHY" ;;
+            *) stranded=true
+               utils_error "Kept in quarantine: ${paths[*]} — $_ENV_RESIDUE_WHY; the restore failed, see $qdir" ;;
+        esac
     done
 
-    if $with_mistral; then
-        # uv's tools dir once no tool is left in it; then uv itself and the
-        # env scripts its installer wrote (only while no profile sources them).
-        if [[ -d "$uv_tools" ]] && [[ -z "$(ls -A "$uv_tools" 2>/dev/null)" ]]; then
-            rmdir "$uv_tools" && { echo "  Removed: $uv_tools"; ((_ENV_RESIDUE_REMOVED++)) || true; }
-        fi
-        # Only a uv that installed tools (the Mistral installer's) is residue;
-        # a uv of root's own without a tools dir stays.
-        if $had_uv_tools && [[ ! -d "$uv_tools" ]]; then
-            local name
-            for name in uv uvx env env.fish; do
-                local f="$root_home/.local/bin/$name"
-                [[ -e "$f" || -L "$f" ]] || continue
-                if [[ "$name" == env* ]] && _env_residue_env_is_sourced "$root_home" "$name"; then
-                    echo "  Kept: $f — still sourced by a shell profile in $root_home"
-                    continue
-                fi
-                rm -f "$f" && { echo "  Removed: $f"; ((_ENV_RESIDUE_REMOVED++)) || true; }
-            done
-        fi
-        # ~/.vibe without config, once root has no vibe of its own.
-        local vibe_dir="$root_home/.vibe"
-        if [[ -d "$vibe_dir" && ! -e "$root_home/.local/bin/vibe" \
-              && ! -e "$vibe_dir/config.toml" && ! -e "$vibe_dir/.env" ]]; then
-            rm -rf "${vibe_dir:?}" && { echo "  Removed: $vibe_dir"; ((_ENV_RESIDUE_REMOVED++)) || true; }
-        fi
-    fi
+    $with_mistral && _env_residue_clean_mistral "$root_home" "$had_uv_tools"
 
-    rm -rf "${qdir:?}"
+    trap - INT TERM HUP
+    [[ -n "$old_traps" ]] && eval "$old_traps"
+    if $stranded; then
+        utils_warn "Quarantine left on disk: $qdir (each entry's .origin names its original path; the next run moves them back)"
+    else
+        rm -rf "${qdir:?}"
+    fi
     echo "  Removed $_ENV_RESIDUE_REMOVED path(s)."
     echo ""
     return 0
@@ -3850,10 +3977,6 @@ env_cmd_repair() {
 
     if [[ ${#ENV_PARSED_TOOLS[@]} -gt 0 ]]; then
         for tool in "${ENV_PARSED_TOOLS[@]}"; do
-            if ! env_validate_tool "$tool"; then
-                utils_error "Unknown tool: $tool"
-                return $ENV_EXIT_INVALID_ARG
-            fi
             if ! env_is_installed "$tool"; then
                 ((skipped++)) || true
                 echo "SKIP $(env_get_display_name "$tool"): not installed"

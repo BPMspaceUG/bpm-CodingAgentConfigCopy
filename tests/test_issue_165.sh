@@ -46,6 +46,7 @@ make_layout() {
     UB="$T/usr-bin"
     HOSTBIN="$T/hostbin"
     mkdir -p "$ROOTHOME/.local/bin" "$ULB" "$UB" "$HOSTBIN"
+    chmod 700 "$ROOTHOME"            # as on a real host
     ln -s /usr/bin/* "$HOSTBIN/" 2>/dev/null || true
     local b
     for b in claude codex gemini vibe continuous-claude playwright uv uvx npm node nodejs runuser sudo cac; do
@@ -126,15 +127,115 @@ test_165_3_older_root_copy_removed() {
     root_runs claude || { echo "claude no longer runs for root" >&2; return 1; }
 }
 
-# 165.4: a root-home copy newer than the system-wide one stays.
+# A Claude Code launcher at <path> that prints the verbatim capture of the
+# real `claude --version` (tests/fixtures/claude-version.out, 2.1.327) with
+# its version replaced by <version> (same shape: "2.1.327 (Claude Code)").
+_mk_claude_like() {
+    mkdir -p "$(dirname "$1")"
+    local line
+    line=$(sed "s/^[0-9][0-9.]*/$2/" "$REPO_DIR/tests/fixtures/claude-version.out")
+    printf '#!/bin/sh\necho "%s"\n' "$line" > "$1"
+    chmod 755 "$1"
+}
+
+# 165.4: a root-home copy newer than the system-wide one stays. Both print the
+# real `claude --version` shape (fixture), as CODING_STANDARDS.md requires.
 test_165_4_newer_root_copy_kept() {
     make_layout t4
-    _mk_root_claude 2.1.400
-    _mk_bin "$ULB/claude" 2.1.327
+    _mk_claude_like "$ROOTHOME/.local/share/claude/versions/2.1.400" 2.1.400
+    ln -s "$ROOTHOME/.local/share/claude/versions/2.1.400" "$ROOTHOME/.local/bin/claude"
+    printf '#!/bin/sh\ncat "%s"\n' "$REPO_DIR/tests/fixtures/claude-version.out" > "$ULB/claude"
+    chmod 755 "$ULB/claude"
     run_root env_remove_root_residue true claude
     assert_contains "Kept: $ROOTHOME/.local/bin/claude" "$OUT" "kept (out: $OUT)" || return 1
-    assert_contains "newer than the system-wide copy" "$OUT" "reason" || return 1
+    assert_contains "root's claude (2.1.400) is newer than the system-wide copy (2.1.327)" "$OUT" "reason" || return 1
     [[ -L "$ROOTHOME/.local/bin/claude" ]] || { echo "newer copy removed" >&2; return 1; }
+}
+
+# 165.4b: an older root copy in the real `--version` shape is removed.
+test_165_4b_older_root_copy_fixture_shape() {
+    make_layout t4b
+    _mk_claude_like "$ROOTHOME/.local/share/claude/versions/2.1.300" 2.1.300
+    ln -s "$ROOTHOME/.local/share/claude/versions/2.1.300" "$ROOTHOME/.local/bin/claude"
+    printf '#!/bin/sh\ncat "%s"\n' "$REPO_DIR/tests/fixtures/claude-version.out" > "$ULB/claude"
+    chmod 755 "$ULB/claude"
+    run_root env_remove_root_residue true claude
+    assert_contains "Removed: $ROOTHOME/.local/bin/claude" "$OUT" "older copy removed (out: $OUT)" || return 1
+}
+
+# 165.16: a version that cannot be read (and differing bytes) is no proof of
+# "older": root's copy stays.
+test_165_16_unreadable_version_kept() {
+    make_layout t16
+    _mk_root_claude 2.1.300
+    printf '#!/bin/sh\necho "Claude Code (build unknown)"\n' > "$ULB/claude"
+    chmod 755 "$ULB/claude"
+    run_root env_remove_root_residue true claude
+    assert_contains "Kept: $ROOTHOME/.local/bin/claude" "$OUT" "kept (out: $OUT)" || return 1
+    assert_contains "cannot compare root's claude" "$OUT" "reason" || return 1
+    [[ -L "$ROOTHOME/.local/bin/claude" ]] || { echo "removed without a version proof" >&2; return 1; }
+}
+
+# 165.13: root's home is world-traversable → a link into it may serve other
+# users, so it stays.
+test_165_13_world_traversable_root_keeps_link() {
+    make_layout t13
+    chmod 755 "$ROOTHOME"
+    _mk_root_claude 2.1.300
+    ln -s "$ROOTHOME/.local/bin/claude" "$ULB/claude"
+    run_root env_remove_root_residue true claude
+    assert_contains "Kept: $ULB/claude — $ROOTHOME is world-traversable" "$OUT" "kept (out: $OUT)" || return 1
+    [[ -L "$ULB/claude" ]] || { echo "link removed" >&2; return 1; }
+}
+
+# 165.14: a restore that fails (the path came back meanwhile) leaves the
+# quarantine on disk; nothing quarantined is deleted.
+test_165_14_failed_restore_keeps_quarantine() {
+    make_layout t14
+    _mk_root_claude 2.1.300
+    RC=0
+    OUT=$(
+        export HOME="$ROOTHOME" PATH="$ULB:$UB:$HOSTBIN"
+        _ENV_SYSTEM_BIN_PATH="$ULB:$UB"
+        _env_is_root() { return 0; }
+        _env_root_home() { echo "$ROOTHOME"; }
+        _env_residue_works_as_user() { return 1; }
+        # After the move, something recreates the launcher path and claude
+        # fails for root: the rollback cannot put the original back.
+        _env_residue_works_as_root() {
+            if [[ -e "$ROOTHOME/.local/bin/claude" || -L "$ROOTHOME/.local/bin/claude" ]]; then
+                [[ -f "$ROOTHOME/.local/bin/claude" && ! -L "$ROOTHOME/.local/bin/claude" ]] && return 1
+                return 0
+            fi
+            : > "$ROOTHOME/.local/bin/claude"
+            return 1
+        }
+        env_remove_root_residue true claude 2>&1
+    ) || RC=$?
+    assert_contains "Quarantine left on disk" "$OUT" "warned (out: $OUT)" || return 1
+    local q
+    q=$(find "$ROOTHOME" -maxdepth 1 -name '.cac-residue.*' | head -1)
+    [[ -n "$q" ]] || { echo "quarantine deleted" >&2; return 1; }
+    [[ -n "$(find "$q" -name '*.origin')" ]] || { echo "origin records lost" >&2; return 1; }
+    # The launcher could not go back (its path exists again): it stays in the
+    # quarantine, still pointing at the restored data dir.
+    [[ -n "$(find "$q" -mindepth 2 -maxdepth 2 -name 0 -type l)" ]] \
+        || { echo "unrestorable launcher not kept in quarantine: $(find "$q")" >&2; return 1; }
+    [[ -d "$ROOTHOME/.local/share/claude" ]] || { echo "data dir neither restored nor kept" >&2; return 1; }
+}
+
+# 165.15: the next run moves back what an interrupted run left in a quarantine.
+test_165_15_recovers_interrupted_run() {
+    make_layout t15
+    _mk_bin "$T/stash/claude" 2.1.300
+    local sub="$ROOTHOME/.cac-residue.OLD123/c.ABC"
+    mkdir -p "$sub"
+    mv "$T/stash/claude" "$sub/0"
+    echo "$ROOTHOME/.local/bin/claude" > "$sub/0.origin"
+    run_root env_remove_root_residue true codex
+    assert_contains "Recovering an interrupted earlier run" "$OUT" "recovery reported (out: $OUT)" || return 1
+    [[ -x "$ROOTHOME/.local/bin/claude" ]] || { echo "not restored" >&2; return 1; }
+    [[ ! -e "$ROOTHOME/.cac-residue.OLD123" ]] || { echo "old quarantine left" >&2; return 1; }
 }
 
 # 165.5: root's npm-prefix copy next to a system-wide npm install goes.
@@ -286,7 +387,8 @@ test_165_12_uninstall_removes_residue() {
 run_test "165.1 a /usr/local/bin link into root's home is removed" test_165_1_link_into_root_home_removed
 run_test "165.2 the only working root copy is kept, with the reason" test_165_2_only_working_copy_kept
 run_test "165.3 an older root copy is removed, root runs the system copy" test_165_3_older_root_copy_removed
-run_test "165.4 a newer root copy is kept" test_165_4_newer_root_copy_kept
+run_test "165.4 a newer root copy is kept (real --version shape)" test_165_4_newer_root_copy_kept
+run_test "165.4b an older root copy in the real --version shape is removed" test_165_4b_older_root_copy_fixture_shape
 run_test "165.5 root's npm-prefix copy next to the system install is removed" test_165_5_root_npm_copy_removed
 run_test "165.6 Mistral residue goes, sourced env and unrelated files stay" test_165_6_mistral_residue_and_unrelated_files
 run_test "165.7 root's own uv and a configured ~/.vibe stay" test_165_7_own_uv_and_configured_vibe_stay
@@ -295,5 +397,9 @@ run_test "165.9 without --yes nothing is removed" test_165_9_without_yes_nothing
 run_test "165.10 no non-root probe → nothing removed" test_165_10_unprovable_user_probe_keeps
 run_test "165.11 cac env repair --yes runs the cleanup" test_165_11_env_repair_runs_cleanup
 run_test "165.12 uninstall.sh removes the same residue" test_165_12_uninstall_removes_residue
+run_test "165.13 a world-traversable root home keeps its links" test_165_13_world_traversable_root_keeps_link
+run_test "165.14 a failed restore leaves the quarantine on disk" test_165_14_failed_restore_keeps_quarantine
+run_test "165.15 an interrupted run is recovered by the next one" test_165_15_recovers_interrupted_run
+run_test "165.16 an unreadable version keeps root's copy" test_165_16_unreadable_version_kept
 
 framework_report
