@@ -272,6 +272,21 @@ assert_contains() {
 #
 # Example:
 #   assert_file_exists "$output_file" "output file"
+# Assert that a string does NOT contain a substring (#163: shared copy of the
+# helper several suites define locally)
+# Usage: assert_not_contains "needle" "haystack" "message"
+assert_not_contains() {
+    local needle="$1"
+    local haystack="$2"
+    local message="${3:-String should not contain substring}"
+
+    if [[ "$haystack" == *"$needle"* ]]; then
+        echo "Expected $message not to contain '$needle', got: '$haystack'" >&2
+        return 1
+    fi
+    return 0
+}
+
 assert_file_exists() {
     local path="$1"
     local description="${2:-file}"

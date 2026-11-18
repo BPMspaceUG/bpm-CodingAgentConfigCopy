@@ -28,14 +28,6 @@ source "${PROJECT_ROOT}/lib/update.sh"
 
 framework_init
 
-# assert_not_contains <needle> <haystack> <message>
-assert_not_contains() {
-    if [[ "$2" == *"$1"* ]]; then
-        echo "Expected $3 not to contain '$1', got: '$2'" >&2
-        return 1
-    fi
-}
-
 # Write a fake cac at $1 with version $2; it answers every command with exit 0.
 _mk_cac() {
     mkdir -p "$(dirname "$1")"
@@ -69,11 +61,16 @@ run_fn() {
     local target="$pathdir/cac"
     local src="$T/new-cac"
     _mk_cac "$src" "$newver"
+    [[ -n "${NEWSRC:-}" ]] && src="$NEWSRC"
     RC=0
     OUT=$(
         export HOME="$HOMEDIR" PATH="$pathdir:/usr/bin:/bin" SUDO_USER="${SUDO_USER_FAKE:-}"
         _update_global_cac_path() { echo "$SYSCAC"; }
-        _update_sudo_user_home() { echo "$HOMEDIR"; }
+        if [[ "${REAL_SUDO_HOME:-}" == "1" ]]; then
+            security_resolve_user_home() { [[ "$1" == "rob" ]] && echo "$HOMEDIR"; }
+        else
+            _update_sudo_user_home() { echo "$HOMEDIR"; }
+        fi
         _update_is_root() { [[ "$root" == "true" ]]; }
         update_get_remote_version() { echo "$remote"; }
         _update_print_tool_report() { :; }
@@ -149,7 +146,8 @@ test_163_5_root_update_warns_stale_user_copy() {
     assert_contains "Installation scope: global" "$OUT" "system copy updated" || return 1
     assert_contains "$USERCAC" "$OUT" "warning names the user-local path" || return 1
     assert_contains "251110-0619" "$OUT" "warning names its version" || return 1
-    assert_contains "cac update (as rob, without sudo)" "$OUT" "user-local update command" || return 1
+    assert_contains "Run the update as rob, without sudo." "$OUT" "names the user to run it as" || return 1
+    assert_contains "Update it with: cac update" "$OUT" "pasteable user-local update command" || return 1
     assert_not_contains "sudo cac update" "$OUT" "no system-copy command for a user copy" || return 1
 }
 
@@ -177,6 +175,34 @@ test_163_7_symlink_is_one_copy() {
     assert_not_contains "Installed copies" "$OUT" "symlink is not a second copy" || return 1
 }
 
+# 163.8: the real _update_sudo_user_home: root with SUDO_USER=rob resolves
+# rob's home; root without SUDO_USER (or SUDO_USER=root) looks at no user copy.
+test_163_8_real_sudo_user_lookup() {
+    make_layout t8
+    _mk_cac "$SYSCAC" "260201-0000"
+    _mk_cac "$USERCAC" "251110-0619"
+    REAL_SUDO_HOME=1 ROOT=true ONPATH=sys SUDO_USER_FAKE=rob run_fn update_cmd_main --check
+    assert_contains "$USERCAC  251110-0619" "$OUT" "rob's copy found via the real lookup" || return 1
+    REAL_SUDO_HOME=1 ROOT=true ONPATH=sys SUDO_USER_FAKE="" run_fn update_cmd_main --check
+    assert_equals 0 "$RC" "exit code without SUDO_USER (out: $OUT)" || return 1
+    assert_not_contains "Installed copies" "$OUT" "no user copy without SUDO_USER" || return 1
+    REAL_SUDO_HOME=1 ROOT=true ONPATH=sys SUDO_USER_FAKE=root run_fn update_cmd_main --check
+    assert_not_contains "Installed copies" "$OUT" "no user copy for SUDO_USER=root" || return 1
+}
+
+# 163.9: install.sh left an unreadable version ("unknown") → no false warning.
+test_163_9_unknown_version_no_warning() {
+    make_layout t9
+    _mk_cac "$USERCAC" "260101-0000"
+    _mk_cac "$SYSCAC" "251110-0619"
+    printf '#!/usr/bin/env bash\nexit 0\n' > "$T/broken-cac"
+    chmod 755 "$T/broken-cac"
+    NEWSRC="$T/broken-cac" run_fn update_self
+    assert_equals 0 "$RC" "exit code (out: $OUT)" || return 1
+    assert_contains "Update complete: 260101-0000 -> unknown" "$OUT" "version unreadable after update" || return 1
+    assert_not_contains "WARNING" "$OUT" "no warning against an unknown version" || return 1
+}
+
 run_test "163.1 stale system copy after a user update → warning, exit 0" test_163_1_stale_system_copy_warns
 run_test "163.2 same version at both locations → no warning" test_163_2_same_version_no_warning
 run_test "163.3 no second copy → no warning" test_163_3_no_second_copy_no_warning
@@ -184,5 +210,7 @@ run_test "163.4 update --check lists both copies with versions" test_163_4_check
 run_test "163.5 sudo cac update warns about a stale user-local copy" test_163_5_root_update_warns_stale_user_copy
 run_test "163.6 already up to date still warns about a stale copy" test_163_6_up_to_date_still_warns
 run_test "163.7 a symlinked second location is one copy" test_163_7_symlink_is_one_copy
+run_test "163.8 the real sudo-user lookup (rob, empty, root)" test_163_8_real_sudo_user_lookup
+run_test "163.9 an unreadable new version raises no false warning" test_163_9_unknown_version_no_warning
 
 framework_report

@@ -184,7 +184,10 @@ _update_global_cac_path() {
     echo "/usr/local/bin/cac"
 }
 
-# Seam: root context. Tests override this function.
+# Seam: root context, the same technique as _env_is_root in lib/env.sh. A test
+# overrides it in a subshell to reach the root path. It does not weaken the
+# check: install.sh --global still needs real root to write /usr/local, so an
+# override only fakes the context for stubbed installs.
 _update_is_root() {
     [[ "${EUID:-$(id -u)}" -eq 0 ]]
 }
@@ -236,17 +239,28 @@ _update_other_copy_command() {
     if [[ "$_OTHER_KIND" == "global" ]]; then
         echo "sudo cac update"
     else
-        echo "cac update (as ${SUDO_USER:-$(id -un)}, without sudo)"
+        echo "cac update"
     fi
 }
 
 # Who runs the other copy, for the warning text.
 _update_other_copy_runner() {
     if [[ "$_OTHER_KIND" == "global" ]]; then
-        echo "'sudo cac ...' runs that copy (sudo's PATH has no ~/.local/bin)."
+        echo "'sudo cac ...' runs that copy wherever sudo resets PATH (secure_path, the Debian/Ubuntu default)."
     else
         echo "'cac ...' run as ${SUDO_USER:-$(id -un)} without sudo runs that copy."
+        echo "  Run the update as ${SUDO_USER:-$(id -un)}, without sudo."
     fi
+}
+
+# True when the other copy found by _update_find_other_copy is older than
+# <current_version>. An unreadable current version ("unknown") is never
+# newer, so it raises no warning.
+_update_other_copy_is_older() {
+    local current_version="$1"
+    [[ "$current_version" =~ ^[0-9]{6}-[0-9]{4} || "$current_version" == "dev" ]] || return 1
+    ! _update_version_ge "$(_update_normalize_version "$_OTHER_VERSION")" \
+                         "$(_update_normalize_version "$current_version")"
 }
 
 # After a successful update: warn on stderr when the copy at the other scope
@@ -256,10 +270,7 @@ _update_warn_other_copy() {
     local current_version="$1" current
     current=$(_update_local_cac_path) || return 0
     _update_find_other_copy "$current" || return 0
-    if _update_version_ge "$(_update_normalize_version "$_OTHER_VERSION")" \
-                          "$(_update_normalize_version "$current_version")"; then
-        return 0
-    fi
+    _update_other_copy_is_older "$current_version" || return 0
     echo "" >&2
     utils_warn "Another cac install at $_OTHER_PATH is older ($_OTHER_VERSION) than $current ($current_version)."
     echo "  $(_update_other_copy_runner)" >&2
@@ -445,8 +456,7 @@ _update_check_list_copies() {
     local local_version="$1" current note=""
     current=$(_update_local_cac_path) || return 0
     _update_find_other_copy "$current" || return 0
-    if ! _update_version_ge "$(_update_normalize_version "$_OTHER_VERSION")" \
-                            "$(_update_normalize_version "$local_version")"; then
+    if _update_other_copy_is_older "$local_version"; then
         note="  older; update with: $(_update_other_copy_command)"
     fi
     echo ""
