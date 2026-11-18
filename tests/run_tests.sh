@@ -357,6 +357,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #164 tests (repair prints sudo for root's per-user npm copy)
+    if $run_all || [[ "$filter" == "issue_164" ]] || [[ "$filter" == "164" ]]; then
+        if ! run_test_suite "Issue #164 Tests" "test_issue_164.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #163 tests (cac update warns about a stale copy at the other scope)
     if $run_all || [[ "$filter" == "issue_163" ]] || [[ "$filter" == "163" ]]; then
         if ! run_test_suite "Issue #163 Tests" "test_issue_163.sh"; then

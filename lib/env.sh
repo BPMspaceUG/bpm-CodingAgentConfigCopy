@@ -3487,7 +3487,12 @@ _env_repair_one_tool() {
                 _env_chk_dual_install "$binary_path" "$tool" 2>/dev/null || true
                 utils_warn "$display_name: ${_CHECK_REASON:-per-user copy next to a system-wide install}"
                 echo "  Not repaired automatically. To keep only the system-wide install:" >&2
-                echo "    npm uninstall -g --prefix $HOME/.local ${_ENV_NPM_PACKAGES[$tool]:-}" >&2
+                # Issue #164: in root context the per-user copy is root's own
+                # ($HOME is /root under sudo). The operator pastes the line into
+                # a non-root shell, where /root (0700) needs sudo.
+                local uninstall_sudo=""
+                _env_is_root && uninstall_sudo="sudo "
+                echo "    ${uninstall_sudo}npm uninstall -g --prefix $HOME/.local ${_ENV_NPM_PACKAGES[$tool]:-}" >&2
                 echo "    $(_env_global_update_cmd "$tool")" >&2
                 ;;
         esac
