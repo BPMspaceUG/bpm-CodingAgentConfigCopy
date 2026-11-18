@@ -30,12 +30,14 @@ source "$REPO_DIR/lib/check.sh"
 
 framework_init
 
-# A claude binary that answers like Claude Code with a dead session.
+# A claude binary that answers like Claude Code with a dead session; its
+# --version replays the real capture (tests/fixtures/claude-version.out).
 stub_claude_login_expired() {
     mkdir -p "$1"
-    cat > "$1/claude" <<'EOF'
+    cat > "$1/claude" <<EOF
 #!/usr/bin/env bash
-[[ "${1:-}" == "--version" ]] && { echo "2.1.327 (Claude Code)"; exit 0; }
+FIX_DIR="$FIX"
+[[ "\${1:-}" == "--version" ]] && { cat "\$FIX_DIR/claude-version.out"; exit 0; }
 echo "Login expired · Please run /login"
 exit 1
 EOF
@@ -56,15 +58,16 @@ test_166_1_dead_session_hint_has_no_token_advice() {
         check_single_tool claude false rob "$d/home/rob" 2>&1) && return 1
 
     assert_contains "is dead" "$out" "dead session explained (out: $out)" || return 1
-    assert_contains "cac push" "$out" "login move named" || return 1
-    assert_contains "/login" "$out" "fresh login named" || return 1
+    assert_contains "Fix: run 'cac push' on the host where Claude works, then 'cac pull' here, or log in again here with 'claude' and /login" \
+        "$out" "host fixes, pinned" || return 1
     if [[ "$out" == *"setup-token"* || "$out" == *"CLAUDE_CODE_OAUTH_TOKEN"* ]]; then
         echo "host hint advises the container token: $out" >&2
         return 1
     fi
 }
 
-# 166.2: `cac push` (bundle_create, every tool) never packs the token file.
+# 166.2: `cac push` (bundle_create for all tools and for claude) never packs
+# the token file.
 test_166_2_bundle_never_packs_token_file() {
     local home="$TEST_TMPDIR/1662/home"
     mkdir -p "$home/.claude" "$home/.config/claude"
@@ -96,6 +99,11 @@ test_166_3_readme_states_the_split() {
         return 1
     fi
     assert_contains "docs/adr/0001-hosts-login-containers-token.md" "$readme" "README links the ADR" || return 1
+    local flow
+    flow=$(sed -n '/^2\. \*\*Hosts log in, containers use the token\*\*/,/^3\. /p' "$REPO_DIR/README.md")
+    assert_contains "belongs only in containers" "$flow" "token placed in containers" || return 1
+    assert_contains "Never set the token in a host shell" "$flow" "host shells warned off" || return 1
+    assert_contains "Remote Control" "$flow" "reason given" || return 1
     [[ -f "$REPO_DIR/docs/adr/0001-hosts-login-containers-token.md" ]] || { echo "ADR missing" >&2; return 1; }
 }
 

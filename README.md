@@ -497,12 +497,11 @@ Supported flows:
    Every host (contabo03, ICO-ROB-01, laptops) runs on the interactive login
    above; that is what Remote Control needs. The long-lived token from
    `claude setup-token` belongs only in containers that call Claude at runtime
-   (reports, reviews, AI inside the product we build): one file per host,
-   `~/.config/claude/oauth-token.env` (700/600), mounted read-only as a
-   directory and loaded at container start as `CLAUDE_CODE_OAUTH_TOKEN`.
-   Never set the token in a host shell: it takes precedence over the login and
-   can only make model requests, so Remote Control and claude.ai connectors
-   stop working there
+   (reports, reviews, AI inside the product we build); how a container gets it
+   is the contract in the `c-bpm-sk-subscription-login` skill, summarised in
+   the ADR. Never set the token in a host shell: it takes precedence over the
+   login and can only make model requests, so Remote Control and claude.ai
+   connectors stop working there
    ([Claude Code authentication](https://code.claude.com/docs/en/authentication.md#generate-a-long-lived-token)).
    `cac` neither bundles nor expects the token.
 3. **Codex:** an API key login (`OPENAI_API_KEY`) does not use a refresh
