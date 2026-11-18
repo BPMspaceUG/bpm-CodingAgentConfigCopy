@@ -557,7 +557,7 @@ _check_explain_claude_session() {
     state=$(tools_claude_session_state "${home_dir}/.claude/.credentials.json")
     case "$state" in
         empty|expired\ *)
-            utils_warn "Claude session in ${home_dir}/.claude/.credentials.json is dead (${state%% *}). A session copied by cac stops working once another copy refreshes it (single-use refresh token). Fix: run 'cac push' on the host where Claude works, then 'cac pull' here, or set up 'claude setup-token' (see README, 'Sharing a Claude login across hosts')."
+            utils_warn "Claude session in ${home_dir}/.claude/.credentials.json is dead (${state%% *}). A session copied by cac stops working once another copy refreshes it (single-use refresh token). Fix: run 'cac push' on the host where Claude works, then 'cac pull' here, or log in again here with 'claude' and /login (see README, 'Sharing a Claude login across hosts')."
             ;;
     esac
 }

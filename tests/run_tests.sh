@@ -357,6 +357,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #166 tests (hosts log in, containers use the token; cac never bundles it)
+    if $run_all || [[ "$filter" == "issue_166" ]] || [[ "$filter" == "166" ]]; then
+        if ! run_test_suite "Issue #166 Tests" "test_issue_166.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #165 tests (repair and uninstall remove root-home residue, proved first)
     if $run_all || [[ "$filter" == "issue_165" ]] || [[ "$filter" == "165" ]]; then
         if ! run_test_suite "Issue #165 Tests" "test_issue_165.sh"; then

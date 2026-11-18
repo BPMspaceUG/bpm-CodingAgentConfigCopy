@@ -493,14 +493,18 @@ Supported flows:
    using Claude on the source, run `cac push` there and `cac pull` on the target
    right away. The source copy dies at its next refresh. Log in again there or
    pull back.
-2. **Long-lived token, all hosts at once.** Run `claude setup-token` once on a
-   machine with a browser. It prints a one-year OAuth token that is not
-   refreshed, so copies cannot invalidate each other. Set it as
-   `CLAUDE_CODE_OAUTH_TOKEN` in the environment of each target user. It takes
-   precedence over `.credentials.json`. Limitation: the token can only make
-   model requests, so Remote Control and claude.ai connectors do not work with
-   it ([Claude Code authentication](https://code.claude.com/docs/en/authentication.md#generate-a-long-lived-token)).
-   `cac` does not distribute this token.
+2. **Hosts log in, containers use the token** ([ADR 0001](docs/adr/0001-hosts-login-containers-token.md)).
+   Every host (contabo03, ICO-ROB-01, laptops) runs on the interactive login
+   above; that is what Remote Control needs. The long-lived token from
+   `claude setup-token` belongs only in containers that call Claude at runtime
+   (reports, reviews, AI inside the product we build): one file per host,
+   `~/.config/claude/oauth-token.env` (700/600), mounted read-only as a
+   directory and loaded at container start as `CLAUDE_CODE_OAUTH_TOKEN`.
+   Never set the token in a host shell: it takes precedence over the login and
+   can only make model requests, so Remote Control and claude.ai connectors
+   stop working there
+   ([Claude Code authentication](https://code.claude.com/docs/en/authentication.md#generate-a-long-lived-token)).
+   `cac` neither bundles nor expects the token.
 3. **Codex:** an API key login (`OPENAI_API_KEY`) does not use a refresh
    token. For a ChatGPT login, use the move flow above.
 
