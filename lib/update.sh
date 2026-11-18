@@ -35,11 +35,7 @@ update_detect_scope() {
 
     # Fallback: check common locations directly
     if [[ -z "${cac_path:-}" ]]; then
-        if [[ -x "/usr/local/bin/cac" ]]; then
-            cac_path="/usr/local/bin/cac"
-        elif [[ -x "${HOME}/.local/bin/cac" ]]; then
-            cac_path="${HOME}/.local/bin/cac"
-        fi
+        cac_path=$(_update_local_cac_path) || cac_path=""
     fi
 
     if [[ -z "${cac_path:-}" ]]; then
@@ -47,7 +43,9 @@ update_detect_scope() {
         return 1
     fi
 
-    if [[ "$cac_path" == /usr/local/bin/* ]]; then
+    local global_dir
+    global_dir=$(dirname "$(_update_global_cac_path)")
+    if [[ "$cac_path" == "$global_dir"/* ]]; then
         echo "global"
         return 0
     fi
@@ -161,14 +159,112 @@ _update_local_cac_path() {
     local cac_path
     cac_path=$(command -v cac 2>/dev/null) || true
     if [[ -z "${cac_path:-}" ]]; then
-        if [[ -x "/usr/local/bin/cac" ]]; then
-            cac_path="/usr/local/bin/cac"
+        if [[ -x "$(_update_global_cac_path)" ]]; then
+            cac_path=$(_update_global_cac_path)
         elif [[ -x "${HOME}/.local/bin/cac" ]]; then
             cac_path="${HOME}/.local/bin/cac"
         fi
     fi
     [[ -n "${cac_path:-}" ]] || return 1
     echo "$cac_path"
+}
+
+# ============================================================================
+# Issue #163: the cac copy at the other scope
+# ============================================================================
+#
+# A host can carry both ~/.local/bin/cac and /usr/local/bin/cac. `cac update`
+# updates the copy on PATH; `sudo cac …` runs /usr/local/bin/cac, because
+# sudo's secure_path has no ~/.local/bin. A stale copy there silently ran old
+# code under sudo (ICO-ROB-01, 2026-11-18). cac never updates or deletes the
+# other copy (that needs other privileges); it only reports it.
+
+# Seam: the system-wide cac path. Tests override this function.
+_update_global_cac_path() {
+    echo "/usr/local/bin/cac"
+}
+
+# Seam: root context. Tests override this function.
+_update_is_root() {
+    [[ "${EUID:-$(id -u)}" -eq 0 ]]
+}
+
+# Seam: home of the user who ran sudo. Returns 1 outside a sudo session.
+_update_sudo_user_home() {
+    [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]] || return 1
+    security_resolve_user_home "$SUDO_USER" 2>/dev/null
+}
+
+# The standard cac location at the other scope of <current_path>.
+# Prints "<kind> <path>": kind "global" (/usr/local/bin/cac, run by sudo) or
+# "user" (a ~/.local/bin/cac: $SUDO_USER's when run as root via sudo, else
+# $HOME's). Returns 1 when there is no other location to look at (root
+# without sudo, current copy already global).
+# Usage: _update_other_cac_path <current_path>
+_update_other_cac_path() {
+    local current="$1" global home
+    global=$(_update_global_cac_path)
+    if [[ "$current" != "$(dirname "$global")"/* ]]; then
+        echo "global $global"
+        return 0
+    fi
+    if _update_is_root; then
+        home=$(_update_sudo_user_home) || return 1
+    else
+        home="$HOME"
+    fi
+    echo "user ${home}/.local/bin/cac"
+}
+
+# Inspect the other copy of <current_path>. Sets _OTHER_KIND, _OTHER_PATH and
+# _OTHER_VERSION. Returns 1 when there is none: no location, not executable,
+# the same file (symlink) as the current copy, or no readable VERSION.
+_update_find_other_copy() {
+    local current="$1" kind other
+    _OTHER_KIND="" _OTHER_PATH="" _OTHER_VERSION=""
+    read -r kind other < <(_update_other_cac_path "$current") || return 1
+    [[ -n "$other" && -x "$other" ]] || return 1
+    if [[ "$other" -ef "$current" ]]; then
+        return 1
+    fi
+    _OTHER_VERSION=$(_update_extract_version_from_file "$other") || return 1
+    _OTHER_KIND="$kind" _OTHER_PATH="$other"
+}
+
+# The command that updates the other copy found by _update_find_other_copy.
+_update_other_copy_command() {
+    if [[ "$_OTHER_KIND" == "global" ]]; then
+        echo "sudo cac update"
+    else
+        echo "cac update (as ${SUDO_USER:-$(id -un)}, without sudo)"
+    fi
+}
+
+# Who runs the other copy, for the warning text.
+_update_other_copy_runner() {
+    if [[ "$_OTHER_KIND" == "global" ]]; then
+        echo "'sudo cac ...' runs that copy (sudo's PATH has no ~/.local/bin)."
+    else
+        echo "'cac ...' run as ${SUDO_USER:-$(id -un)} without sudo runs that copy."
+    fi
+}
+
+# After a successful update: warn on stderr when the copy at the other scope
+# is older than <current_version>. Never changes the exit code.
+# Usage: _update_warn_other_copy <current_version>
+_update_warn_other_copy() {
+    local current_version="$1" current
+    current=$(_update_local_cac_path) || return 0
+    _update_find_other_copy "$current" || return 0
+    if _update_version_ge "$(_update_normalize_version "$_OTHER_VERSION")" \
+                          "$(_update_normalize_version "$current_version")"; then
+        return 0
+    fi
+    echo "" >&2
+    utils_warn "Another cac install at $_OTHER_PATH is older ($_OTHER_VERSION) than $current ($current_version)."
+    echo "  $(_update_other_copy_runner)" >&2
+    echo "  Update it with: $(_update_other_copy_command)" >&2
+    return 0
 }
 
 # Get the version of the locally installed cac binary.
@@ -330,6 +426,7 @@ update_check() {
 
     echo "Installed version: $local_version"
     echo "Available version: $remote_version"
+    _update_check_list_copies "$local_version"
 
     if _update_version_ge "$local_clean" "$remote_clean"; then
         echo ""
@@ -340,6 +437,26 @@ update_check() {
     echo ""
     echo "Update available: $local_version -> $remote_version"
     return 0
+}
+
+# Issue #163: when a second copy exists, list both with their versions.
+# Usage: _update_check_list_copies <local_version>
+_update_check_list_copies() {
+    local local_version="$1" current note=""
+    current=$(_update_local_cac_path) || return 0
+    _update_find_other_copy "$current" || return 0
+    if ! _update_version_ge "$(_update_normalize_version "$_OTHER_VERSION")" \
+                            "$(_update_normalize_version "$local_version")"; then
+        note="  older; update with: $(_update_other_copy_command)"
+    fi
+    echo ""
+    echo "Installed copies:"
+    echo "  $current  $local_version  (on PATH)"
+    if [[ "$_OTHER_KIND" == "global" ]]; then
+        echo "  $_OTHER_PATH  $_OTHER_VERSION  (run by sudo)$note"
+    else
+        echo "  $_OTHER_PATH  $_OTHER_VERSION  (user-local of ${SUDO_USER:-$(id -un)})$note"
+    fi
 }
 
 # ============================================================================
@@ -359,7 +476,7 @@ update_self() {
     utils_verbose "Detected installation scope: $scope"
 
     # System-wide update requires root
-    if [[ "$scope" == "global" && "${EUID:-$(id -u)}" -ne 0 ]]; then
+    if [[ "$scope" == "global" ]] && ! _update_is_root; then
         utils_error "Root privileges required for system-wide update"
         echo "Run with: sudo cac update" >&2
         return 1
@@ -383,6 +500,7 @@ update_self() {
 
     if _update_version_ge "$old_clean" "$remote_clean"; then
         echo "Already up to date (version: $old_version)."
+        _update_warn_other_copy "$old_version"
         _update_print_env_hints
         _update_print_tool_report
         return 0
@@ -421,6 +539,7 @@ update_self() {
 
     echo ""
     echo "Update complete: $old_version -> $new_version"
+    _update_warn_other_copy "$new_version"
 
     # install.sh already printed the env hint lines in its usage summary.
     _update_print_tool_report
@@ -483,6 +602,11 @@ DESCRIPTION:
     with the same scope (--user or --global) as the current install.
 
     System-wide updates require root privileges.
+
+    A host can carry a second copy at the other scope (/usr/local/bin/cac
+    next to ~/.local/bin/cac). cac never updates or removes it, but warns
+    when it is older: 'sudo cac ...' runs /usr/local/bin/cac. --check lists
+    both copies.
 
 EXAMPLES:
     cac update              Update cac to the latest version

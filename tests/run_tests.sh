@@ -357,6 +357,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #163 tests (cac update warns about a stale copy at the other scope)
+    if $run_all || [[ "$filter" == "issue_163" ]] || [[ "$filter" == "163" ]]; then
+        if ! run_test_suite "Issue #163 Tests" "test_issue_163.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #83 tests (pull warns when the installed CLI is outdated)
     if $run_all || [[ "$filter" == "issue_83" ]] || [[ "$filter" == "83" ]]; then
         if ! run_test_suite "Issue #83 Tests" "test_issue_83.sh"; then
