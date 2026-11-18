@@ -54,7 +54,7 @@ backend_call() {
             [[ "$1" == "--tool" ]] && tool="$2"
             shift
         done
-        if [[ "$tool" == "codex" || "$tool" == "claude" ]]; then
+        if [[ "$tool" == "codex" || "$tool" == "claude" || "$tool" == "gemini" ]]; then
             bundle_name "$tool"
             return 0
         fi
@@ -156,7 +156,8 @@ test_6_per_tool_pull_warns_per_tool() {
     [[ "$ERR" != *"cac env update claude"* ]] || { echo "claude warned: $ERR" >&2; return 1; }
     assert_contains "EXTRACTED $(bundle_name codex)" "$OUT" "codex extracted" || return 1
     assert_contains "EXTRACTED $(bundle_name claude)" "$OUT" "claude extracted" || return 1
-    # gemini/mistral/opencode have no bundle here: never looked up.
+    # gemini has a bundle but no CLI on PATH: extracted, never looked up.
+    assert_contains "EXTRACTED $(bundle_name gemini)" "$OUT" "gemini extracted" || return 1
     [[ "$(npm_calls)" != *gemini* ]] || { echo "gemini looked up: $(npm_calls)" >&2; return 1; }
 }
 
@@ -176,9 +177,11 @@ test_8_get_alias_accepts_skip_flag() {
 
 test_9_not_installed_tool_not_looked_up() {
     pull cmd_pull --tool gemini
-    # No gemini bundle in this backend stub: the pull fails as before, and
-    # the uninstalled CLI is never looked up.
-    [[ "$(npm_calls)" != *gemini* ]] || { echo "gemini looked up: $(npm_calls)" >&2; return 1; }
+    # gemini has a bundle but no CLI on PATH: the pull goes ahead, no lookup.
+    assert_equals 0 "$RC" "rc (out: $OUT err: $ERR)" || return 1
+    assert_contains "EXTRACTED $(bundle_name gemini)" "$OUT" "bundle extracted" || return 1
+    assert_equals "" "$(npm_calls)" "no npm lookup" || return 1
+    [[ "$ERR" != *"outdated"* ]] || { echo "warned for an uninstalled CLI: $ERR" >&2; return 1; }
 }
 
 test_10_help_documents_flag() {

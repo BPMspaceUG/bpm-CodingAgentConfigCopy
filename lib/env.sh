@@ -2312,6 +2312,24 @@ env_get_latest_version() {
     fi
 }
 
+# Is the installed CLI of <tool> older than the newest published version?
+# (Issue #83, the outdated-CLI warning of `cac pull`.) Same lookups as
+# `env status --check-updates`: env_get_version and env_get_latest_version.
+# Prints "<display name>|<installed>|<latest>" (normalized) and returns 0 when
+# outdated. Returns 1 when not outdated or not knowable: tool without a
+# registry entry, not installed, latest "?", or a version that does not parse.
+# Usage: env_cli_outdated <tool>
+env_cli_outdated() {
+    local tool="$1" name installed latest
+    name=$(_env_get_field "$tool" 1) || return 1
+    env_is_installed "$tool" || return 1
+    installed=$(env_get_version "$tool")
+    latest=$(env_get_latest_version "$tool")
+    [[ "$latest" == "?" ]] && return 1
+    _env_version_lt "$installed" "$latest" || return 1
+    echo "${name}|$(_env_normalize_version "$installed")|$(_env_normalize_version "$latest")"
+}
+
 # ============================================================================
 # Status Display Functions
 # ============================================================================

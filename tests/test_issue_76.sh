@@ -57,18 +57,10 @@ EOF
     echo "$d"
 }
 
-# Offline npm (#83): pull's outdated-CLI lookup answers with the captured
-# registry 404, so no test reaches the network and no warning appears.
-make_offline_npm() {
-    local bindir="$1"
-    mkdir -p "$bindir"
-    printf '#!/bin/sh\ncat %q >&2\nexit 1\n' "$REPO_DIR/tests/fixtures/npm-view-404.err" > "$bindir/npm"
-    chmod 755 "$bindir/npm"
-}
-
 run_cac() {
     local d="$1"; shift
-    make_offline_npm "$d/offline-bin"
+    # Offline npm (#83): pull's outdated-CLI lookup never reaches the network.
+    framework_offline_npm "$d/offline-bin"
     PATH="$d/bin:$d/offline-bin:$PATH" CAC_CONFIG_DIR="$d/config" HOME="$d/home" \
         TMPDIR="$d/tmp" XDG_CACHE_HOME="$d/cache" \
         "$REPO_DIR/bin/cac" "$@"

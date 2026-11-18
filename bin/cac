@@ -384,13 +384,13 @@ cmd_push() {
 }
 
 # Issue #83: warn on stderr when the installed CLI of <tool> is older than the
-# newest published version, so a stale CLI is not mistaken for an auth or
-# model problem after the pull. Warning only: never fails, never changes the
-# pull's exit status. Silent when the tool is not installed, has no version
-# source (latest "?": offline, no npm package) or either version cannot be
-# parsed. Uses the same lookups as `cac env status --check-updates`.
+# newest published version (env_cli_outdated), so a stale CLI is not mistaken
+# for an auth or model problem after the pull. Warning only: never fails,
+# never changes the pull's exit status.
 # --skip-version-check (_PULL_SKIP_VERSION_CHECK) skips the lookup entirely;
 # each tool is checked at most once per pull (`--all` covers many users).
+# cmd_pull resets both globals per call; the defaults here cover helpers
+# called without cmd_pull (tests, set -u).
 # Usage: _pull_warn_outdated_cli <tool>
 _PULL_SKIP_VERSION_CHECK="false"
 _PULL_VERSION_WARNED=" "
@@ -401,19 +401,10 @@ _pull_warn_outdated_cli() {
     [[ "$_PULL_VERSION_WARNED" == *" $tool "* ]] && return 0
     _PULL_VERSION_WARNED+="$tool "
 
-    # Tools without an env registry entry (opencode) have no version source.
-    env_get_version_cmd "$tool" >/dev/null 2>&1 || return 0
-    env_is_installed "$tool" || return 0
-
-    local installed latest
-    installed=$(env_get_version "$tool")
-    latest=$(env_get_latest_version "$tool")
-    [[ "$latest" == "?" ]] && return 0
-    _env_version_lt "$installed" "$latest" || return 0
-
-    local name
-    name=$(_env_get_field "$tool" 1)
-    utils_warn "${name:-$tool} is outdated: installed $(_env_normalize_version "$installed"), latest $(_env_normalize_version "$latest")."
+    local found name installed latest
+    found=$(env_cli_outdated "$tool") || return 0
+    IFS='|' read -r name installed latest <<<"$found"
+    utils_warn "$name is outdated: installed $installed, latest $latest."
     utils_warn "  An outdated CLI can fail with errors that look like expired tokens or unsupported models."
     utils_warn "  Update it: cac env update $tool"
     return 0

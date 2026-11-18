@@ -50,6 +50,17 @@ _framework_cleanup() {
 
 trap _framework_cleanup EXIT
 
+# Write an offline `npm` into <bindir> (#83): every call prints the captured
+# registry 404 on stderr and exits 1, so `env_get_latest_version` answers "?"
+# and pull's outdated-CLI check never reaches the network.
+# Usage: framework_offline_npm <bindir>
+framework_offline_npm() {
+    local bindir="$1"
+    mkdir -p "$bindir"
+    printf '#!/bin/sh\ncat %q >&2\nexit 1\n' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fixtures/npm-view-404.err" > "$bindir/npm"
+    chmod 755 "$bindir/npm"
+}
+
 # ============================================================================
 # Test Result Helpers
 # ============================================================================

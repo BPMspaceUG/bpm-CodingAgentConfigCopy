@@ -139,9 +139,8 @@ EOF
     local sentinel="$d/codex.called"
     make_codex_stub "$d/bin" fail "$sentinel"
     rm -f "$sentinel"
-    # Offline npm (#83): the latest-version lookup gets the captured registry 404.
-    printf '#!/bin/sh\ncat %q >&2\nexit 1\n' "$REPO_DIR/tests/fixtures/npm-view-404.err" > "$d/bin/npm"
-    chmod 755 "$d/bin/npm"
+    # Offline npm (#83): the latest-version lookup never reaches the network.
+    framework_offline_npm "$d/bin"
 
     seed_bundle "$d/storage" "CodingAgentConfig_HOSTA_${user}_codex_260101-100000.zip" ".codex/auth.json"
 

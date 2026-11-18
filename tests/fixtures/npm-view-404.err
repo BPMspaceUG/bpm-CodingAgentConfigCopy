@@ -1,10 +1,8 @@
 npm error code E404
-npm error 404 Not Found - GET https://registry.npmjs.org/@openai%2fcodex-FIXTURE-nonexistent - Not found
+npm error 404 Not Found - GET https://registry.npmjs.org/@openai%2fcodex-fixture-nonexistent-cac83 - Not found
 npm error 404
-npm error 404  The requested resource '@openai/codex-FIXTURE-nonexistent@*' could not be found or you do not have permission to access it.
-npm error 404 This package name is not valid, because 
-npm error 404  1. name can no longer contain capital letters
+npm error 404  The requested resource '@openai/codex-fixture-nonexistent-cac83@*' could not be found or you do not have permission to access it.
 npm error 404
 npm error 404 Note that you can also install from a
 npm error 404 tarball, folder, http url, or git url.
-npm error A complete log of this run can be found in: /home/matt/.npm/_logs/2026-11-18T05_32_00_072Z-debug-0.log
+npm error A complete log of this run can be found in: /home/matt/.npm/_logs/2026-11-18T05_50_36_864Z-debug-0.log

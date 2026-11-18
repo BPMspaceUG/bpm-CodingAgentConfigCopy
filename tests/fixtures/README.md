@@ -51,4 +51,4 @@ Verbatim captures on contabo03, 2026-11-18, `.out` = stdout, `.err` = stderr. Re
 | `claude-version.out` | `claude --version` (apt package 2.1.327, stderr empty) | 0 |
 | `npm-view-codex-version.out` | `npm view @openai/codex version` (npm 11.19.1) | 0 |
 | `npm-view-claude-code-version.out` | `npm view @anthropic-ai/claude-code version` | 0 |
-| `npm-view-404.err` | `npm view @openai/codex-FIXTURE-nonexistent version` (stdout empty): the shape of a failed lookup | 1 |
+| `npm-view-404.err` | `npm view @openai/codex-fixture-nonexistent-cac83 version` (stdout empty): the shape of a failed lookup for a valid but unpublished name | 1 |
