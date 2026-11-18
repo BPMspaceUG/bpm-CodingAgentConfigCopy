@@ -8,7 +8,8 @@
 # 0700. In root context the line now starts with `sudo `; run by a normal user
 # for their own copy it stays without sudo.
 #
-# Seam: env_cmd_repair, root context through _env_is_root (#156). Layout as in
+# Seam: env_cmd_repair, root context through _env_is_root (#156) and root's
+# home through _env_root_home (the copy's location decides). Layout as in
 # tests/test_issue_138.sh: the system-wide bin dir is the _ENV_SYSTEM_BIN_PATH
 # seam on a scratch dir, npm/node are stubs, PATH carries /usr/bin without
 # sudo/npm/node/codex so no real tool is reached.
@@ -57,9 +58,16 @@ make_layout() {
     chmod 755 "$T/stubbin/"*
 }
 
-# Run env_cmd_repair codex. $1 = true|false for _env_is_root. Sets OUT, RC.
+# Run env_cmd_repair codex. $1 = true|false for _env_is_root; $2 = the
+# directory _env_root_home names (default: HOMEDIR when root, else a dir that
+# is not HOME). Sets OUT, RC.
 run_repair() {
-    local root_ctx="$1"
+    local root_ctx="$1" root_home="${2:-}"
+    if [[ -z "$root_home" ]]; then
+        root_home="$T/not-home"
+        [[ "$root_ctx" == "true" ]] && root_home="$HOMEDIR"
+    fi
+    mkdir -p "$root_home"
     RC=0
     OUT=$(
         export HOME="$HOMEDIR" CAC_BIN="$T/stubbin/cac"
@@ -67,6 +75,7 @@ run_repair() {
         unset CAC_ENV_ESCALATED
         _ENV_SYSTEM_BIN_PATH="$SYS/bin"
         _env_is_root() { [[ "$root_ctx" == "true" ]]; }
+        _env_root_home() { echo "$root_home"; }
         env_cmd_repair codex 2>&1
     ) || RC=$?
 }
@@ -76,7 +85,8 @@ _uninstall_line() {
     printf '%s\n' "$OUT" | grep -- "npm uninstall -g --prefix" | head -1 | sed 's/^ *//'
 }
 
-# 164.1: root context, per-user copy in root's home → the line starts with sudo.
+# 164.1: root context, HOME is root's home (sudo resets HOME) → the line
+# starts with sudo.
 test_164_1_root_copy_needs_sudo() {
     make_layout t1
     run_repair true
@@ -93,7 +103,17 @@ test_164_2_user_copy_without_sudo() {
         "$(_uninstall_line)" "remediation line (out: $OUT)" || return 1
 }
 
+# 164.3: root context, but sudo kept HOME (sudo -E, macOS): the copy is the
+# invoking user's own → no sudo.
+test_164_3_root_with_kept_home_no_sudo() {
+    make_layout t3
+    run_repair true "$T/root"
+    assert_equals "npm uninstall -g --prefix $HOMEDIR/.local @openai/codex" \
+        "$(_uninstall_line)" "remediation line (out: $OUT)" || return 1
+}
+
 run_test "164.1 root context: the uninstall line starts with sudo" test_164_1_root_copy_needs_sudo
 run_test "164.2 non-root: the uninstall line has no sudo" test_164_2_user_copy_without_sudo
+run_test "164.3 root with HOME kept: the user's own copy gets no sudo" test_164_3_root_with_kept_home_no_sudo
 
 framework_report
