@@ -134,10 +134,14 @@ $(command -v getent) "\$@"
 EOF
     chmod +x "$d/bin/getent"
 
-    # codex stub that writes a sentinel if it is EVER called (it must not be)
+    # codex stub that records every call. The only call allowed is the #83
+    # outdated-CLI probe `codex --version`; anything else is a credential check.
     local sentinel="$d/codex.called"
     make_codex_stub "$d/bin" fail "$sentinel"
     rm -f "$sentinel"
+    # Offline npm (#83): the latest-version lookup gets the captured registry 404.
+    printf '#!/bin/sh\ncat %q >&2\nexit 1\n' "$REPO_DIR/tests/fixtures/npm-view-404.err" > "$d/bin/npm"
+    chmod 755 "$d/bin/npm"
 
     seed_bundle "$d/storage" "CodingAgentConfig_HOSTA_${user}_codex_260101-100000.zip" ".codex/auth.json"
 
@@ -147,8 +151,8 @@ EOF
 
     assert_equals "0" "$rc" "pull exit code" || return 1
     assert_file_exists "$d/home/.codex/auth.json" "extracted codex auth" || return 1
-    if [[ -f "$sentinel" ]]; then
-        echo "FAIL: codex credential check ran during pull (sentinel present)" >&2
+    if [[ -f "$sentinel" ]] && grep -qvx -- "--version" "$sentinel"; then
+        echo "FAIL: codex credential check ran during pull: $(tr '\n' ' ' < "$sentinel")" >&2
         return 1
     fi
     return 0

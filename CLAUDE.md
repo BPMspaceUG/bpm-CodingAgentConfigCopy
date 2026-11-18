@@ -35,7 +35,7 @@ cac test                    # Test AI tool API connectivity
 | Command | Description |
 |---------|-------------|
 | `cac push [--user USER] [--skip-check]` | Create ZIP bundle from user configs and upload to backend |
-| `cac pull [TOOL\|BUNDLE_ID] [--tool TOOL] [--user USER]` | Download and apply bundle (globally newest, filtered, or specific); a tool name as positional = `--tool TOOL` (#158) |
+| `cac pull [TOOL\|BUNDLE_ID] [--tool TOOL] [--user USER] [--skip-version-check]` | Download and apply bundle (globally newest, filtered, or specific); a tool name as positional = `--tool TOOL` (#158); warns on stderr when the installed CLI is outdated (#83) |
 | `cac get` | Silent alias for `cac pull` (backward compatibility) |
 | `cac list [--tool TOOL] [--user USER]` | List available bundles with optional filtering |
 | `cac check [TOOL] [--user USER]` | Verify AI tool credentials work (real API calls) |

@@ -40,3 +40,15 @@ Package names (`foo` included) and paths are as captured; nothing is guessed. On
 | File | Source of the shape |
 |---|---|
 | `gokapi-files-list.json` | `GET /api/files/list` on the team's Gokapi backend, 2026-11-16: one line, no trailing newline, 15 entries with every key in Gokapi's order, entries in the server's (not date) order. Host and user in every `Name` are replaced by `FIXTURE-HOST` / `fixture`; tool and timestamp are kept. `Id` is `FIXTURE<n>`, `UrlDownload` / `UrlHotlink` point to `gokapi.example.invalid` with that id, `UploaderId` is 0. Sizes, dates and flags are the real values. Built with `jq` from the captured answer rather than from structure only: the list holds no secret once ids and URLs are replaced, and the real names, dates and server order are what the matching code is tested against. |
+
+### CLI and npm version output (#83)
+
+Verbatim captures on contabo03, 2026-11-18, `.out` = stdout, `.err` = stderr. Real versions at capture time: codex was one minor release behind npm, Claude Code matched.
+
+| File | Command | Exit |
+|---|---|---|
+| `codex-version.out` | `codex --version` (codex-cli 0.169.1, stderr empty) | 0 |
+| `claude-version.out` | `claude --version` (apt package 2.1.327, stderr empty) | 0 |
+| `npm-view-codex-version.out` | `npm view @openai/codex version` (npm 11.19.1) | 0 |
+| `npm-view-claude-code-version.out` | `npm view @anthropic-ai/claude-code version` | 0 |
+| `npm-view-404.err` | `npm view @openai/codex-FIXTURE-nonexistent version` (stdout empty): the shape of a failed lookup | 1 |

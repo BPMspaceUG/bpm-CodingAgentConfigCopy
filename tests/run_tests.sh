@@ -357,6 +357,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #83 tests (pull warns when the installed CLI is outdated)
+    if $run_all || [[ "$filter" == "issue_83" ]] || [[ "$filter" == "83" ]]; then
+        if ! run_test_suite "Issue #83 Tests" "test_issue_83.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #159 tests (no jq: Gokapi lookup returns the matching entry, not the first)
     if $run_all || [[ "$filter" == "issue_159" ]] || [[ "$filter" == "159" ]]; then
         if ! run_test_suite "Issue #159 Tests" "test_issue_159.sh"; then

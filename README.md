@@ -193,6 +193,8 @@ Without `--tool`, both `cac push` and `cac pull` operate **per tool** — they l
 
 `cac pull` does **not** run credential checks — checks are a push-time concern (and can be skipped with `--skip-check`). Use `--tool` to operate on a single tool, or `--user` (root) to target another user.
 
+Before applying a tool's bundle, `cac pull` compares that tool's installed CLI with the newest published version (the same lookup as `cac env status --check-updates`). If the CLI is older, it prints a warning on stderr with both versions and `cac env update <tool>`, then pulls anyway; the exit status is unchanged. An outdated CLI can fail with errors that look like an expired token or an unsupported model (#83). Tools that are not installed or have no published version (offline, Mistral Vibe, OpenCode) get no warning. `--skip-version-check` skips the lookup, e.g. offline.
+
 The three source semantics are distinct:
 
 - **no `--user`** — uploader-agnostic: applies the newest bundle **per tool**, regardless of who uploaded it.

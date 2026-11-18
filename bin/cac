@@ -114,6 +114,8 @@ OPTIONS:
     --dry-run       Preview what would happen without making changes
     --check         Verify credentials before push (off by default)
     --skip-check    No-op (kept for compatibility; checks are already off by default)
+    --skip-version-check
+                    Pull without the outdated-CLI warning (no npm lookup, e.g. offline)
     --check-updates Check for latest versions (env status only)
     --tmux          Set Claude Code teammateMode to "tmux" (env install only)
     --verbose       Enable verbose output for debugging
@@ -381,6 +383,60 @@ cmd_push() {
     return 0
 }
 
+# Issue #83: warn on stderr when the installed CLI of <tool> is older than the
+# newest published version, so a stale CLI is not mistaken for an auth or
+# model problem after the pull. Warning only: never fails, never changes the
+# pull's exit status. Silent when the tool is not installed, has no version
+# source (latest "?": offline, no npm package) or either version cannot be
+# parsed. Uses the same lookups as `cac env status --check-updates`.
+# --skip-version-check (_PULL_SKIP_VERSION_CHECK) skips the lookup entirely;
+# each tool is checked at most once per pull (`--all` covers many users).
+# Usage: _pull_warn_outdated_cli <tool>
+_PULL_SKIP_VERSION_CHECK="false"
+_PULL_VERSION_WARNED=" "
+_pull_warn_outdated_cli() {
+    local tool
+    tool="$(_resolve_tool_alias "$1")"
+    [[ "$_PULL_SKIP_VERSION_CHECK" == "true" ]] && return 0
+    [[ "$_PULL_VERSION_WARNED" == *" $tool "* ]] && return 0
+    _PULL_VERSION_WARNED+="$tool "
+
+    # Tools without an env registry entry (opencode) have no version source.
+    env_get_version_cmd "$tool" >/dev/null 2>&1 || return 0
+    env_is_installed "$tool" || return 0
+
+    local installed latest
+    installed=$(env_get_version "$tool")
+    latest=$(env_get_latest_version "$tool")
+    [[ "$latest" == "?" ]] && return 0
+    _env_version_lt "$installed" "$latest" || return 0
+
+    local name
+    name=$(_env_get_field "$tool" 1)
+    utils_warn "${name:-$tool} is outdated: installed $(_env_normalize_version "$installed"), latest $(_env_normalize_version "$latest")."
+    utils_warn "  An outdated CLI can fail with errors that look like expired tokens or unsupported models."
+    utils_warn "  Update it: cac env update $tool"
+    return 0
+}
+
+# Issue #83: the outdated-CLI warning for a pull by BUNDLE_ID. The tool comes
+# from the bundle name; a legacy combined (_all_) bundle checks every tool, and
+# a partial name that does not parse checks nothing.
+# Usage: _pull_warn_outdated_bundle <bundle_id>
+_pull_warn_outdated_bundle() {
+    local tool t
+    tool=$(bundle_get_tool "$(basename "$1")")
+    [[ -z "$tool" ]] && return 0
+    if [[ "$tool" == "all" ]]; then
+        for t in "${SUPPORTED_TOOLS[@]}"; do
+            _pull_warn_outdated_cli "$t"
+        done
+    else
+        _pull_warn_outdated_cli "$tool"
+    fi
+    return 0
+}
+
 cmd_pull() {
     local pull_all="false"
     local dry_run="false"
@@ -391,6 +447,8 @@ cmd_pull() {
     # utils_init_command_context sets PARSED_USER, so it needs its own copy.
     local user_value=""
     local args=()
+    _PULL_SKIP_VERSION_CHECK="false"
+    _PULL_VERSION_WARNED=" "
 
     # Pre-parse pull-specific flags (--all, --tool need special handling)
     # and capture optional positional BUNDLE_ID argument
@@ -426,6 +484,12 @@ cmd_pull() {
             --dry-run)
                 dry_run="true"
                 args+=("$1")
+                shift
+                ;;
+            --skip-version-check)
+                # Issue #83: consumed here; utils_init_command_context --strict
+                # does not know it.
+                _PULL_SKIP_VERSION_CHECK="true"
                 shift
                 ;;
             --*)
@@ -490,6 +554,7 @@ cmd_pull() {
 
         echo "Getting bundle: $bundle_id"
         echo "Target user: $target_user"
+        _pull_warn_outdated_bundle "$bundle_id"
 
         # Download and extract
         if ! utils_download_and_extract "$bundle_id" "$home_dir" "$target_user"; then
@@ -529,6 +594,7 @@ cmd_pull() {
         echo "Filters: ${filter_args[*]}"
         echo ""
         echo "Found bundle: $newest_bundle"
+        _pull_warn_outdated_cli "$explicit_tool"
         if ! utils_download_and_extract "$newest_bundle" "$home_dir" "$target_user"; then
             return 1
         fi
@@ -590,6 +656,7 @@ _pull_newest_per_tool() {
         fi
 
         echo "[$tool] Found bundle: $newest_bundle"
+        _pull_warn_outdated_cli "$tool"
         if utils_download_and_extract "$newest_bundle" "$home_dir" "$target_user"; then
             extracted=$((extracted + 1))
         else
@@ -689,6 +756,7 @@ _pull_legacy_fallback() {
         fi
 
         echo "[$tool] no per-tool bundle — using legacy combined bundle: $legacy_bundle"
+        _pull_warn_outdated_cli "$tool"
         if bundle_extract "$lpath" "$home_dir" "$target_user" "$tool"; then
             _extracted=$((_extracted + 1))
         else
