@@ -238,6 +238,40 @@ remove_ai_tools() {
     fi
 }
 
+# Issue #165: root-home residue of escalated `cac env update` runs (#96).
+# The same code as `cac env repair` does it (env_remove_root_residue in
+# lib/env.sh): from the installed libraries, else from this checkout. It
+# removes only what every tool can do without (proved before each deletion).
+# Sets _RESIDUE_REMOVED to the number of removed paths.
+_uninstall_residue_seams() { :; }   # test seam: tests redefine it after env.sh is sourced
+remove_root_residue() {
+    _RESIDUE_REMOVED=0
+    is_root || return 0
+
+    # The checkout's lib/ only when this script is a real file: under
+    # `curl | bash` the current directory is arbitrary and must not be sourced.
+    local here="" lib="" d
+    if [[ -f "${BASH_SOURCE[0]:-}" ]]; then
+        here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || here=""
+    fi
+    for d in "$SYS_LIB_DIR" "${here:+$here/lib}"; do
+        [[ -n "$d" && -f "$d/env.sh" ]] && { lib="$d"; break; }
+    done
+    if [[ -z "$lib" ]]; then
+        warn "lib/env.sh not found: root-home residue not checked (run 'sudo cac env repair --yes' before uninstalling)"
+        return 0
+    fi
+
+    local out
+    out=$(
+        set +eu
+        # shellcheck source=lib/env.sh
+        source "$lib/env.sh" && _uninstall_residue_seams && env_remove_root_residue true
+    ) 2>&1 || true
+    [[ -n "$out" ]] && printf '%s\n' "$out"
+    _RESIDUE_REMOVED=$(printf '%s\n' "$out" | grep -c '^  Removed: ') || _RESIDUE_REMOVED=0
+}
+
 # Uninstall from system-wide location
 uninstall_system() {
     local removed=0
@@ -287,6 +321,9 @@ do_uninstall() {
     # Check system-wide installation (if root or files are readable)
     if is_root || [[ -f "${SYS_BIN_DIR}/cac" ]] || [[ -d "$SYS_LIB_DIR" ]]; then
         if is_root; then
+            # Issue #165: before the libraries go, since the cleanup uses them.
+            remove_root_residue
+            total_removed=$((total_removed + _RESIDUE_REMOVED))
             info "Checking system-wide installation..."
             local sys_removed
             sys_removed=$(uninstall_system)
@@ -406,4 +443,7 @@ main() {
     do_uninstall
 }
 
-main "$@"
+# Run only when executed, not when sourced (tests/test_issue_165.sh sources it).
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
+    main "$@"
+fi

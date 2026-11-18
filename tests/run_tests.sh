@@ -357,6 +357,14 @@ main() {
         echo ""
     fi
 
+    # Run Issue #165 tests (repair and uninstall remove root-home residue, proved first)
+    if $run_all || [[ "$filter" == "issue_165" ]] || [[ "$filter" == "165" ]]; then
+        if ! run_test_suite "Issue #165 Tests" "test_issue_165.sh"; then
+            exit_code=1
+        fi
+        echo ""
+    fi
+
     # Run Issue #164 tests (repair prints sudo for root's per-user npm copy)
     if $run_all || [[ "$filter" == "issue_164" ]] || [[ "$filter" == "164" ]]; then
         if ! run_test_suite "Issue #164 Tests" "test_issue_164.sh"; then

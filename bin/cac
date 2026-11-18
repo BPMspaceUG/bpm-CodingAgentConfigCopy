@@ -1058,6 +1058,8 @@ EXAMPLES:
     cac env repair                    Repair all detected issues (interactive)
     cac env repair --yes              Repair without confirmation prompts
     cac env repair codex              Repair only Codex CLI
+    sudo cac env repair --yes         Also remove root-home residue of escalated runs,
+                                      where every tool still works afterwards (#165)
     cac env skills                    Install predefined Claude Code skills
     cac env skills --list             List predefined skills without installing
 
